@@ -309,7 +309,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-5 pb-24 md:pb-8 space-y-5">
+    <div className="mx-auto w-full max-w-6xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
       {/* Top Commercial Banner */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

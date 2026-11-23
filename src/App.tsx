@@ -33,15 +33,18 @@ import {
   subscribeOrdersAndSubOrders,
   subscribePayments,
   subscribeProducts,
+  subscribePublicDirectory,
   subscribeUserCalls,
   subscribeUserChats,
   subscribeUserContacts,
   subscribeUserProfile,
+  syncPublicDirectoryEntry,
   updateRealConnection,
   updateRealOrder,
   updateRealPayment,
   updateRealProductStock,
   updateRealSubOrder,
+  type PublicDirectoryUser,
 } from './lib/firebase';
 import {
   answerRealIncomingCall,
@@ -119,6 +122,7 @@ export default function App() {
 
   // Real-time Firestore Collections
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [directoryUsers, setDirectoryUsers] = useState<PublicDirectoryUser[]>([]);
   const [chats, setChats] = useState<ChatThreadSummary[]>([]);
   const [calls, setCalls] = useState<CallSessionRecord[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -219,6 +223,7 @@ export default function App() {
     const uid = authUser.uid;
     const unsubs = [
       subscribeUserContacts(uid, setContacts),
+      subscribePublicDirectory(uid, setDirectoryUsers),
       subscribeUserChats(uid, setChats),
       subscribeUserCalls(uid, setCalls),
       subscribeProducts(uid, setProducts),
@@ -228,6 +233,16 @@ export default function App() {
     ];
     return () => unsubs.forEach((u) => u());
   }, [authUser, profile?.uid]);
+
+  // 3a. Ensure every logged-in user (including accounts created earlier) is findable by name
+  const syncedDirectoryKeyRef = useRef<string>('');
+  useEffect(() => {
+    if (!profile?.uid || !profile.name.trim()) return;
+    const syncKey = `${profile.uid}|${profile.name}|${profile.statusMessage}|${profile.hasStorefront}|${profile.storefrontName}|${profile.avatarUrl ? profile.avatarUrl.length : 0}`;
+    if (syncedDirectoryKeyRef.current === syncKey) return;
+    syncedDirectoryKeyRef.current = syncKey;
+    void syncPublicDirectoryEntry(profile).catch(() => {});
+  }, [profile]);
 
   // 3b. Automatically re-check saved contacts that weren't on Zapei yet (once per session)
   const autoResyncedUidRef = useRef<string | null>(null);
@@ -1053,7 +1068,7 @@ export default function App() {
   const mobileInChat = activeTab === 'chats' && Boolean(selectedPeer);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#F8FAFC] text-slate-900">
+    <div className="flex h-[100dvh] w-full max-w-full overflow-hidden bg-[#F8FAFC] text-slate-900">
       {/* Desktop Left Navigation Rail */}
       <aside className="hidden md:flex md:w-20 lg:w-60 shrink-0 flex-col justify-between border-r border-slate-200 bg-[#0D2B3E] text-white">
         <div>
@@ -1130,14 +1145,14 @@ export default function App() {
       <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Mobile Compact Top Header (hidden when inside an active mobile chat thread) */}
         {!mobileInChat && (
-          <header className="flex md:hidden items-center justify-between border-b border-slate-200 bg-[#0D2B3E] px-4 py-2.5 text-white shrink-0">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0F5132] text-sm font-extrabold">
+          <header className="flex md:hidden items-center justify-between gap-2 border-b border-slate-200 bg-[#0D2B3E] px-3.5 pb-2.5 pt-safe text-white shrink-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#0F5132] text-sm font-extrabold">
                 Z
               </div>
-              <span className="text-base font-extrabold tracking-tight">Zapei</span>
+              <span className="truncate text-base font-extrabold tracking-tight">Zapei</span>
             </div>
-            <span className="font-mono text-[11px] text-emerald-200 tabular-nums">
+            <span className="shrink-0 font-mono text-[11px] text-emerald-200 tabular-nums">
               {profile.phone}
             </span>
           </header>
@@ -1145,15 +1160,15 @@ export default function App() {
 
         {/* Toast Notification */}
         {toastMessage && (
-          <div className="fixed right-4 top-4 z-50 max-w-sm rounded-xl border border-emerald-200 bg-[#0F5132] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
+          <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:max-w-sm rounded-xl border border-emerald-200 bg-[#0F5132] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
             {toastMessage}
           </div>
         )}
 
         {/* Active Tab Viewport */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
           {activeTab === 'chats' && (
-            <div className="flex h-full">
+            <div className="flex h-full min-h-0 w-full overflow-hidden">
               {/* Chat List Sidebar */}
               <section
                 className={`w-full md:w-80 lg:w-96 shrink-0 flex-col border-r border-slate-200 bg-white ${
@@ -1183,7 +1198,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto divide-y divide-slate-100 pb-20 md:pb-2">
+                <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 pb-safe-nav md:pb-2">
                   {filteredChats.length === 0 ? (
                     <div className="p-6 text-center">
                       <MessageSquare className="mx-auto h-9 w-9 text-slate-300" />
@@ -1384,7 +1399,34 @@ export default function App() {
             <ContactsView
               currentUserUid={profile.uid}
               contacts={contacts}
+              directoryUsers={directoryUsers}
               onLookupPhone={lookupRegisteredUserByPhone}
+              onOpenDirectoryChat={(person) => {
+                void openChatWithPeer({
+                  uid: person.uid,
+                  name: person.displayName,
+                  initials: person.initials,
+                  avatarBg: person.avatarColor,
+                  role: person.role,
+                  hasStorefront: person.hasStorefront,
+                  storefrontName: person.storefrontName,
+                  deliveryPolicyLabel: person.deliveryPolicyLabel,
+                });
+              }}
+              onOpenDirectoryStorefront={(person) => {
+                void openStorefrontByUid(person.uid);
+              }}
+              onStartDirectoryCall={(person, type) => {
+                void handleStartCall(
+                  {
+                    uid: person.uid,
+                    name: person.displayName,
+                    initials: person.initials,
+                    avatarBg: person.avatarColor,
+                  },
+                  type
+                );
+              }}
               onSaveContact={(name, phone) =>
                 saveRealContactToPhonebook({ ownerId: profile.uid, name, phone })
               }
@@ -1600,7 +1642,7 @@ export default function App() {
 
         {/* Mobile Bottom Navigation Bar */}
         {!mobileInChat && (
-          <nav className="fixed bottom-0 left-0 right-0 z-30 flex md:hidden items-center justify-around border-t border-slate-200 bg-white px-1 py-1.5 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
+          <nav className="fixed bottom-0 left-0 right-0 z-30 flex md:hidden w-full max-w-full items-center justify-around border-t border-slate-200 bg-white px-1 pt-1.5 pb-safe shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
@@ -1609,12 +1651,12 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`flex min-h-[48px] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-[11px] font-semibold transition ${
+                  className={`flex min-h-[46px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[11px] font-semibold transition ${
                     active ? 'text-[#0F5132]' : 'text-slate-500'
                   }`}
                 >
-                  <Icon className="h-5 w-5" />
-                  <span className="truncate">{item.label}</span>
+                  <Icon className="h-5 w-5 shrink-0" />
+                  <span className="w-full truncate text-center">{item.label}</span>
                 </button>
               );
             })}

@@ -129,6 +129,29 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPublicDirectoryEntry(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'displayNameLower', 'initials', 'role', 'hasStorefront', 'isDiscoverable', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'displayNameLower', 'initials', 'statusMessage',
+          'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
+          'deliveryPolicyLabel', 'isDiscoverable', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.displayNameLower is string && data.displayNameLower.size() >= 1 && data.displayNameLower.size() <= 80
+        && data.initials is string && data.initials.size() >= 1 && data.initials.size() <= 4
+        && (!('statusMessage' in data) || (data.statusMessage is string && data.statusMessage.size() <= 160))
+        && (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 20))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 150000))
+        && data.role in ['normal', 'reseller', 'manufacturer']
+        && data.hasStorefront is bool
+        && (!('storefrontName' in data) || (data.storefrontName is string && data.storefrontName.size() <= 80))
+        && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && data.isDiscoverable is bool
+        && data.updatedAt is timestamp;
+    }
+
     function isValidConnection(data) {
       return data.keys().hasAll(['resellerId', 'factoryId', 'factoryName', 'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
@@ -411,6 +434,26 @@ service cloud.firestore {
           'deliveryPolicyPickup', 'deliveryPolicyLabel', 'updatedAt'
         ]);
       allow delete: if isVerified() && isValidId(phoneHash) && existing().ownerId == request.auth.uid;
+    }
+
+    // 2b. PII-Free Public Directory (Search Zapei users by name or storefront; ZERO phones/emails)
+    match /public_directory/{userId} {
+      allow get: if isSignedIn() && isValidId(userId)
+        && (userId == request.auth.uid || existing().isDiscoverable == true);
+      allow list: if isSignedIn() && existing().isDiscoverable == true;
+      allow create: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidPublicDirectoryEntry(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidPublicDirectoryEntry(incoming())
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'displayNameLower', 'initials', 'statusMessage',
+          'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
+          'deliveryPolicyLabel', 'isDiscoverable', 'updatedAt'
+        ]);
+      allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
     }
 
     // 3. Reseller-to-Factory Connections

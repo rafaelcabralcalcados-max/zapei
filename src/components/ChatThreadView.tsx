@@ -294,27 +294,27 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   };
 
   return (
-    <div className="flex h-full flex-col bg-[#F1F5F9]">
+    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#F1F5F9]">
       {/* Top Chat Header */}
-      <header className="flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2.5 sm:px-4">
-        <div className="flex min-w-0 items-center gap-2.5">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-2.5 pb-2.5 pt-safe sm:px-4 md:py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 md:hidden"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 md:hidden"
               aria-label="Voltar para conversas"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
           <div
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
             style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
           >
             {peer.initials}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
               {peer.name}
             </h2>
@@ -326,30 +326,31 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
           {peer.hasStorefront && (
             <button
               type="button"
               onClick={onOpenStorefront}
-              className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0F5132] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#146c43]"
+              title="Abrir vitrine"
+              className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0F5132] px-2.5 text-xs font-semibold text-white transition hover:bg-[#146c43] sm:h-10 sm:px-3"
             >
-              <Store className="h-4 w-4" />
-              <span>Ver Vitrine</span>
+              <Store className="h-4 w-4 shrink-0" />
+              <span className="hidden sm:inline">Vitrine</span>
             </button>
           )}
           <button
             type="button"
             onClick={() => onStartCall('audio')}
-            title="Ligação de voz (WebRTC)"
-            className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0F5132]"
+            title="Ligação de voz"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0F5132]"
           >
             <Phone className="h-4 w-4" />
           </button>
           <button
             type="button"
             onClick={() => onStartCall('video')}
-            title="Chamada de vídeo (WebRTC)"
-            className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0D2B3E]"
+            title="Chamada de vídeo"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0D2B3E]"
           >
             <Video className="h-4 w-4" />
           </button>
@@ -357,7 +358,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       </header>
 
       {/* Messages Stream */}
-      <div className="flex-1 overflow-y-auto px-3 py-4 sm:px-5 space-y-2.5">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-3.5 sm:px-5 space-y-2.5">
         {messages.length === 0 ? (
           <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm">
             <p className="text-sm font-semibold text-slate-800">
@@ -376,7 +377,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 shadow-sm sm:max-w-[70%] ${
+                  className={`max-w-[85%] min-w-0 overflow-hidden break-words rounded-2xl px-3.5 py-2.5 shadow-sm sm:max-w-[70%] ${
                     isMine
                       ? 'rounded-br-sm bg-[#0F5132] text-white'
                       : 'rounded-bl-sm border border-slate-200 bg-white text-slate-800'
@@ -492,7 +493,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       )}
 
       {/* Composer */}
-      <footer className="border-t border-slate-200 bg-white px-3 py-2.5 sm:px-4">
+      <footer className="shrink-0 border-t border-slate-200 bg-white px-2.5 pt-2.5 pb-safe sm:px-4">
         <input
           ref={fileInputRef}
           type="file"
@@ -502,18 +503,18 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         />
 
         {recording ? (
-          <div className="flex items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-3 py-2">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-red-600 animate-pulse" />
-              <span className="text-xs font-semibold text-red-700">
-                Gravando áudio real...
+          <div className="flex items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-600 animate-pulse" />
+              <span className="truncate text-xs font-semibold text-red-700">
+                Gravando...
               </span>
-              <span className="font-mono text-xs font-bold text-red-800 tabular-nums">
+              <span className="shrink-0 font-mono text-xs font-bold text-red-800 tabular-nums">
                 {Math.floor(recordSeconds / 60)}:
                 {(recordSeconds % 60).toString().padStart(2, '0')}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
                 onClick={cancelRecording}
@@ -525,7 +526,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={() => void stopAndSendRecording()}
-                className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0F5132] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#146c43]"
+                className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0F5132] px-3 py-2 text-xs font-semibold text-white hover:bg-[#146c43]"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
                 Enviar
@@ -533,7 +534,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmitText} className="flex items-center gap-2">
+          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-2">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -549,7 +550,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Digite uma mensagem..."
-              className="h-11 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none"
+              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none"
             />
 
             {draft.trim() ? (
@@ -565,7 +566,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={() => void startRealRecording()}
-                title="Gravar mensagem de voz real"
+                title="Gravar mensagem de voz"
                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#0D2B3E] text-white transition hover:bg-[#143d57]"
                 aria-label="Gravar áudio"
               >

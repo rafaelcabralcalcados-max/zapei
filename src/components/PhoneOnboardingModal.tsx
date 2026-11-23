@@ -428,8 +428,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   // --- EDIT MODAL INSIDE SETTINGS ---
   if (mode === 'edit') {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-sm">
+        <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-bold text-slate-900">Dados do perfil</h2>
             {onClose && (
@@ -550,7 +550,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
     step === 'welcome' ? 0 : step === 'phone' ? 1 : step === 'otp' ? 2 : 3;
 
   return (
-    <div className="relative min-h-screen bg-white md:bg-[#EFF3F6]">
+    <div className="relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-white md:bg-[#EFF3F6]">
       {/* Invisible Firebase Phone Auth reCAPTCHA Mount Point */}
       <div id="zapei-recaptcha-container" />
 
@@ -565,7 +565,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       </div>
 
       {/* Main Content Container */}
-      <div className="mx-auto flex min-h-screen md:min-h-0 max-w-5xl flex-col justify-center md:-mt-32 md:px-6 md:pb-12">
+      <div className="mx-auto flex min-h-[100dvh] md:min-h-0 max-w-5xl flex-col justify-center md:-mt-32 md:px-6 md:pb-12">
         <div className="flex flex-1 md:flex-none flex-col md:flex-row overflow-hidden bg-white md:rounded-2xl md:border md:border-slate-200 md:shadow-lg">
           {/* Desktop Left Column — WhatsApp Web Clean Guidance */}
           <div className="hidden md:flex md:w-5/12 flex-col justify-between border-r border-slate-100 bg-[#F8FAFC] p-9">
@@ -629,7 +629,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
           </div>
 
           {/* Right Column (Full Screen on Mobile) — Authentic WhatsApp Screens */}
-          <div className="flex flex-1 flex-col justify-between px-6 py-8 sm:px-10 md:py-10 min-h-screen md:min-h-[540px]">
+          <div className="flex flex-1 flex-col justify-between px-4 sm:px-8 pt-safe pb-safe md:py-10 min-h-[100dvh] md:min-h-[540px]">
             {/* STEP 1: WELCOME (Identical to WhatsApp Welcome Screen) */}
             {step === 'welcome' && (
               <>
@@ -841,7 +841,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   </p>
 
                   {/* 6-Digit WhatsApp Split OTP Boxes (- - -   - - -) */}
-                  <div className="mt-8 flex items-center justify-center gap-2">
+                  <div className="mt-8 flex items-center justify-center gap-1.5 sm:gap-2">
                     {otpDigits.map((digit, idx) => (
                       <React.Fragment key={idx}>
                         <input
@@ -856,10 +856,10 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                           disabled={busy}
                           onChange={(e) => handleOtpDigitChange(idx, e.target.value)}
                           onKeyDown={(e) => handleOtpKeyDown(idx, e)}
-                          className="h-12 w-10 border-b-2 border-[#0F5132] bg-slate-50/70 text-center font-mono text-xl font-bold text-slate-900 tabular-nums focus:bg-emerald-50/40 focus:outline-none disabled:opacity-50"
+                          className="h-11 w-9 sm:h-12 sm:w-10 border-b-2 border-[#0F5132] bg-slate-50/70 text-center font-mono text-lg sm:text-xl font-bold text-slate-900 tabular-nums focus:bg-emerald-50/40 focus:outline-none disabled:opacity-50"
                         />
                         {idx === 2 && (
-                          <span className="px-1 font-mono text-lg text-slate-400">–</span>
+                          <span className="px-0.5 sm:px-1 font-mono text-base sm:text-lg text-slate-400">–</span>
                         )}
                       </React.Fragment>
                     ))}

@@ -43,10 +43,10 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-sm">
       <form
         onSubmit={handleConfirm}
-        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-[#0F5132]">
@@ -152,8 +152,8 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3 sm:p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900">
             Assinatura Comercial Zapei

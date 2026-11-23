@@ -87,6 +87,27 @@
       },
       "required": ["ownerId", "displayName", "initials", "role", "hasStorefront", "updatedAt"]
     },
+    "PublicDirectoryEntry": {
+      "title": "PublicDirectoryEntry",
+      "description": "PII-free public directory card allowing authenticated Zapei users to find each other by name or storefront.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "displayNameLower": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "initials": { "type": "string", "minLength": 1, "maxLength": 4 },
+        "statusMessage": { "type": "string", "maxLength": 160 },
+        "avatarColor": { "type": "string", "maxLength": 20 },
+        "avatarUrl": { "type": "string", "maxLength": 150000 },
+        "role": { "type": "string", "enum": ["normal", "reseller", "manufacturer"] },
+        "hasStorefront": { "type": "boolean" },
+        "storefrontName": { "type": "string", "maxLength": 80 },
+        "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "isDiscoverable": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "displayNameLower", "initials", "role", "hasStorefront", "isDiscoverable", "updatedAt"]
+    },
     "Connection": {
       "title": "Connection",
       "description": "Real reseller-to-manufacturer commercial partnership with category margins and photo review rules.",
@@ -298,6 +319,10 @@
     "/phone_index/{phoneHash}": {
       "schema": { "$ref": "#/entities/PhoneIndex" },
       "description": "Hashed phone lookup documents for real-time Zapei contact discovery."
+    },
+    "/public_directory/{userId}": {
+      "schema": { "$ref": "#/entities/PublicDirectoryEntry" },
+      "description": "PII-free public directory for searching Zapei users by name or storefront."
     },
     "/connections/{connectionId}": {
       "schema": { "$ref": "#/entities/Connection" },

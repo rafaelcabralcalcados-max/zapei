@@ -15,7 +15,7 @@ import {
   Video,
 } from 'lucide-react';
 import type { Contact } from '../types/zapei';
-import type { PhoneLookupResult } from '../lib/firebase';
+import type { PhoneLookupResult, PublicDirectoryUser } from '../lib/firebase';
 import {
   formatPhoneDisplay,
   normalizePhoneDigits,
@@ -25,9 +25,18 @@ import {
   supportsNativeContactPicker,
 } from '../lib/phoneUtils';
 
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 interface ContactsViewProps {
   currentUserUid: string;
   contacts: Contact[];
+  directoryUsers: PublicDirectoryUser[];
   onLookupPhone: (rawPhone: string) => Promise<PhoneLookupResult | null>;
   onSaveContact: (name: string, phone: string) => Promise<{ matched: boolean; matchedName?: string }>;
   onImportBatchContacts: (
@@ -39,6 +48,9 @@ interface ContactsViewProps {
   onOpenChat: (contact: Contact) => void;
   onOpenStorefront: (contact: Contact) => void;
   onStartCall: (contact: Contact, type: 'audio' | 'video') => void;
+  onOpenDirectoryChat: (user: PublicDirectoryUser) => void;
+  onOpenDirectoryStorefront: (user: PublicDirectoryUser) => void;
+  onStartDirectoryCall: (user: PublicDirectoryUser, type: 'audio' | 'video') => void;
   onOpenDirectFoundChat: (found: PhoneLookupResult, rawPhone: string) => Promise<void>;
   onStartDirectFoundCall: (
     found: PhoneLookupResult,
@@ -50,6 +62,7 @@ interface ContactsViewProps {
 export const ContactsView: React.FC<ContactsViewProps> = ({
   currentUserUid,
   contacts,
+  directoryUsers,
   onLookupPhone,
   onSaveContact,
   onImportBatchContacts,
@@ -59,6 +72,9 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onOpenChat,
   onOpenStorefront,
   onStartCall,
+  onOpenDirectoryChat,
+  onOpenDirectoryStorefront,
+  onStartDirectoryCall,
   onOpenDirectFoundChat,
   onStartDirectFoundCall,
 }) => {
@@ -114,18 +130,34 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     };
   }, [search, looksLikePhoneQuery, currentUserUid, onLookupPhone]);
 
+  const normalizedQuery = normalizeSearchText(search);
+
   const filtered = contacts.filter((c) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
+    if (!normalizedQuery) return true;
     return (
-      c.name.toLowerCase().includes(q) ||
-      c.phone.toLowerCase().includes(q) ||
-      (c.storefrontName || '').toLowerCase().includes(q)
+      normalizeSearchText(c.name).includes(normalizedQuery) ||
+      c.phone.toLowerCase().includes(normalizedQuery) ||
+      normalizeSearchText(c.storefrontName || '').includes(normalizedQuery)
     );
   });
 
   const onZapeiContacts = filtered.filter((c) => c.onZapei);
   const inviteContacts = filtered.filter((c) => !c.onZapei);
+
+  const savedMatchedUids = new Set(
+    contacts.filter((c) => c.onZapei && c.matchedUid).map((c) => c.matchedUid as string)
+  );
+
+  const filteredDirectory = directoryUsers.filter((u) => {
+    if (u.uid === currentUserUid) return false;
+    if (savedMatchedUids.has(u.uid)) return false;
+    if (!normalizedQuery) return true;
+    return (
+      normalizeSearchText(u.displayName).includes(normalizedQuery) ||
+      normalizeSearchText(u.storefrontName || '').includes(normalizedQuery) ||
+      normalizeSearchText(u.statusMessage || '').includes(normalizedQuery)
+    );
+  });
 
   const handleNativeDeviceSync = async () => {
     setBusy(true);
@@ -218,7 +250,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-5 pb-24 md:pb-8">
+    <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8">
       <input
         ref={vcfInputRef}
         type="file"
@@ -336,14 +368,14 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           </form>
         )}
 
-        {/* Search Input with Instant Phone Lookup */}
+        {/* Search Input with Instant Name & Phone Search */}
         <div className="relative mt-4">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar contato ou digitar número com DDD (ex: 37 99999-9999)..."
+            placeholder="Buscar pessoa pelo nome, vitrine ou número..."
             className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0F5132] focus:bg-white focus:outline-none"
           />
           {liveLookupBusy && (
@@ -451,18 +483,112 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         )}
       </div>
 
-      {/* Empty State */}
-      {contacts.length === 0 ? (
+      {/* Live Directory: Pessoas no Zapei (Search by Name, Zero Import Required) */}
+      {filteredDirectory.length > 0 && (
+        <section className="mt-5">
+          <div className="mb-2.5 flex items-center justify-between px-1">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Pessoas no Zapei ({filteredDirectory.length})
+            </h2>
+          </div>
+
+          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            {filteredDirectory.map((person) => (
+              <div
+                key={person.uid}
+                className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  {person.avatarUrl ? (
+                    <img
+                      src={person.avatarUrl}
+                      alt={person.displayName}
+                      className="h-11 w-11 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                      style={{ backgroundColor: person.avatarColor || '#0F5132' }}
+                    >
+                      {person.initials}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-bold text-slate-900">
+                        {person.displayName}
+                      </span>
+                      {person.hasStorefront && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0F5132]">
+                          <Store className="h-3 w-3" />
+                          Vitrine Ativa
+                        </span>
+                      )}
+                    </div>
+                    <p className="truncate text-xs text-slate-500">
+                      {person.hasStorefront && person.storefrontName
+                        ? person.storefrontName
+                        : person.statusMessage || 'Disponível no Zapei'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {person.hasStorefront && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenDirectoryStorefront(person)}
+                      className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0F5132] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#146c43]"
+                    >
+                      <Store className="h-3.5 w-3.5" />
+                      Ver Vitrine
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onOpenDirectoryChat(person)}
+                    className="flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Conversar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onStartDirectoryCall(person, 'audio')}
+                    title="Ligação de voz"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0F5132]"
+                  >
+                    <Phone className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onStartDirectoryCall(person, 'video')}
+                    title="Chamada de vídeo"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0D2B3E]"
+                  >
+                    <Video className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Empty State only when neither saved contacts nor directory matches */}
+      {contacts.length === 0 && filteredDirectory.length === 0 ? (
         <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
           <Smartphone className="mx-auto h-10 w-10 text-slate-400" />
           <h2 className="mt-3 text-base font-bold text-slate-900">
-            Encontre seus contatos no Zapei
+            {normalizedQuery
+              ? `Nenhuma pessoa encontrada para "${search.trim()}"`
+              : 'Encontre pessoas no Zapei pelo nome'}
           </h2>
           <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-            Digite qualquer <strong>número com DDD</strong> na barra de busca acima para achar quem já tem o Zapei e começar a conversar ou ligar na hora — sem precisar importar nada. Se preferir, salve números em <strong>+ Salvar número</strong> ou importe sua agenda.
+            Assim que outra pessoa entrar no Zapei, ela aparece automaticamente aqui para você buscar pelo <strong>nome</strong> e conversar ou ligar na hora — sem precisar decorar número nem importar nada.
           </p>
         </div>
-      ) : (
+      ) : contacts.length > 0 ? (
         <div className="mt-5 space-y-6">
           {/* On Zapei Section */}
           <section>
@@ -630,7 +756,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             )}
           </section>
         </div>
-      )}
+      ) : null}
     </div>
   );
 };

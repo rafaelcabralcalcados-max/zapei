@@ -145,14 +145,14 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
   const isVideoActive = call.callType === 'video' && call.status === 'active';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#071924]/95 backdrop-blur-md p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#071924]/95 backdrop-blur-md p-3 sm:p-4">
       {/* Hidden real remote audio playback element */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-b from-[#0D2B3E] via-[#0B2231] to-[#081721] text-white shadow-2xl">
+      <div className="relative flex w-full max-w-md max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-b from-[#0D2B3E] via-[#0B2231] to-[#081721] text-white shadow-2xl">
         {/* Remote Video Full Background when video call is active */}
         {isVideoActive && (
-          <div className="relative h-80 w-full bg-black">
+          <div className="relative h-[50dvh] min-h-[200px] max-h-80 w-full shrink-0 bg-black">
             <video
               ref={remoteVideoRef}
               autoPlay
@@ -166,10 +166,10 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
                 autoPlay
                 muted
                 playsInline
-                className="absolute bottom-3 right-3 h-28 w-20 rounded-xl border border-white/25 object-cover shadow-lg"
+                className="absolute bottom-3 right-3 h-24 w-16 sm:h-28 sm:w-20 rounded-xl border border-white/25 object-cover shadow-lg"
               />
             )}
-            <div className="absolute left-3 top-3 rounded-lg bg-black/55 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm">
+            <div className="absolute left-3 top-3 max-w-[75%] truncate rounded-lg bg-black/55 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm">
               {call.peerName} · <span className="font-mono tabular-nums">{formattedTime}</span>
             </div>
           </div>

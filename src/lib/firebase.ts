@@ -355,9 +355,15 @@ export async function registerOrUpdateUserProfile(params: {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}/private/info`);
   }
 
+  const indexRole: 'normal' | 'reseller' | 'manufacturer' =
+    mode === 'manufacturer' ? 'manufacturer' : mode === 'reseller' ? 'reseller' : 'normal';
+  const resolvedStorefrontName = (
+    mode === 'manufacturer'
+      ? params.factoryName ?? params.displayName
+      : params.storefrontName ?? `Vitrine ${params.displayName}`
+  ).slice(0, 80);
+
   if (phoneHash) {
-    const indexRole: 'normal' | 'reseller' | 'manufacturer' =
-      mode === 'manufacturer' ? 'manufacturer' : mode === 'reseller' ? 'reseller' : 'normal';
     const indexRef = doc(db, 'phone_index', phoneHash);
     try {
       await setDoc(indexRef, {
@@ -368,11 +374,7 @@ export async function registerOrUpdateUserProfile(params: {
         avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
         role: indexRole,
         hasStorefront,
-        storefrontName: (
-          mode === 'manufacturer'
-            ? params.factoryName ?? params.displayName
-            : params.storefrontName ?? `Vitrine ${params.displayName}`
-        ).slice(0, 80),
+        storefrontName: resolvedStorefrontName,
         deliveryPolicyType: policy.type,
         deliveryPolicyValue: policy.value,
         deliveryPolicyPickup: policy.allowCounterPickup,
@@ -382,6 +384,26 @@ export async function registerOrUpdateUserProfile(params: {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `phone_index/${phoneHash}`);
     }
+  }
+
+  try {
+    await setDoc(doc(db, 'public_directory', params.uid), {
+      uid: params.uid,
+      displayName: params.displayName.slice(0, 80),
+      displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
+      initials,
+      statusMessage: (params.statusMessage ?? 'Disponível no Zapei').slice(0, 160),
+      avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+      avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+      role: indexRole,
+      hasStorefront,
+      storefrontName: resolvedStorefrontName,
+      deliveryPolicyLabel: policy.label.slice(0, 160),
+      isDiscoverable: true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `public_directory/${params.uid}`);
   }
 }
 
@@ -469,7 +491,91 @@ export function subscribeUserProfile(
   };
 }
 
-// --- REAL PHONEBOOK CONTACTS & REAL PHONE HASH DISCOVERY ---
+// --- REAL PHONEBOOK CONTACTS, NAME DIRECTORY & PHONE HASH DISCOVERY ---
+
+export interface PublicDirectoryUser {
+  uid: string;
+  displayName: string;
+  initials: string;
+  statusMessage: string;
+  avatarColor: string;
+  avatarUrl?: string;
+  role: 'normal' | 'reseller' | 'manufacturer';
+  hasStorefront: boolean;
+  storefrontName: string;
+  deliveryPolicyLabel: string;
+}
+
+export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<void> {
+  if (!profile.uid || !profile.name.trim()) return;
+  const role: 'normal' | 'reseller' | 'manufacturer' =
+    profile.commercialMode === 'manufacturer'
+      ? 'manufacturer'
+      : profile.commercialMode === 'reseller'
+        ? 'reseller'
+        : 'normal';
+  const storefrontName = (
+    profile.commercialMode === 'manufacturer'
+      ? profile.factoryName || profile.name
+      : profile.storefrontName || `Vitrine ${profile.name}`
+  ).slice(0, 80);
+
+  try {
+    await setDoc(doc(db, 'public_directory', profile.uid), {
+      uid: profile.uid,
+      displayName: profile.name.slice(0, 80),
+      displayNameLower: profile.name.trim().toLowerCase().slice(0, 80),
+      initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
+      statusMessage: (profile.statusMessage || 'Disponível no Zapei').slice(0, 160),
+      avatarColor: (profile.avatarBg || '#0F5132').slice(0, 20),
+      avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
+      role,
+      hasStorefront: Boolean(profile.hasStorefront),
+      storefrontName,
+      deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
+      isDiscoverable: true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `public_directory/${profile.uid}`);
+  }
+}
+
+export function subscribePublicDirectory(
+  myUid: string,
+  callback: (users: PublicDirectoryUser[]) => void
+): () => void {
+  const q = query(
+    collection(db, 'public_directory'),
+    where('isDiscoverable', '==', true)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: PublicDirectoryUser[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          const displayName = String(d.displayName || '');
+          return {
+            uid: String(d.uid || docSnap.id),
+            displayName,
+            initials: String(d.initials || getInitials(displayName || 'ZP')),
+            statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
+            avatarColor: String(d.avatarColor || '#0F5132'),
+            avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
+            role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
+            hasStorefront: Boolean(d.hasStorefront),
+            storefrontName: String(d.storefrontName || ''),
+            deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
+          };
+        })
+        .filter((u) => u.uid !== myUid && u.displayName.length > 0)
+        .sort((a, b) => a.displayName.localeCompare(b.displayName, 'pt-BR'));
+      callback(list);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, 'public_directory')
+  );
+}
 
 export interface PhoneLookupResult {
   uid: string;

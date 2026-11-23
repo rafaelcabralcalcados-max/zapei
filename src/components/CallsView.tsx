@@ -37,7 +37,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
   onCallBackPeer,
 }) => {
   return (
-    <div className="mx-auto max-w-4xl px-4 py-5 pb-24 md:pb-8 space-y-5">
+    <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
       {/* Real Closed-App / Locked-Screen Web Push Activation */}
       <BackgroundCallPushCard
         status={pushStatus}
