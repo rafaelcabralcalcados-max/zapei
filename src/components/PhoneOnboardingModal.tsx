@@ -87,11 +87,20 @@ function parseFirebasePhoneError(err: unknown): {
       : '';
 
   if (code === 'auth/operation-not-allowed') {
+    const rawMsg = err instanceof Error ? err.message.toLowerCase() : '';
+    if (rawMsg.includes('region')) {
+      return {
+        code,
+        needsConsoleSetup: true,
+        message:
+          'O envio de SMS para o Brasil (+55) ainda não foi liberado na Política de Região de SMS do Firebase.',
+      };
+    }
     return {
       code,
       needsConsoleSetup: true,
       message:
-        'O login por SMS (Telefone) ainda não foi ativado no console do Firebase deste projeto.',
+        'O Firebase bloqueou o envio de SMS real neste número. No plano gratuito (Spark), cadastre este número em "Números de telefone para teste" ou ative o plano Blaze e libere o Brasil (+55) na Política de região de SMS.',
     };
   }
   if (code === 'auth/billing-not-enabled') {

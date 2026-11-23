@@ -129,10 +129,10 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
         : 'Ligação de voz recebida...';
     }
     if (call.direction === 'outgoing' && call.status === 'ringing') {
-      return 'Chamando via áudio/vídeo em tempo real...';
+      return 'Chamando...';
     }
     if (call.status === 'connecting') {
-      return 'Estabelecendo conexão WebRTC P2P...';
+      return 'Conectando chamada...';
     }
     if (call.status === 'active') {
       return formattedTime;
@@ -156,6 +156,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
             <video
               ref={remoteVideoRef}
               autoPlay
+              muted
               playsInline
               className="h-full w-full object-cover"
             />
@@ -179,7 +180,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
           <div className="px-6 pt-8 pb-6 text-center">
             <div className="flex items-center justify-center gap-2 text-xs font-medium tracking-wide text-emerald-300/90 uppercase">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              {call.callType === 'video' ? 'Zapei Vídeo P2P' : 'Zapei Voz P2P'}
+              {call.callType === 'video' ? 'Chamada de vídeo' : 'Ligação de voz'}
             </div>
 
             {call.callType === 'video' && call.localStream && !cameraOff ? (

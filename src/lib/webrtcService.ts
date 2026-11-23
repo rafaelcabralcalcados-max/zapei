@@ -50,8 +50,19 @@ export async function startRealOutgoingCall(params: {
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
   const localStream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: params.callType === 'video',
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    video:
+      params.callType === 'video'
+        ? {
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }
+        : false,
   });
 
   const remoteStream = new MediaStream();
@@ -220,8 +231,19 @@ export async function answerRealIncomingCall(params: {
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
   const localStream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: params.callType === 'video',
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    video:
+      params.callType === 'video'
+        ? {
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }
+        : false,
   });
 
   const remoteStream = new MediaStream();

@@ -169,18 +169,29 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const startRealRecording = async () => {
     setMediaError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       recordStreamRef.current = stream;
       audioChunksRef.current = [];
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
+      const candidateMimeTypes = [
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/webm;codecs=opus',
+        'audio/webm',
+      ];
+      const mimeType =
+        typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function'
+          ? candidateMimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) ?? ''
           : '';
 
       const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 24000 })
+        ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 })
         : new MediaRecorder(stream);
 
       recorder.ondataavailable = (ev) => {
