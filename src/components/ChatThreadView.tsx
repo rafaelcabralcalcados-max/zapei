@@ -2,16 +2,21 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Camera,
+  Check,
   CheckCheck,
   ChevronDown,
+  Clock,
   Copy,
   Download,
+  Film,
   Forward,
   Image as ImageIcon,
+  Loader2,
   Mic,
   Pause,
   Phone,
   Play,
+  Radio,
   Receipt,
   Reply,
   Search,
@@ -22,11 +27,34 @@ import {
   Store,
   Trash2,
   Video,
+  WifiOff,
   X,
 } from 'lucide-react';
 import type { ChatMessage } from '../types/zapei';
 import { formatBRL } from '../lib/gradeParser';
-import { blobToDataUrl, compressImageFileToDataUrl } from '../lib/phoneUtils';
+import { getDeterministicChatId } from '../lib/firebase';
+import {
+  formatBytesPtBr,
+  getLocalMediaObjectUrlsForChat,
+  subscribeLocalMediaChanges,
+} from '../lib/localMediaCache';
+import {
+  IMAGE_JPEG_QUALITY,
+  MAX_AUDIO_SECONDS,
+  MAX_IMAGE_WIDTH,
+  MAX_VIDEO_BYTES,
+  type MediaResolveResult,
+  receiveAndDeliverTransitMedia,
+} from '../lib/mediaTransitService';
+import {
+  compressImageFileToBlob,
+  extractVideoDurationLabel,
+} from '../lib/phoneUtils';
+import {
+  classifySharedFile,
+  extractAudioDurationLabel,
+  normalizeSharedAudioMimeType,
+} from '../lib/shareTargetInbox';
 
 export interface ActiveChatPeer {
   uid: string;
@@ -56,10 +84,13 @@ interface ChatThreadViewProps {
   peer: ActiveChatPeer;
   messages: ChatMessage[];
   forwardTargets?: ForwardTarget[];
+  isOffline?: boolean;
+  pendingCount?: number;
   onBack?: () => void;
   onSendText: (text: string) => Promise<void>;
-  onSendAudio: (mediaUrl: string, durationLabel: string) => Promise<void>;
-  onSendImage: (mediaUrl: string, caption: string) => Promise<void>;
+  onSendAudio: (blob: Blob, durationLabel: string) => Promise<void>;
+  onSendImage: (blob: Blob, caption: string) => Promise<void>;
+  onSendVideo: (blob: Blob, durationLabel: string, caption: string) => Promise<void>;
   onForwardMessage?: (target: ForwardTarget, msg: ChatMessage) => Promise<void>;
   onNotify?: (message: string) => void;
   onStartCall: (type: 'audio' | 'video') => void;
@@ -88,6 +119,9 @@ function getExtensionFromMime(mime: string, fallback: string): string {
   if (lower.includes('png')) return 'png';
   if (lower.includes('webp')) return 'webp';
   if (lower.includes('gif')) return 'gif';
+  if (lower.startsWith('video/mp4')) return 'mp4';
+  if (lower.startsWith('video/quicktime')) return 'mov';
+  if (lower.startsWith('video/webm')) return 'webm';
   if (lower.includes('mp4') || lower.includes('m4a')) return 'm4a';
   if (lower.includes('webm')) return 'webm';
   if (lower.includes('ogg')) return 'ogg';
@@ -195,6 +229,10 @@ function getReplySnippet(msg: ChatMessage): string {
   if (msg.type === 'image') {
     const cleanCaption = msg.text && msg.text !== 'Foto' ? ` — ${msg.text}` : '';
     return `📷 Foto${cleanCaption}`.slice(0, 72);
+  }
+  if (msg.type === 'video') {
+    const cleanCaption = msg.text && msg.text !== 'Vídeo' ? ` — ${msg.text}` : '';
+    return `🎬 Vídeo${cleanCaption}`.slice(0, 72);
   }
   if (msg.type === 'audio') {
     return `🎤 Mensagem de voz (${msg.audioDuration || '0:00'})`;
@@ -342,10 +380,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   peer,
   messages,
   forwardTargets = [],
+  isOffline = false,
+  pendingCount = 0,
   onBack,
   onSendText,
   onSendAudio,
   onSendImage,
+  onSendVideo,
   onForwardMessage,
   onNotify,
   onStartCall,
@@ -359,10 +400,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const [mediaError, setMediaError] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
+  // WhatsApp-style local IndexedDB media map (instant zero-network playback + auto transit download)
+  const [resolvedMedia, setResolvedMedia] = useState<Record<string, MediaResolveResult>>({});
+  const [localCacheTick, setLocalCacheTick] = useState(0);
+
   // WhatsApp-style media & message interaction states
   const [lightboxMsg, setLightboxMsg] = useState<ChatMessage | null>(null);
   const [pendingPhoto, setPendingPhoto] = useState<{
-    dataUrl: string;
+    blob: Blob;
+    previewUrl: string;
+    sizeBytes: number;
+    caption: string;
+  } | null>(null);
+  const [pendingVideo, setPendingVideo] = useState<{
+    blob: Blob;
+    previewUrl: string;
+    durationLabel: string;
+    sizeBytes: number;
     caption: string;
   } | null>(null);
   const [replyingTo, setReplyingTo] = useState<{
@@ -380,9 +434,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const recordStreamRef = useRef<MediaStream | null>(null);
   const recordTimerRef = useRef<number | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  const activeChatId = useMemo(
+    () => getDeterministicChatId(myUid, peer.uid),
+    [myUid, peer.uid]
+  );
 
   const notify = (text: string) => {
     if (onNotify) {
@@ -400,12 +460,92 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setActionSheetMsg(null);
   }, [peer.uid]);
 
+  // React immediately if user deletes media in Settings -> Armazenamento e Dados
+  useEffect(() => {
+    return subscribeLocalMediaChanges(() => {
+      setLocalCacheTick((t) => t + 1);
+    });
+  }, []);
+
+  // Preload all permanently stored IndexedDB media for this chat instantaneously
+  useEffect(() => {
+    let cancelled = false;
+    void getLocalMediaObjectUrlsForChat(activeChatId).then((cachedMap) => {
+      if (cancelled) return;
+      setResolvedMedia((prev) => {
+        const next: Record<string, MediaResolveResult> = {};
+        // Preserve downloading/expired states only for items not yet in cache
+        for (const [id, val] of Object.entries(prev)) {
+          if (val.status === 'downloading') next[id] = val;
+        }
+        cachedMap.forEach((entry, msgId) => {
+          next[msgId] = {
+            status: 'ready',
+            url: entry.url,
+            sizeBytes: entry.record.sizeBytes,
+            mimeType: entry.record.mimeType,
+          };
+        });
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChatId, localCacheTick]);
+
+  // Resolve and auto-download incoming transit media into local IndexedDB (+ mark delivered + wipe cloud)
+  useEffect(() => {
+    let cancelled = false;
+    const mediaMessages = messages.filter(
+      (m) => m.type === 'image' || m.type === 'audio' || m.type === 'video'
+    );
+    if (mediaMessages.length === 0) return undefined;
+
+    for (const msg of mediaMessages) {
+      void (async () => {
+        setResolvedMedia((prev) => {
+          const cur = prev[msg.id];
+          if (cur?.status === 'ready') return prev;
+          return { ...prev, [msg.id]: { status: 'downloading' } };
+        });
+
+        const result = await receiveAndDeliverTransitMedia({
+          msg,
+          myUid,
+          peerUid: peer.uid,
+          peerName: peer.name,
+        });
+
+        if (cancelled) return;
+        setResolvedMedia((prev) => ({
+          ...prev,
+          [msg.id]: result,
+        }));
+      })();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, myUid, peer.uid, peer.name, isOffline, localCacheTick]);
+
   useEffect(() => {
     return () => {
       if (recordTimerRef.current) window.clearInterval(recordTimerRef.current);
       recordStreamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, []);
+
+  const getResolvedMediaUrl = (msg: ChatMessage): string | undefined => {
+    const resolved = resolvedMedia[msg.id];
+    if (resolved?.status === 'ready' && resolved.url) return resolved.url;
+    if (resolved?.status === 'deleted_locally' || resolved?.status === 'expired') {
+      return undefined;
+    }
+    if (msg.mediaUrl && msg.mediaUrl.startsWith('data:')) return msg.mediaUrl;
+    return undefined;
+  };
 
   const filteredForwardTargets = useMemo(() => {
     const q = forwardSearch
@@ -427,21 +567,26 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const handleSaveMedia = async (
     mediaUrl: string | undefined,
-    kind: 'image' | 'audio'
+    kind: 'image' | 'audio' | 'video'
   ) => {
     if (!mediaUrl || mediaBusy) return;
     setMediaBusy(true);
     try {
-      const { blob, filename } = await mediaUrlToBlobAndFile(
-        mediaUrl,
-        kind === 'image' ? 'zapei-foto' : 'zapei-audio',
-        kind === 'image' ? 'jpg' : 'webm'
-      );
+      const baseName =
+        kind === 'image' ? 'zapei-foto' : kind === 'video' ? 'zapei-video' : 'zapei-audio';
+      const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
+      const { blob, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       triggerBlobDownload(blob, filename);
       if (kind === 'image' && isIOSDevice()) {
         notify('Foto baixada! No iPhone, use "Compartilhar → Salvar Imagem" para guardar direto no rolo da câmera.');
       } else {
-        notify(kind === 'image' ? 'Foto salva no aparelho!' : 'Áudio salvo no aparelho!');
+        notify(
+          kind === 'image'
+            ? 'Foto salva no aparelho!'
+            : kind === 'video'
+              ? 'Vídeo salvo no aparelho!'
+              : 'Áudio salvo no aparelho!'
+        );
       }
     } catch {
       notify('Não foi possível salvar o arquivo agora.');
@@ -452,24 +597,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const handleShareMedia = async (
     mediaUrl: string | undefined,
-    kind: 'image' | 'audio',
+    kind: 'image' | 'audio' | 'video',
     caption?: string
   ) => {
     if (!mediaUrl || mediaBusy) return;
     setMediaBusy(true);
     try {
-      const { blob, file, filename } = await mediaUrlToBlobAndFile(
-        mediaUrl,
-        kind === 'image' ? 'zapei-foto' : 'zapei-audio',
-        kind === 'image' ? 'jpg' : 'webm'
-      );
+      const baseName =
+        kind === 'image' ? 'zapei-foto' : kind === 'video' ? 'zapei-video' : 'zapei-audio';
+      const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
+      const { blob, file, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       const nav = navigator as Navigator & {
         canShare?: (data?: ShareData) => boolean;
       };
       const shareData: ShareData = {
         files: [file],
         title: 'Zapei',
-        ...(caption && caption !== 'Foto' ? { text: caption } : {}),
+        ...(caption && caption !== 'Foto' && caption !== 'Vídeo' ? { text: caption } : {}),
       };
 
       if (typeof nav.share === 'function' && (!nav.canShare || nav.canShare(shareData))) {
@@ -482,13 +626,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       notify(
         kind === 'image'
           ? 'Foto baixada para você compartilhar.'
-          : 'Áudio baixado para você compartilhar.'
+          : kind === 'video'
+            ? 'Vídeo baixado para você compartilhar.'
+            : 'Áudio baixado para você compartilhar.'
       );
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         return;
       }
-      notify('Não foi possível abrir o compartilhamento neste navegador.');
+      notify('Compartilhamento indisponível neste dispositivo.');
     } finally {
       setMediaBusy(false);
     }
@@ -607,7 +753,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
       recordTimerRef.current = window.setInterval(() => {
         setRecordSeconds((s) => {
-          if (s >= 45) {
+          if (s >= MAX_AUDIO_SECONDS) {
             void stopAndSendRecording();
             return s;
           }
@@ -615,7 +761,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         });
       }, 1000);
     } catch {
-      setMediaError('Não foi possível acessar o microfone. Verifique a permissão no navegador.');
+      setMediaError('Microfone indisponível. Autorize o acesso em Configurações > Privacidade e Permissões.');
     }
   };
 
@@ -659,19 +805,37 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       setRecordSeconds(0);
 
       if (blob.size === 0) return;
+      setSending(true);
       try {
-        const dataUrl = await blobToDataUrl(blob);
-        if (dataUrl.length > 480000) {
-          setMediaError('Áudio muito longo. Grave mensagens de até 40 segundos.');
-          return;
-        }
-        await onSendAudio(dataUrl, durationLabel);
-      } catch {
-        setMediaError('Erro ao enviar mensagem de voz.');
+        await onSendAudio(blob, durationLabel);
+      } catch (err) {
+        setMediaError(
+          err instanceof Error ? err.message : 'Erro ao enviar mensagem de voz.'
+        );
+      } finally {
+        setSending(false);
       }
     };
 
     recorder.stop();
+  };
+
+  const preparePendingVideo = async (file: File) => {
+    if (file.size > MAX_VIDEO_BYTES) {
+      setMediaError(
+        `Vídeo muito grande (${formatBytesPtBr(file.size)}). O limite máximo é de 25 MB.`
+      );
+      return;
+    }
+    const durationLabel = await extractVideoDurationLabel(file);
+    const previewUrl = URL.createObjectURL(file);
+    setPendingVideo({
+      blob: file,
+      previewUrl,
+      durationLabel,
+      sizeBytes: file.size,
+      caption: '',
+    });
   };
 
   const handleImagePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -682,28 +846,97 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setShowEmojiPicker(false);
     setSending(true);
     try {
-      let dataUrl = await compressImageFileToDataUrl(file, 960, 0.78);
-      if (dataUrl.length > 480000) {
-        dataUrl = await compressImageFileToDataUrl(file, 640, 0.65);
+      const detectedKind = classifySharedFile(file);
+      if (detectedKind === 'video') {
+        await preparePendingVideo(file);
+        return;
       }
-      setPendingPhoto({ dataUrl, caption: '' });
-    } catch {
-      setMediaError('Não foi possível processar a imagem selecionada.');
+      if (detectedKind === 'audio') {
+        const mimeType = normalizeSharedAudioMimeType(file);
+        const audioBlob =
+          file.type === mimeType ? file : new Blob([await file.arrayBuffer()], { type: mimeType });
+        const durationLabel = await extractAudioDurationLabel(audioBlob);
+        await onSendAudio(audioBlob, durationLabel);
+        return;
+      }
+      const { blob } = await compressImageFileToBlob(
+        file,
+        MAX_IMAGE_WIDTH,
+        IMAGE_JPEG_QUALITY
+      );
+      const previewUrl = URL.createObjectURL(blob);
+      setPendingPhoto({
+        blob,
+        previewUrl,
+        sizeBytes: blob.size,
+        caption: '',
+      });
+    } catch (err) {
+      setMediaError(
+        err instanceof Error ? err.message : 'Não foi possível processar o arquivo selecionado.'
+      );
     } finally {
       setSending(false);
+    }
+  };
+
+  const handleVideoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setMediaError('');
+    setShowEmojiPicker(false);
+    setSending(true);
+    try {
+      await preparePendingVideo(file);
+    } catch {
+      setMediaError('Não foi possível preparar o vídeo selecionado.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const closePendingPhoto = () => {
+    if (pendingPhoto) {
+      URL.revokeObjectURL(pendingPhoto.previewUrl);
+      setPendingPhoto(null);
+    }
+  };
+
+  const closePendingVideo = () => {
+    if (pendingVideo) {
+      URL.revokeObjectURL(pendingVideo.previewUrl);
+      setPendingVideo(null);
     }
   };
 
   const handleConfirmSendPendingPhoto = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pendingPhoto || sending) return;
-    const { dataUrl, caption } = pendingPhoto;
+    const { blob, previewUrl, caption } = pendingPhoto;
     setPendingPhoto(null);
+    URL.revokeObjectURL(previewUrl);
     setSending(true);
     try {
-      await onSendImage(dataUrl, caption.trim() || 'Foto');
-    } catch {
-      setMediaError('Erro ao enviar foto.');
+      await onSendImage(blob, caption.trim() || 'Foto');
+    } catch (err) {
+      setMediaError(err instanceof Error ? err.message : 'Erro ao enviar foto.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleConfirmSendPendingVideo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingVideo || sending) return;
+    const { blob, previewUrl, durationLabel, caption } = pendingVideo;
+    setPendingVideo(null);
+    URL.revokeObjectURL(previewUrl);
+    setSending(true);
+    try {
+      await onSendVideo(blob, durationLabel, caption.trim() || '');
+    } catch (err) {
+      setMediaError(err instanceof Error ? err.message : 'Erro ao enviar vídeo.');
     } finally {
       setSending(false);
     }
@@ -781,6 +1014,24 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       </header>
 
+      {/* Discreet Offline Mode Banner inside open chat */}
+      {isOffline && (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-amber-200/80 bg-amber-50/95 px-3.5 py-2 text-xs text-amber-900">
+          <div className="flex min-w-0 items-center gap-2">
+            <WifiOff className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <span className="truncate font-medium">
+              Sem conexão — Suas mensagens serão enviadas assim que o sinal voltar
+            </span>
+          </div>
+          {pendingCount > 0 && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900">
+              <Clock className="h-3 w-3" />
+              {pendingCount}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Messages Stream */}
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
         {messages.length === 0 ? (
@@ -797,11 +1048,68 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             const isMine = msg.senderId === myUid;
             const parsedQuote =
               msg.type === 'text' ? parseQuotedMessage(msg.text) : null;
+            const resolvedState = resolvedMedia[msg.id];
+            const resolvedUrl = getResolvedMediaUrl(msg);
             const hasRealCaption =
-              msg.type === 'image' &&
+              (msg.type === 'image' || msg.type === 'video') &&
               Boolean(msg.text) &&
               msg.text.trim() !== 'Foto' &&
-              !/^[\w-]+\.(jpe?g|png|webp|heic|gif)$/i.test(msg.text.trim());
+              msg.text.trim() !== 'Vídeo' &&
+              !msg.text.trim().startsWith('Vídeo (') &&
+              !/^[\w-]+\.(jpe?g|png|webp|heic|gif|mp4|mov|webm)$/i.test(msg.text.trim());
+
+            const mediaStatusPlaceholder = (kindLabel: string) => {
+              const st = resolvedState?.status;
+              if (st === 'deleted_locally') {
+                return (
+                  <div
+                    className={`flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${
+                      isMine ? 'bg-white/10 text-emerald-100' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    <Trash2 className="h-4 w-4 shrink-0 opacity-75" />
+                    <span>{kindLabel} apagado deste aparelho</span>
+                  </div>
+                );
+              }
+              if (st === 'expired') {
+                return (
+                  <div
+                    className={`flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${
+                      isMine ? 'bg-white/10 text-emerald-100' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    <Clock className="h-4 w-4 shrink-0 opacity-75" />
+                    <span>Mídia expirada (mais de 14 dias sem receber)</span>
+                  </div>
+                );
+              }
+              if (st === 'offline_waiting') {
+                return (
+                  <div
+                    className={`flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${
+                      isMine ? 'bg-white/10 text-emerald-100' : 'bg-amber-50 text-amber-800'
+                    }`}
+                  >
+                    <WifiOff className="h-4 w-4 shrink-0" />
+                    <span>Sem sinal — {kindLabel.toLowerCase()} será baixado quando a internet voltar</span>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className={`flex items-center gap-2 rounded-xl px-3 py-3 text-xs ${
+                    isMine ? 'bg-white/10 text-emerald-50' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                  <span>
+                    Baixando {kindLabel.toLowerCase()} para o aparelho
+                    {msg.mediaSizeBytes ? ` (${formatBytesPtBr(msg.mediaSizeBytes)})` : ''}...
+                  </span>
+                </div>
+              );
+            };
 
             return (
               <div
@@ -810,7 +1118,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               >
                 <div
                   className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl shadow-sm sm:max-w-[70%] ${
-                    msg.type === 'image' ? 'p-1.5' : 'px-3.5 py-2'
+                    msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2'
                   } ${
                     isMine
                       ? 'rounded-br-sm bg-[#0F5132] text-white'
@@ -824,7 +1132,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     aria-label="Opções da mensagem"
                     title="Opções da mensagem"
                     className={`absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full transition ${
-                      msg.type === 'image'
+                      msg.type === 'image' || msg.type === 'video'
                         ? 'bg-black/50 text-white hover:bg-black/70'
                         : isMine
                           ? 'bg-[#0F5132]/85 text-emerald-100 hover:bg-white/20 hover:text-white'
@@ -836,32 +1144,38 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
                   {msg.type === 'audio' ? (
                     <div className="pr-6">
-                      <RealAudioBubble
-                        mediaUrl={msg.mediaUrl}
-                        duration={msg.audioDuration}
-                        isMine={isMine}
-                      />
+                      {resolvedUrl ? (
+                        <RealAudioBubble
+                          mediaUrl={resolvedUrl}
+                          duration={msg.audioDuration}
+                          isMine={isMine}
+                        />
+                      ) : (
+                        mediaStatusPlaceholder('Áudio')
+                      )}
                     </div>
                   ) : msg.type === 'image' ? (
                     <div className="space-y-1.5">
-                      {msg.mediaUrl && (
+                      {resolvedUrl ? (
                         <button
                           type="button"
                           onClick={() => setLightboxMsg(msg)}
                           className="block w-full overflow-hidden rounded-xl bg-black/10"
                         >
                           <img
-                            src={msg.mediaUrl}
+                            src={resolvedUrl}
                             alt={hasRealCaption ? msg.text : 'Foto enviada'}
                             className="max-h-72 w-full rounded-xl object-cover"
                           />
                         </button>
+                      ) : (
+                        <div className="pr-7">{mediaStatusPlaceholder('Foto')}</div>
                       )}
                       {hasRealCaption && (
                         <p className="px-1.5 text-sm leading-snug">{msg.text}</p>
                       )}
                       {/* Instant WhatsApp-style Save / Share / Forward buttons right on every photo */}
-                      {msg.mediaUrl && (
+                      {resolvedUrl && (
                         <div
                           className={`flex items-center gap-1 px-1 pt-0.5 ${
                             isMine ? 'border-t border-white/15' : 'border-t border-slate-100'
@@ -869,7 +1183,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         >
                           <button
                             type="button"
-                            onClick={() => void handleSaveMedia(msg.mediaUrl, 'image')}
+                            onClick={() => void handleSaveMedia(resolvedUrl, 'image')}
                             disabled={mediaBusy}
                             className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-semibold transition ${
                               isMine
@@ -884,7 +1198,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                             type="button"
                             onClick={() =>
                               void handleShareMedia(
-                                msg.mediaUrl,
+                                resolvedUrl,
                                 'image',
                                 hasRealCaption ? msg.text : undefined
                               )
@@ -909,6 +1223,90 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                                   : 'text-slate-700 hover:bg-slate-100'
                               }`}
                               title="Encaminhar foto"
+                            >
+                              <Forward className="h-3.5 w-3.5 shrink-0" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : msg.type === 'video' ? (
+                    <div className="space-y-1.5">
+                      {resolvedUrl ? (
+                        <div className="relative overflow-hidden rounded-xl bg-black">
+                          <video
+                            src={resolvedUrl}
+                            controls
+                            playsInline
+                            preload="metadata"
+                            className="max-h-72 w-full rounded-xl bg-black object-contain"
+                          />
+                          {(msg.videoDuration || msg.mediaSizeBytes) && (
+                            <div className="pointer-events-none absolute left-2 top-2 inline-flex items-center gap-1.5 rounded-md bg-black/65 px-2 py-0.5 font-mono text-[10px] font-semibold text-white">
+                              <Film className="h-3 w-3" />
+                              {msg.videoDuration && <span>{msg.videoDuration}</span>}
+                              {msg.mediaSizeBytes && (
+                                <span className="opacity-80">
+                                  {formatBytesPtBr(msg.mediaSizeBytes)}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="pr-7">{mediaStatusPlaceholder('Vídeo')}</div>
+                      )}
+                      {hasRealCaption && (
+                        <p className="px-1.5 text-sm leading-snug">{msg.text}</p>
+                      )}
+                      {resolvedUrl && (
+                        <div
+                          className={`flex items-center gap-1 px-1 pt-0.5 ${
+                            isMine ? 'border-t border-white/15' : 'border-t border-slate-100'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void handleSaveMedia(resolvedUrl, 'video')}
+                            disabled={mediaBusy}
+                            className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Download className="h-3.5 w-3.5 shrink-0" />
+                            <span>Salvar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleShareMedia(
+                                resolvedUrl,
+                                'video',
+                                hasRealCaption ? msg.text : undefined
+                              )
+                            }
+                            disabled={mediaBusy}
+                            className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Share2 className="h-3.5 w-3.5 shrink-0" />
+                            <span>Compartilhar</span>
+                          </button>
+                          {onForwardMessage && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenForward(msg)}
+                              className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                                isMine
+                                  ? 'text-emerald-50 hover:bg-white/15'
+                                  : 'text-slate-700 hover:bg-slate-100'
+                              }`}
+                              title="Encaminhar vídeo"
                             >
                               <Forward className="h-3.5 w-3.5 shrink-0" />
                             </button>
@@ -1000,11 +1398,40 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
                   <div
                     className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${
-                      msg.type === 'image' ? 'px-1.5 pb-0.5' : ''
+                      msg.type === 'image' || msg.type === 'video' ? 'px-1.5 pb-0.5' : ''
                     } ${isMine ? 'text-emerald-100/80' : 'text-slate-400'}`}
                   >
+                    {msg.viaMesh && (
+                      <span
+                        title="Entregue via rede local Mesh"
+                        className="inline-flex items-center gap-0.5 opacity-90"
+                      >
+                        <Radio className="h-3 w-3" />
+                      </span>
+                    )}
                     <span className="font-mono tabular-nums">{msg.timestamp}</span>
-                    {isMine && <CheckCheck className="h-3.5 w-3.5" />}
+                    {isMine &&
+                      (msg.deliveryStatus === 'pending' || msg.deliveryStatus === 'sending' ? (
+                        <span
+                          title="Aguardando rede"
+                          className="inline-flex items-center gap-0.5 text-amber-200"
+                        >
+                          <Clock className="h-3.5 w-3.5" />
+                          <span className="text-[9px] font-semibold">
+                            {msg.deliveryStatus === 'sending' ? 'Enviando...' : 'Aguardando rede'}
+                          </span>
+                        </span>
+                      ) : msg.mediaDelivered === false ? (
+                        <span title="Enviado — aguardando aparelho do contato baixar">
+                          <Check className="h-3.5 w-3.5 text-emerald-100/80" />
+                        </span>
+                      ) : msg.mediaDelivered === true ? (
+                        <span title="Entregue e salvo no aparelho do contato">
+                          <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
+                        </span>
+                      ) : (
+                        <CheckCheck className="h-3.5 w-3.5" />
+                      ))}
                   </div>
                 </div>
               </div>
@@ -1071,12 +1498,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
       {/* Composer */}
       <footer className="shrink-0 border-t border-slate-200 bg-white px-2 pt-2 pb-safe sm:px-4">
-        {/* Gallery photo picker */}
+        {/* Gallery photo, video & phone/WhatsApp audio picker */}
         <input
           ref={galleryInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,video/*,audio/*,.opus,.ogg,.mp3,.m4a,.aac,.wav,.amr,.3gp"
           onChange={handleImagePicked}
+          className="hidden"
+        />
+        {/* Direct video picker (up to 25 MB) */}
+        <input
+          ref={videoInputRef}
+          type="file"
+          accept="video/*"
+          onChange={handleVideoPicked}
           className="hidden"
         />
         {/* Direct mobile camera capture */}
@@ -1098,7 +1533,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               </span>
               <span className="shrink-0 font-mono text-xs font-bold text-red-800 tabular-nums">
                 {Math.floor(recordSeconds / 60)}:
-                {(recordSeconds % 60).toString().padStart(2, '0')}
+                {(recordSeconds % 60).toString().padStart(2, '0')} / 3:00
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -1121,12 +1556,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2">
+          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1 sm:gap-2">
             <button
               type="button"
               onClick={() => setShowEmojiPicker((v) => !v)}
               title="Emojis"
-              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition sm:h-11 sm:w-11 ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition sm:h-11 sm:w-11 ${
                 showEmojiPicker
                   ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
                   : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
@@ -1143,18 +1578,29 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onChange={(e) => setDraft(e.target.value)}
               onFocus={() => setShowEmojiPicker(false)}
               placeholder="Mensagem"
-              className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none sm:h-11"
+              className="h-9 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none sm:h-11"
             />
 
             <button
               type="button"
               onClick={() => galleryInputRef.current?.click()}
               disabled={sending}
-              title="Enviar foto da galeria"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
-              aria-label="Galeria de fotos"
+              title="Enviar foto, vídeo ou áudio do aparelho"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+              aria-label="Galeria de fotos e áudios"
             >
               <ImageIcon className="h-5 w-5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => videoInputRef.current?.click()}
+              disabled={sending}
+              title="Enviar vídeo (até 25 MB)"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+              aria-label="Enviar vídeo"
+            >
+              <Film className="h-5 w-5" />
             </button>
 
             {!draft.trim() && (
@@ -1163,7 +1609,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => cameraInputRef.current?.click()}
                 disabled={sending}
                 title="Tirar foto com a câmera"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
                 aria-label="Câmera"
               >
                 <Camera className="h-5 w-5" />
@@ -1174,7 +1620,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="submit"
                 disabled={sending}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Enviar mensagem"
               >
                 <Send className="h-5 w-5" />
@@ -1183,8 +1629,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={() => void startRealRecording()}
-                title="Gravar mensagem de voz"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] sm:h-11 sm:w-11"
+                disabled={sending}
+                title="Gravar mensagem de voz (até 3 min)"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Gravar áudio"
               >
                 <Mic className="h-5 w-5" />
@@ -1200,7 +1647,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           <div className="flex shrink-0 items-center justify-between px-4 pb-3 pt-safe">
             <button
               type="button"
-              onClick={() => setPendingPhoto(null)}
+              onClick={closePendingPhoto}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
               aria-label="Cancelar envio de foto"
             >
@@ -1208,14 +1655,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </button>
             <div className="text-center">
               <p className="text-sm font-bold">Enviar foto</p>
-              <p className="text-[11px] text-white/70">Para {peer.name}</p>
+              <p className="text-[11px] text-white/70">
+                Para {peer.name} · {formatBytesPtBr(pendingPhoto.sizeBytes)}
+              </p>
             </div>
             <div className="h-10 w-10" />
           </div>
 
           <div className="flex min-h-0 flex-1 items-center justify-center p-3">
             <img
-              src={pendingPhoto.dataUrl}
+              src={pendingPhoto.previewUrl}
               alt="Prévia da foto"
               className="max-h-full max-w-full rounded-xl object-contain"
             />
@@ -1248,8 +1697,67 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       )}
 
+      {/* WhatsApp-style Video Caption Preview Modal (before sending, up to 25 MB) */}
+      {pendingVideo && (
+        <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
+          <div className="flex shrink-0 items-center justify-between px-4 pb-3 pt-safe">
+            <button
+              type="button"
+              onClick={closePendingVideo}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              aria-label="Cancelar envio de vídeo"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="text-center">
+              <p className="text-sm font-bold">Enviar vídeo</p>
+              <p className="text-[11px] text-white/70">
+                Para {peer.name}
+                {pendingVideo.durationLabel ? ` · ${pendingVideo.durationLabel}` : ''} ·{' '}
+                {formatBytesPtBr(pendingVideo.sizeBytes)}
+              </p>
+            </div>
+            <div className="h-10 w-10" />
+          </div>
+
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+            <video
+              src={pendingVideo.previewUrl}
+              controls
+              playsInline
+              className="max-h-full max-w-full rounded-xl bg-black"
+            />
+          </div>
+
+          <form
+            onSubmit={handleConfirmSendPendingVideo}
+            className="flex shrink-0 items-center gap-2 border-t border-white/10 bg-black/90 px-3 pt-3 pb-safe sm:px-5"
+          >
+            <input
+              type="text"
+              value={pendingVideo.caption}
+              onChange={(e) =>
+                setPendingVideo((prev) =>
+                  prev ? { ...prev, caption: e.target.value } : null
+                )
+              }
+              placeholder="Adicione uma legenda para o vídeo..."
+              className="h-11 min-w-0 flex-1 rounded-full border border-white/20 bg-white/10 px-4 text-sm text-white placeholder:text-white/55 focus:border-emerald-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={sending}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0F5132] text-white shadow-lg transition hover:bg-[#146c43] active:scale-95"
+              aria-label="Confirmar envio do vídeo"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          </form>
+        </div>
+      )}
+
       {/* Full-Screen WhatsApp-Style Photo Viewer (Save + Share + Forward) */}
-      {lightboxMsg && lightboxMsg.mediaUrl && (
+      {lightboxMsg && getResolvedMediaUrl(lightboxMsg) && (
         <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
           {/* Viewer Top Bar */}
           <div className="flex shrink-0 items-center justify-between gap-2 bg-gradient-to-b from-black/85 to-transparent px-3 pb-3 pt-safe sm:px-5">
@@ -1273,7 +1781,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <div className="flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => void handleSaveMedia(lightboxMsg.mediaUrl, 'image')}
+                onClick={() =>
+                  void handleSaveMedia(getResolvedMediaUrl(lightboxMsg), 'image')
+                }
                 disabled={mediaBusy}
                 title="Salvar foto"
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
@@ -1284,7 +1794,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 type="button"
                 onClick={() =>
                   void handleShareMedia(
-                    lightboxMsg.mediaUrl,
+                    getResolvedMediaUrl(lightboxMsg),
                     'image',
                     lightboxMsg.text && lightboxMsg.text !== 'Foto'
                       ? lightboxMsg.text
@@ -1313,7 +1823,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           {/* Center Photo Canvas */}
           <div className="flex min-h-0 flex-1 items-center justify-center p-2 sm:p-6">
             <img
-              src={lightboxMsg.mediaUrl}
+              src={getResolvedMediaUrl(lightboxMsg)}
               alt={lightboxMsg.text || 'Visualização da foto'}
               className="max-h-full max-w-full object-contain"
             />
@@ -1331,7 +1841,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <div className="mx-auto grid max-w-md grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={() => void handleSaveMedia(lightboxMsg.mediaUrl, 'image')}
+                onClick={() =>
+                  void handleSaveMedia(getResolvedMediaUrl(lightboxMsg), 'image')
+                }
                 disabled={mediaBusy}
                 className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/25 active:scale-95"
               >
@@ -1342,7 +1854,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 type="button"
                 onClick={() =>
                   void handleShareMedia(
-                    lightboxMsg.mediaUrl,
+                    getResolvedMediaUrl(lightboxMsg),
                     'image',
                     lightboxMsg.text && lightboxMsg.text !== 'Foto'
                       ? lightboxMsg.text
@@ -1410,8 +1922,10 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
               {onForwardMessage &&
                 (actionSheetMsg.type === 'text' ||
-                  actionSheetMsg.type === 'image' ||
-                  actionSheetMsg.type === 'audio') && (
+                  ((actionSheetMsg.type === 'image' ||
+                    actionSheetMsg.type === 'audio' ||
+                    actionSheetMsg.type === 'video') &&
+                    Boolean(getResolvedMediaUrl(actionSheetMsg)))) && (
                   <button
                     type="button"
                     onClick={() => handleOpenForward(actionSheetMsg)}
@@ -1422,12 +1936,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   </button>
                 )}
 
-              {actionSheetMsg.type === 'image' && actionSheetMsg.mediaUrl && (
+              {actionSheetMsg.type === 'image' && getResolvedMediaUrl(actionSheetMsg) && (
                 <>
                   <button
                     type="button"
                     onClick={() => {
-                      const url = actionSheetMsg.mediaUrl;
+                      const url = getResolvedMediaUrl(actionSheetMsg);
                       setActionSheetMsg(null);
                       void handleSaveMedia(url, 'image');
                     }}
@@ -1439,7 +1953,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const url = actionSheetMsg.mediaUrl;
+                      const url = getResolvedMediaUrl(actionSheetMsg);
                       const cap = actionSheetMsg.text;
                       setActionSheetMsg(null);
                       void handleShareMedia(url, 'image', cap);
@@ -1452,12 +1966,42 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 </>
               )}
 
-              {actionSheetMsg.type === 'audio' && actionSheetMsg.mediaUrl && (
+              {actionSheetMsg.type === 'video' && getResolvedMediaUrl(actionSheetMsg) && (
                 <>
                   <button
                     type="button"
                     onClick={() => {
-                      const url = actionSheetMsg.mediaUrl;
+                      const url = getResolvedMediaUrl(actionSheetMsg);
+                      setActionSheetMsg(null);
+                      void handleSaveMedia(url, 'video');
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <span>Salvar vídeo no aparelho</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = getResolvedMediaUrl(actionSheetMsg);
+                      const cap = actionSheetMsg.text;
+                      setActionSheetMsg(null);
+                      void handleShareMedia(url, 'video', cap);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <span>Compartilhar vídeo</span>
+                  </button>
+                </>
+              )}
+
+              {actionSheetMsg.type === 'audio' && getResolvedMediaUrl(actionSheetMsg) && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = getResolvedMediaUrl(actionSheetMsg);
                       setActionSheetMsg(null);
                       void handleSaveMedia(url, 'audio');
                     }}
@@ -1469,7 +2013,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const url = actionSheetMsg.mediaUrl;
+                      const url = getResolvedMediaUrl(actionSheetMsg);
                       setActionSheetMsg(null);
                       void handleShareMedia(url, 'audio');
                     }}

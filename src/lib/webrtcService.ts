@@ -10,6 +10,12 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './firebase';
+import {
+  getCustomSoundObjectUrl,
+  hydrateCustomSounds,
+  subscribeCustomSounds,
+  type CustomSoundSlot,
+} from './customSounds';
 
 const RTC_SERVERS: RTCConfiguration = {
   iceServers: [
@@ -89,7 +95,7 @@ export async function preauthorizeMediaPermissions(): Promise<{
   ) {
     return {
       ok: false,
-      message: 'Este navegador não suporta acesso à câmera e microfone.',
+      message: 'Câmera e microfone indisponíveis neste dispositivo.',
     };
   }
   try {
@@ -100,8 +106,7 @@ export async function preauthorizeMediaPermissions(): Promise<{
     stream.getTracks().forEach((t) => t.stop());
     return {
       ok: true,
-      message:
-        'Câmera e microfone autorizados! Se o celular ainda perguntar no iPhone, mude Câmera e Microfone de "Perguntar" para "Permitir" nos Ajustes do Safari.',
+      message: 'Câmera e microfone autorizados neste aparelho.',
     };
   } catch (err) {
     // Fallback to audio-only if device has no camera
@@ -110,7 +115,7 @@ export async function preauthorizeMediaPermissions(): Promise<{
       audioStream.getTracks().forEach((t) => t.stop());
       return {
         ok: true,
-        message: 'Microfone autorizado com sucesso!',
+        message: 'Microfone autorizado neste aparelho.',
       };
     } catch {
       const denied =
@@ -119,8 +124,8 @@ export async function preauthorizeMediaPermissions(): Promise<{
       return {
         ok: false,
         message: denied
-          ? 'Permissão negada. Libere Câmera e Microfone nas permissões do site/navegador.'
-          : 'Não foi possível acessar a câmera ou microfone neste aparelho.',
+          ? 'Permissão de câmera ou microfone desativada nas configurações deste aparelho.'
+          : 'Não foi possível acessar a câmera ou o microfone neste aparelho.',
       };
     }
   }
@@ -976,11 +981,19 @@ export async function updateRealCallStatus(
 let sharedAudioCtx: AudioContext | null = null;
 let cachedRingtoneUrl: string | null = null;
 let primedRingtoneEl: HTMLAudioElement | null = null;
+let primedRingtoneSrc: string | null = null;
 let ringtoneElementPrimed = false;
 let isCurrentlyRinging = false;
 let cachedMsgChimeUrl: string | null = null;
+let cachedAudioMsgChimeUrl: string | null = null;
 let primedMsgChimeEl: HTMLAudioElement | null = null;
+let primedMsgChimeSrc: string | null = null;
 let msgChimeElementPrimed = false;
+let primedAudioMsgChimeEl: HTMLAudioElement | null = null;
+let primedAudioMsgChimeSrc: string | null = null;
+let audioMsgChimeElementPrimed = false;
+let customSoundSubscriptionActive = false;
+let activePreviewStop: (() => void) | null = null;
 let lastMsgChimeMs = 0;
 let audioCtxUnlocked = false;
 
@@ -1064,16 +1077,32 @@ function getRingtoneWavUrl(): string | null {
   }
 }
 
+function getActiveSlotSoundUrl(slot: CustomSoundSlot): string | null {
+  const customUrl = getCustomSoundObjectUrl(slot);
+  if (customUrl) return customUrl;
+  if (slot === 'call') return getRingtoneWavUrl();
+  if (slot === 'audio_message') return getAudioMessageChimeWavUrl();
+  return getMessageChimeWavUrl();
+}
+
 function getOrCreatePrimedAudioElement(): HTMLAudioElement | null {
   if (typeof window === 'undefined') return null;
-  if (primedRingtoneEl) return primedRingtoneEl;
-  const wavUrl = getRingtoneWavUrl();
-  if (!wavUrl) return null;
-  const el = new Audio(wavUrl);
-  el.loop = true;
-  el.preload = 'auto';
-  primedRingtoneEl = el;
-  return el;
+  const desiredUrl = getActiveSlotSoundUrl('call');
+  if (!desiredUrl) return null;
+  if (!primedRingtoneEl) {
+    const el = new Audio(desiredUrl);
+    el.loop = true;
+    el.preload = 'auto';
+    primedRingtoneEl = el;
+    primedRingtoneSrc = desiredUrl;
+    return el;
+  }
+  if (primedRingtoneSrc !== desiredUrl) {
+    primedRingtoneEl.src = desiredUrl;
+    primedRingtoneEl.load();
+    primedRingtoneSrc = desiredUrl;
+  }
+  return primedRingtoneEl;
 }
 
 /**
@@ -1142,23 +1171,155 @@ function getMessageChimeWavUrl(): string | null {
   }
 }
 
-function getOrCreatePrimedMessageChimeElement(): HTMLAudioElement | null {
+/**
+ * Generates a distinct, warm three-note chime WAV for incoming voice/audio messages
+ * when the user hasn't picked a custom audio-message sound from their phone.
+ */
+function getAudioMessageChimeWavUrl(): string | null {
   if (typeof window === 'undefined') return null;
-  if (primedMsgChimeEl) return primedMsgChimeEl;
-  const wavUrl = getMessageChimeWavUrl();
-  if (!wavUrl) return null;
-  const el = new Audio(wavUrl);
-  el.loop = false;
-  el.preload = 'auto';
-  primedMsgChimeEl = el;
-  return el;
+  if (cachedAudioMsgChimeUrl) return cachedAudioMsgChimeUrl;
+  try {
+    const sampleRate = 22050;
+    const durationSec = 0.5;
+    const numSamples = Math.floor(sampleRate * durationSec);
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i += 1) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+
+    for (let i = 0; i < numSamples; i += 1) {
+      const t = i / sampleRate;
+      let sample = 0;
+      if (t >= 0 && t < 0.11) {
+        const lt = t;
+        const env = Math.min(1, lt / 0.008) * Math.exp(-lt * 22);
+        sample += 0.68 * env * Math.sin(2 * Math.PI * 659.25 * lt);
+      }
+      if (t >= 0.1 && t < 0.23) {
+        const lt = t - 0.1;
+        const env = Math.min(1, lt / 0.008) * Math.exp(-lt * 20);
+        sample += 0.72 * env * Math.sin(2 * Math.PI * 880 * lt);
+      }
+      if (t >= 0.21 && t < 0.49) {
+        const lt = t - 0.21;
+        const env = Math.min(1, lt / 0.008) * Math.exp(-lt * 12);
+        sample +=
+          0.78 *
+          env *
+          (Math.sin(2 * Math.PI * 1318.51 * lt) + 0.3 * Math.sin(2 * Math.PI * 2637.02 * lt));
+      }
+      const clamped = Math.max(-1, Math.min(1, sample));
+      view.setInt16(44 + i * 2, Math.round(clamped * 32767), true);
+    }
+
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    cachedAudioMsgChimeUrl = URL.createObjectURL(blob);
+    return cachedAudioMsgChimeUrl;
+  } catch {
+    return null;
+  }
+}
+
+function getOrCreatePrimedMessageChimeElement(kind: 'text' | 'audio' = 'text'): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (kind === 'audio') {
+    const desiredUrl = getActiveSlotSoundUrl('audio_message');
+    if (!desiredUrl) return null;
+    if (!primedAudioMsgChimeEl) {
+      const el = new Audio(desiredUrl);
+      el.loop = false;
+      el.preload = 'auto';
+      primedAudioMsgChimeEl = el;
+      primedAudioMsgChimeSrc = desiredUrl;
+      return el;
+    }
+    if (primedAudioMsgChimeSrc !== desiredUrl) {
+      primedAudioMsgChimeEl.src = desiredUrl;
+      primedAudioMsgChimeEl.load();
+      primedAudioMsgChimeSrc = desiredUrl;
+    }
+    return primedAudioMsgChimeEl;
+  }
+
+  const desiredUrl = getActiveSlotSoundUrl('text_message');
+  if (!desiredUrl) return null;
+  if (!primedMsgChimeEl) {
+    const el = new Audio(desiredUrl);
+    el.loop = false;
+    el.preload = 'auto';
+    primedMsgChimeEl = el;
+    primedMsgChimeSrc = desiredUrl;
+    return el;
+  }
+  if (primedMsgChimeSrc !== desiredUrl) {
+    primedMsgChimeEl.src = desiredUrl;
+    primedMsgChimeEl.load();
+    primedMsgChimeSrc = desiredUrl;
+  }
+  return primedMsgChimeEl;
+}
+
+function syncPrimedSoundSources(): void {
+  if (typeof window === 'undefined') return;
+  if (primedRingtoneEl && !isCurrentlyRinging) {
+    const url = getActiveSlotSoundUrl('call');
+    if (url && primedRingtoneSrc !== url) {
+      primedRingtoneEl.src = url;
+      primedRingtoneEl.load();
+      primedRingtoneSrc = url;
+    }
+  }
+  if (primedMsgChimeEl) {
+    const url = getActiveSlotSoundUrl('text_message');
+    if (url && primedMsgChimeSrc !== url) {
+      primedMsgChimeEl.src = url;
+      primedMsgChimeEl.load();
+      primedMsgChimeSrc = url;
+    }
+  }
+  if (primedAudioMsgChimeEl) {
+    const url = getActiveSlotSoundUrl('audio_message');
+    if (url && primedAudioMsgChimeSrc !== url) {
+      primedAudioMsgChimeEl.src = url;
+      primedAudioMsgChimeEl.load();
+      primedAudioMsgChimeSrc = url;
+    }
+  }
+}
+
+function ensureCustomSoundsWired(): void {
+  if (typeof window === 'undefined' || customSoundSubscriptionActive) return;
+  customSoundSubscriptionActive = true;
+  subscribeCustomSounds(() => {
+    syncPrimedSoundSources();
+  });
+  void hydrateCustomSounds();
 }
 
 /**
- * Unlocks Web Audio API AND persistent HTMLAudioElements (ringtone + message chime)
+ * Unlocks Web Audio API AND persistent HTMLAudioElements (ringtone + text/audio chimes)
  * on the user's first touch/click so iOS Safari and Android Chrome play both loudly.
  */
 export function unlockCallAudio(): void {
+  ensureCustomSoundsWired();
   try {
     const ctx = getOrCreateAudioContext();
     if (ctx && ctx.state === 'suspended') {
@@ -1193,7 +1354,7 @@ export function unlockCallAudio(): void {
       }
     }
 
-    const msgEl = getOrCreatePrimedMessageChimeElement();
+    const msgEl = getOrCreatePrimedMessageChimeElement('text');
     if (msgEl && !msgChimeElementPrimed) {
       msgEl.muted = true;
       msgEl.volume = 0;
@@ -1210,17 +1371,43 @@ export function unlockCallAudio(): void {
         });
       }
     }
+
+    const audioMsgEl = getOrCreatePrimedMessageChimeElement('audio');
+    if (audioMsgEl && !audioMsgChimeElementPrimed) {
+      audioMsgEl.muted = true;
+      audioMsgEl.volume = 0;
+      const amp = audioMsgEl.play();
+      if (amp && typeof amp.then === 'function') {
+        amp.then(() => {
+          audioMsgChimeElementPrimed = true;
+          audioMsgEl.pause();
+          audioMsgEl.currentTime = 0;
+          audioMsgEl.muted = false;
+          audioMsgEl.volume = 1.0;
+        }).catch(() => {
+          // Will retry on next user tap
+        });
+      }
+    }
   } catch {
     // Non-fatal
   }
 }
 
 /**
- * Plays a crisp, loud WhatsApp-style double-note notification chime + short vibration
- * when a new text, audio, or photo message arrives.
+ * Plays the user's chosen phone sound (or default WhatsApp-style chime) + short vibration
+ * when a new text/photo/video or voice/audio message arrives.
  */
-export function playMessageNotificationSound(force = false): void {
+export function playMessageNotificationSound(
+  kindOrForce: 'text' | 'audio' | boolean = 'text',
+  forceArg = false
+): void {
   if (typeof window === 'undefined') return;
+  ensureCustomSoundsWired();
+
+  const kind: 'text' | 'audio' = kindOrForce === 'audio' ? 'audio' : 'text';
+  const force = typeof kindOrForce === 'boolean' ? kindOrForce : forceArg;
+
   const nowMs = Date.now();
   if (!force && nowMs - lastMsgChimeMs < 350) return;
   lastMsgChimeMs = nowMs;
@@ -1228,14 +1415,14 @@ export function playMessageNotificationSound(force = false): void {
   // Short crisp haptic feedback on Android
   try {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      navigator.vibrate([120, 60, 120]);
+      navigator.vibrate(kind === 'audio' ? [140, 70, 140] : [120, 60, 120]);
     }
   } catch {
     // Ignore on iOS / unsupported devices
   }
 
-  // Primary path: primed HTMLAudioElement (most reliable on mobile Safari & Android Chrome)
-  const el = getOrCreatePrimedMessageChimeElement();
+  // Primary path: primed HTMLAudioElement (plays custom phone file or built-in WAV)
+  const el = getOrCreatePrimedMessageChimeElement(kind);
   let playedHtml = false;
   if (el) {
     try {
@@ -1318,13 +1505,84 @@ export function playMessageSentSound(): void {
 /**
  * Plays the message notification chime immediately on tap so the user can test it.
  */
-export function testMessageNotificationSound(): void {
+export function testMessageNotificationSound(kind: 'text' | 'audio' = 'text'): void {
   unlockCallAudio();
-  playMessageNotificationSound(true);
+  playMessageNotificationSound(kind, true);
+}
+
+/**
+ * Stops any active sound preview started from Settings -> Sons do Celular.
+ */
+export function stopCustomSoundPreview(): void {
+  if (activePreviewStop) {
+    const stop = activePreviewStop;
+    activePreviewStop = null;
+    stop();
+  }
+}
+
+/**
+ * Plays a preview of any custom or default sound slot (up to 6s max for long ringtones)
+ * and returns a stop() function.
+ */
+export function previewCustomSoundSlot(
+  slot: CustomSoundSlot,
+  onEnded?: () => void
+): () => void {
+  stopCustomSoundPreview();
+  unlockCallAudio();
+
+  const url = getActiveSlotSoundUrl(slot);
+  if (!url) {
+    if (slot === 'call') {
+      testRingtoneSound();
+    } else {
+      testMessageNotificationSound(slot === 'audio_message' ? 'audio' : 'text');
+    }
+    onEnded?.();
+    return () => {};
+  }
+
+  let stopped = false;
+  const audio = new Audio(url);
+  audio.volume = 1.0;
+  audio.loop = false;
+
+  const maxPreviewMs = slot === 'call' ? 6000 : 4500;
+  const timer = window.setTimeout(() => {
+    stop();
+  }, maxPreviewMs);
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    window.clearTimeout(timer);
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // ignore
+    }
+    if (activePreviewStop === stop) {
+      activePreviewStop = null;
+    }
+    onEnded?.();
+  };
+
+  audio.onended = () => stop();
+  audio.onerror = () => stop();
+  activePreviewStop = stop;
+
+  void audio.play().catch(() => {
+    stop();
+  });
+
+  return stop;
 }
 
 export function installAudioUnlockListeners(): () => void {
   if (typeof window === 'undefined') return () => {};
+  ensureCustomSoundsWired();
   const handler = () => {
     unlockCallAudio();
   };
@@ -1336,14 +1594,14 @@ export function installAudioUnlockListeners(): () => void {
 }
 
 /**
- * Plays a 2-second test ringtone on user tap so the user can confirm their phone speaker rings.
+ * Plays a preview of the active call ringtone (custom phone file or default) on user tap.
  */
 export function testRingtoneSound(): void {
   unlockCallAudio();
   const stop = startRingtoneAudio();
   window.setTimeout(() => {
     stop();
-  }, 2100);
+  }, 2600);
 }
 
 /**

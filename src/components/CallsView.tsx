@@ -7,20 +7,13 @@ import {
   Video,
 } from 'lucide-react';
 import type { PublicDirectoryUser } from '../lib/firebase';
-import type { BackgroundPushStatus } from '../lib/pushService';
 import type { CallSessionRecord, Contact } from '../types/zapei';
-import { BackgroundCallPushCard } from './BackgroundCallPushCard';
-import { MediaPermissionsCard } from './MediaPermissionsCard';
 
 interface CallsViewProps {
   myUid: string;
   calls: CallSessionRecord[];
   zapeiContacts: Contact[];
   directoryUsers: PublicDirectoryUser[];
-  pushStatus: BackgroundPushStatus;
-  pushBusy: boolean;
-  pushFeedback: string;
-  onEnableBackgroundPush: () => Promise<void>;
   onStartCallWithPeer: (
     peer: {
       uid: string;
@@ -38,10 +31,6 @@ export const CallsView: React.FC<CallsViewProps> = ({
   calls,
   zapeiContacts,
   directoryUsers,
-  pushStatus,
-  pushBusy,
-  pushFeedback,
-  onEnableBackgroundPush,
   onStartCallWithPeer,
 }) => {
   const directoryByUid = useMemo(() => {
@@ -92,17 +81,6 @@ export const CallsView: React.FC<CallsViewProps> = ({
 
   return (
     <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
-      {/* Real Closed-App / Locked-Screen Web Push Activation */}
-      <BackgroundCallPushCard
-        status={pushStatus}
-        busy={pushBusy}
-        feedback={pushFeedback}
-        onEnable={onEnableBackgroundPush}
-      />
-
-      {/* Camera & Microphone One-Time Pre-Authorization Card */}
-      <MediaPermissionsCard />
-
       {/* Quick Real Call Strip */}
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex items-center justify-between">

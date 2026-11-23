@@ -73,16 +73,25 @@ export interface ChatMessage {
   chatId: string;
   senderId: string;
   senderName: string;
-  type: 'text' | 'audio' | 'image' | 'order_card' | 'billing_reminder';
+  type: 'text' | 'audio' | 'image' | 'video' | 'order_card' | 'billing_reminder';
   text: string;
   timestamp: string;
   mediaUrl?: string;
   audioDuration?: string;
+  videoDuration?: string;
+  mediaTransitPath?: string;
+  mediaDelivered?: boolean;
+  mediaSizeBytes?: number;
+  mediaMimeType?: string;
+  mediaExpiresAtMs?: number;
   orderId?: string;
   orderCode?: string;
   orderSummary?: string;
   orderTotal?: number;
   orderStatusLabel?: string;
+  deliveryStatus?: 'pending' | 'sending' | 'sent' | 'delivered';
+  viaMesh?: boolean;
+  hops?: number;
 }
 
 export interface CallSessionRecord {
@@ -223,6 +232,8 @@ export interface UserProfile {
   initials: string;
   phone: string;
   phoneHash: string;
+  virtualLine?: string;
+  authMethod?: 'phone' | 'cpf';
   email: string;
   statusMessage: string;
   avatarBg: string;
@@ -240,3 +251,31 @@ export interface UserProfile {
   factoryPolicy: MinimumDeliveryPolicy;
   favoriteGrades: FavoriteGrade[];
 }
+
+export interface ConnectedDevice {
+  deviceId: string;
+  ownerId: string;
+  deviceName: string;
+  platform: string;
+  primary: boolean;
+  authorizedByDeviceId?: string;
+  createdAtLabel: string;
+  lastActiveAtLabel: string;
+  createdAtMs: number;
+  lastActiveAtMs: number;
+}
+
+export interface DeviceAuthRequest {
+  id: string;
+  uid: string;
+  requestToken: string;
+  code6: string;
+  deviceId: string;
+  deviceName: string;
+  platform: string;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  approvedByDeviceId?: string;
+  expiresAtMs: number;
+  createdAtMs: number;
+}
+

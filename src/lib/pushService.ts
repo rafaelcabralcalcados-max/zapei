@@ -132,7 +132,7 @@ export async function enableRealBackgroundCallPush(
     return {
       status: 'ios_needs_install',
       message:
-        'No iPhone, instale o Zapei na Tela de Início (Compartilhar > Adicionar à Tela de Início) e abra pelo ícone para ativar notificações com tela bloqueada.',
+        'No iPhone, adicione o Zapei à Tela de Início para ativar alertas com a tela bloqueada.',
     };
   }
 
@@ -144,7 +144,7 @@ export async function enableRealBackgroundCallPush(
   ) {
     return {
       status: 'unsupported',
-      message: 'Este navegador não suporta notificações Web Push em segundo plano.',
+      message: 'Notificações em segundo plano não estão disponíveis neste dispositivo.',
     };
   }
 
@@ -153,13 +153,13 @@ export async function enableRealBackgroundCallPush(
     return {
       status: 'denied',
       message:
-        'Permissão de notificações negada. Ative as notificações nas configurações do navegador para o telefone tocar com o app fechado.',
+        'Notificações desativadas nas preferências do aparelho. Ative nas configurações do sistema quando desejar.',
     };
   }
 
   const keyRes = await fetch('/api/push/vapid-public-key');
   if (!keyRes.ok) {
-    throw new Error('Não foi possível obter a chave VAPID do servidor.');
+    throw new Error('Não foi possível sincronizar o serviço de notificações.');
   }
   const { publicKey } = (await keyRes.json()) as { publicKey: string };
 
@@ -168,13 +168,13 @@ export async function enableRealBackgroundCallPush(
 
   const ok = await postSubscriptionToServer(authUser, subscription);
   if (!ok) {
-    throw new Error('Falha ao registrar este aparelho para chamadas em segundo plano.');
+    throw new Error('Falha ao ativar notificações neste aparelho.');
   }
 
   return {
     status: 'enabled',
     message:
-      'Alertas em segundo plano ativados! Agora este aparelho receberá chamadas do Zapei mesmo com o app fechado ou tela bloqueada.',
+      'Notificações ativadas com sucesso neste aparelho.',
   };
 }
 
@@ -250,7 +250,7 @@ export async function triggerRemoteMessagePush(
     recipientId: string;
     senderName: string;
     previewText: string;
-    messageType?: 'text' | 'audio' | 'image';
+    messageType?: 'text' | 'audio' | 'image' | 'video';
   }
 ): Promise<void> {
   try {

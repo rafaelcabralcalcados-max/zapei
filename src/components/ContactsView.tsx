@@ -98,8 +98,11 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   }, [directoryUsers]);
 
   const searchDigits = search.replace(/\D/g, '');
+  const trimmedSearchUpper = search.trim().toUpperCase();
+  const looksLikeVirtualLineQuery = /^ZAP-\d{4}-\d{4}$/.test(trimmedSearchUpper);
   const looksLikePhoneQuery =
-    searchDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(search.trim());
+    looksLikeVirtualLineQuery ||
+    (searchDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(search.trim()));
 
   useEffect(() => {
     if (!looksLikePhoneQuery) {
@@ -109,21 +112,26 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       return undefined;
     }
 
-    const normalized = normalizePhoneDigits(search);
-    if (normalized.length < 10) return undefined;
+    if (!looksLikeVirtualLineQuery) {
+      const normalized = normalizePhoneDigits(search);
+      if (normalized.length < 10) return undefined;
+    }
 
     let cancelled = false;
     setLiveLookupBusy(true);
     const timer = window.setTimeout(async () => {
+      const label = looksLikeVirtualLineQuery
+        ? trimmedSearchUpper
+        : formatPhoneDisplay(search);
       try {
-        const found = await onLookupPhone(search);
+        const found = await onLookupPhone(looksLikeVirtualLineQuery ? trimmedSearchUpper : search);
         if (cancelled) return;
         setLiveLookupResult(found && found.uid !== currentUserUid ? found : null);
-        setLiveLookupCheckedPhone(formatPhoneDisplay(search));
+        setLiveLookupCheckedPhone(label);
       } catch {
         if (!cancelled) {
           setLiveLookupResult(null);
-          setLiveLookupCheckedPhone(formatPhoneDisplay(search));
+          setLiveLookupCheckedPhone(label);
         }
       } finally {
         if (!cancelled) setLiveLookupBusy(false);
@@ -134,7 +142,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [search, looksLikePhoneQuery, currentUserUid, onLookupPhone]);
+  }, [search, looksLikePhoneQuery, looksLikeVirtualLineQuery, trimmedSearchUpper, currentUserUid, onLookupPhone]);
 
   const normalizedQuery = normalizeSearchText(search);
 
@@ -145,7 +153,10 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       normalizeSearchText(c.name).includes(normalizedQuery) ||
       c.phone.toLowerCase().includes(normalizedQuery) ||
       normalizeSearchText(c.storefrontName || '').includes(normalizedQuery) ||
-      (dir ? normalizeSearchText(dir.displayName).includes(normalizedQuery) : false)
+      (dir ? normalizeSearchText(dir.displayName).includes(normalizedQuery) : false) ||
+      (dir?.virtualLine
+        ? normalizeSearchText(dir.virtualLine).includes(normalizedQuery)
+        : false)
     );
   });
 
@@ -163,7 +174,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     return (
       normalizeSearchText(u.displayName).includes(normalizedQuery) ||
       normalizeSearchText(u.storefrontName || '').includes(normalizedQuery) ||
-      normalizeSearchText(u.statusMessage || '').includes(normalizedQuery)
+      normalizeSearchText(u.statusMessage || '').includes(normalizedQuery) ||
+      normalizeSearchText(u.virtualLine || '').includes(normalizedQuery)
     );
   });
 
@@ -611,6 +623,11 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                       <span className="truncate text-sm font-bold text-slate-900">
                         {person.displayName}
                       </span>
+                      {person.virtualLine && (
+                        <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
+                          {person.virtualLine}
+                        </span>
+                      )}
                       {person.hasStorefront && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0F5132]">
                           <Store className="h-3 w-3" />

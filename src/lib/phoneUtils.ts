@@ -187,6 +187,109 @@ export async function compressImageFileToDataUrl(
 }
 
 /**
+ * Compresses an uploaded image File to JPEG Blob (max width/dimension 1280px, quality 0.8)
+ * for WhatsApp-style local IndexedDB storage + Firebase Storage transit delivery.
+ */
+export async function compressImageFileToBlob(
+  file: File,
+  maxWidth = 1280,
+  quality = 0.8
+): Promise<{ blob: Blob; width: number; height: number; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Formato de imagem inválido.'));
+    };
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+      if (width > maxWidth || height > maxWidth) {
+        if (width >= height) {
+          height = Math.max(1, Math.round((height * maxWidth) / width));
+          width = maxWidth;
+        } else {
+          width = Math.max(1, Math.round((width * maxWidth) / height));
+          height = maxWidth;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Não foi possível processar a imagem.'));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('Falha ao comprimir a imagem.'));
+            return;
+          }
+          resolve({ blob, width, height, mimeType: 'image/jpeg' });
+        },
+        'image/jpeg',
+        quality
+      );
+    };
+    img.src = objectUrl;
+  });
+}
+
+/**
+ * Converts a base64 Data URL (e.g. legacy media) into a binary Blob for IndexedDB storage.
+ */
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(',');
+  const header = parts[0] || '';
+  const body = parts[1] || '';
+  const mimeMatch = /data:([^;]+)/i.exec(header);
+  const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+  const binary = atob(body);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+/**
+ * Reads the duration of a local video File/Blob as a short label (e.g. "0:24").
+ */
+export async function extractVideoDurationLabel(file: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      video.removeAttribute('src');
+      video.load();
+    };
+    video.onloadedmetadata = () => {
+      const secs = Number.isFinite(video.duration) ? Math.max(0, Math.round(video.duration)) : 0;
+      cleanup();
+      if (secs <= 0) {
+        resolve('');
+        return;
+      }
+      const mins = Math.floor(secs / 60);
+      const rem = secs % 60;
+      resolve(`${mins}:${rem.toString().padStart(2, '0')}`);
+    };
+    video.onerror = () => {
+      cleanup();
+      resolve('');
+    };
+    video.src = url;
+  });
+}
+
+/**
  * Converts a real recorded MediaRecorder audio Blob into a base64 Data URL for real playback.
  */
 export async function blobToDataUrl(blob: Blob): Promise<string> {

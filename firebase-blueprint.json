@@ -24,6 +24,8 @@
         "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
         "subscriptionStatus": { "type": "string", "enum": ["free", "trial", "active", "expired"] },
         "trialEndsAt": { "type": "number" },
+        "virtualLine": { "type": "string", "maxLength": 24 },
+        "authMethod": { "type": "string", "enum": ["phone", "cpf"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -31,12 +33,15 @@
     },
     "UserPrivate": {
       "title": "UserPrivate",
-      "description": "Owner-only PII record with phone number, SHA-256 phone hash, email, and saved favorite grades.",
+      "description": "Owner-only PII record with phone number or virtual line, SHA-256 hashes, recovery email, and saved favorite grades.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "phone": { "type": "string", "minLength": 6, "maxLength": 32 },
         "phoneHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "cpfHash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "virtualLine": { "type": "string", "maxLength": 24 },
+        "authMethod": { "type": "string", "enum": ["phone", "cpf"] },
         "email": { "type": "string", "maxLength": 120 },
         "deliveryAddress": { "type": "string", "maxLength": 300 },
         "favoriteGrades": { "type": "array" },
@@ -68,7 +73,7 @@
     },
     "PhoneIndex": {
       "title": "PhoneIndex",
-      "description": "Hashed phone lookup document allowing exact-match discovery without exposing raw phones or list queries.",
+      "description": "Hashed phone or virtual line lookup document allowing exact-match discovery without exposing raw phones or list queries.",
       "type": "object",
       "properties": {
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -89,7 +94,7 @@
     },
     "PublicDirectoryEntry": {
       "title": "PublicDirectoryEntry",
-      "description": "PII-free public directory card allowing authenticated Zapei users to find each other by name or storefront.",
+      "description": "PII-free public directory card allowing authenticated Zapei users to find each other by name, storefront, or Virtual Line.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -103,6 +108,7 @@
         "hasStorefront": { "type": "boolean" },
         "storefrontName": { "type": "string", "maxLength": 80 },
         "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "virtualLine": { "type": "string", "maxLength": 24 },
         "isDiscoverable": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -244,7 +250,7 @@
     },
     "ChatMessage": {
       "title": "ChatMessage",
-      "description": "Real chat message supporting text, real recorded audio, uploaded photo, order card, or billing reminder.",
+      "description": "Real chat message supporting text, audio (up to 3 min), compressed photo, video (up to 25 MB), order card, or billing reminder with WhatsApp-style local-first transit delivery.",
       "type": "object",
       "properties": {
         "chatId": { "type": "string", "minLength": 1, "maxLength": 260 },
@@ -252,10 +258,16 @@
         "userB": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "senderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
-        "type": { "type": "string", "enum": ["text", "audio", "image", "order_card", "billing_reminder"] },
+        "type": { "type": "string", "enum": ["text", "audio", "image", "video", "order_card", "billing_reminder"] },
         "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
         "mediaUrl": { "type": "string", "maxLength": 500000 },
         "audioDuration": { "type": "string", "maxLength": 16 },
+        "videoDuration": { "type": "string", "maxLength": 16 },
+        "mediaTransitPath": { "type": "string", "maxLength": 260 },
+        "mediaDelivered": { "type": "boolean" },
+        "mediaSizeBytes": { "type": "number" },
+        "mediaMimeType": { "type": "string", "maxLength": 80 },
+        "mediaExpiresAtMs": { "type": "number" },
         "orderId": { "type": "string", "maxLength": 128 },
         "orderCode": { "type": "string", "maxLength": 32 },
         "orderSummary": { "type": "string", "maxLength": 240 },
@@ -301,6 +313,53 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["senderId", "receiverId", "candidate", "createdAt"]
+    },
+    "CpfRegistry": {
+      "title": "CpfRegistry",
+      "description": "LGPD-safe SHA-256 CPF registry enforcing strictly one Virtual Line per CPF.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "virtualLine": { "type": "string", "minLength": 10, "maxLength": 24 },
+        "recoveryEmail": { "type": "string", "minLength": 5, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "virtualLine", "recoveryEmail", "createdAt"]
+    },
+    "UserDevice": {
+      "title": "UserDevice",
+      "description": "Authorized device linked to a Zapei user account (primary or secondary).",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "deviceId": { "type": "string", "minLength": 6, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "deviceName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "platform": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "primary": { "type": "boolean" },
+        "authorizedByDeviceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastActiveAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "deviceId", "deviceName", "platform", "primary", "createdAt", "lastActiveAt"]
+    },
+    "DeviceAuthRequest": {
+      "title": "DeviceAuthRequest",
+      "description": "Real-time authorization request for linking a new device via QR Code or 6-digit code.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requestToken": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "code6": { "type": "string", "minLength": 6, "maxLength": 6 },
+        "deviceId": { "type": "string", "minLength": 6, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "deviceName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "platform": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "expired"] },
+        "approvedByDeviceId": { "type": "string", "maxLength": 128 },
+        "expiresAtMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "requestToken", "code6", "deviceId", "deviceName", "platform", "status", "expiresAtMs", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -310,19 +369,31 @@
     },
     "/users/{userId}/private/{privateId}": {
       "schema": { "$ref": "#/entities/UserPrivate" },
-      "description": "Owner-only PII including raw phone number and favorite grades."
+      "description": "Owner-only PII including raw phone number or virtual line, recovery email, and favorite grades."
     },
     "/users/{userId}/contacts/{contactId}": {
       "schema": { "$ref": "#/entities/UserContact" },
       "description": "Owner-only real phonebook contacts imported from device or saved manually."
     },
+    "/users/{userId}/devices/{deviceId}": {
+      "schema": { "$ref": "#/entities/UserDevice" },
+      "description": "Owner-only list of authorized devices (primary and linked secondary sessions)."
+    },
+    "/cpf_registry/{cpfHash}": {
+      "schema": { "$ref": "#/entities/CpfRegistry" },
+      "description": "SHA-256 CPF registry enforcing strictly one Virtual Line per CPF."
+    },
+    "/auth_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/DeviceAuthRequest" },
+      "description": "Pending and resolved real-time device linking requests via QR code or 6-digit code."
+    },
     "/phone_index/{phoneHash}": {
       "schema": { "$ref": "#/entities/PhoneIndex" },
-      "description": "Hashed phone lookup documents for real-time Zapei contact discovery."
+      "description": "Hashed phone or virtual line lookup documents for real-time Zapei contact discovery."
     },
     "/public_directory/{userId}": {
       "schema": { "$ref": "#/entities/PublicDirectoryEntry" },
-      "description": "PII-free public directory for searching Zapei users by name or storefront."
+      "description": "PII-free public directory for searching Zapei users by name, storefront, or Virtual Line."
     },
     "/connections/{connectionId}": {
       "schema": { "$ref": "#/entities/Connection" },

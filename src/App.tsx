@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BellRing,
   Briefcase,
+  Clock,
   Factory,
   Loader2,
   MessageSquare,
@@ -10,35 +10,44 @@ import {
   Settings,
   Store,
   Users,
+  WifiOff,
   X,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import {
+  approveDeviceAuthRequest,
+  createDeviceAuthRequest,
   createRealFactoryConnection,
   createRealMixedOrder,
   createRealProduct,
   db,
   deletePhonebookContact,
+  disconnectUserDevice,
   fetchPublicUserStorefront,
   getDeterministicChatId,
   lookupRegisteredUserByPhone,
   markContactInvited,
+  registerOrCheckCurrentDevice,
   registerOrUpdateUserProfile,
+  rejectDeviceAuthRequest,
   resyncAllPhonebookContacts,
   saveRealContactToPhonebook,
   sendRealChatMessage,
   signOutFirebase,
+  subscribeAuthRequestById,
   subscribeChatMessages,
   subscribeConnections,
   subscribeFirebaseAuth,
   subscribeOrdersAndSubOrders,
   subscribePayments,
+  subscribePendingAuthRequestsForUser,
   subscribeProducts,
   subscribePublicDirectory,
   subscribeUserCalls,
   subscribeUserChats,
   subscribeUserContacts,
+  subscribeUserDevices,
   subscribeUserProfile,
   syncPublicDirectoryEntry,
   updateRealConnection,
@@ -48,6 +57,7 @@ import {
   updateRealSubOrder,
   type PublicDirectoryUser,
 } from './lib/firebase';
+import { getOrCreateLocalDeviceInfo } from './lib/cpfAndDeviceUtils';
 import {
   answerRealIncomingCall,
   installAudioUnlockListeners,
@@ -63,18 +73,51 @@ import {
   enableRealBackgroundCallPush,
   syncExistingPushSubscription,
   triggerRemoteCallPush,
-  triggerRemoteMessagePush,
   type BackgroundPushStatus,
 } from './lib/pushService';
+import {
+  formatPacketTimeLabel,
+  installConnectivitySyncListeners,
+  isDeviceOnline,
+  packetToChatMessage,
+  sendOrQueueMessage,
+  subscribeOutbox,
+  type ZapeiMessagePacket,
+} from './lib/messageTransport';
+import { getLocalMedia } from './lib/localMediaCache';
+import {
+  IMAGE_JPEG_QUALITY,
+  MAX_IMAGE_WIDTH,
+  sendMediaWithTransitBridge,
+} from './lib/mediaTransitService';
+import {
+  clearPendingSharedPayloads,
+  getPendingSharedPayloads,
+  type StoredSharedPayload,
+} from './lib/shareTargetInbox';
+import {
+  authorizeAllZapeiResourcesOnce,
+  getPolicyConsentRecord,
+  savePolicyConsentRecord,
+  type PolicyConsentRecord,
+} from './lib/policyConsent';
 import { formatBRL, getInitials } from './lib/gradeParser';
-import { formatPhoneDisplay, normalizePhoneDigits } from './lib/phoneUtils';
+import {
+  blobToDataUrl,
+  compressImageFileToBlob,
+  dataUrlToBlob,
+  formatPhoneDisplay,
+  normalizePhoneDigits,
+} from './lib/phoneUtils';
 import type {
   CallSessionRecord,
   CategoryMargin,
   ChatMessage,
   ChatThreadSummary,
   CommercialMode,
+  ConnectedDevice,
   Contact,
+  DeviceAuthRequest,
   DualPaymentRecord,
   FactoryConnection,
   FavoriteGrade,
@@ -97,6 +140,8 @@ import {
   type ForwardTarget,
 } from './components/ChatThreadView';
 import { ContactsView } from './components/ContactsView';
+import { DeviceApprovalModal } from './components/DeviceApprovalModal';
+import { DeviceAuthorizationGate } from './components/DeviceAuthorizationGate';
 import { ManufacturerPanel } from './components/ManufacturerPanel';
 import { PhoneOnboardingModal } from './components/PhoneOnboardingModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -107,9 +152,15 @@ import {
 import { ResellerPanel } from './components/ResellerPanel';
 import { SettingsView } from './components/SettingsView';
 import {
+  ShareTargetModal,
+  type PreparedShareItem,
+  type ShareTargetRecipient,
+} from './components/ShareTargetModal';
+import {
   BillingManageModal,
   CommercialTrialModal,
 } from './components/SubscriptionModals';
+import { TermsAndPermissionsModal } from './components/TermsAndPermissionsModal';
 
 type MainTab = 'chats' | 'calls' | 'contacts' | 'commercial' | 'settings';
 
@@ -127,6 +178,21 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
+
+  // Connected Devices & Primary Session Authorization State
+  const localDeviceInfo = useMemo(() => getOrCreateLocalDeviceInfo(), []);
+  const [deviceAuthState, setDeviceAuthState] = useState<
+    'idle' | 'checking' | 'authorized' | 'pending_approval'
+  >('idle');
+  const [activeAuthRequest, setActiveAuthRequest] = useState<DeviceAuthRequest | null>(null);
+  const [regeneratingAuthReq, setRegeneratingAuthReq] = useState(false);
+  const [connectedDevices, setConnectedDevices] = useState<ConnectedDevice[]>([]);
+  const [pendingIncomingAuthRequests, setPendingIncomingAuthRequests] = useState<
+    DeviceAuthRequest[]
+  >([]);
+  const hasSeenSelfInDevicesRef = useRef(false);
+  const checkedDeviceUidRef = useRef<string | null>(null);
+  const [pendingSharedPayloads, setPendingSharedPayloads] = useState<StoredSharedPayload[]>([]);
 
   // Navigation & UI Modals
   const [activeTab, setActiveTab] = useState<MainTab>('chats');
@@ -165,9 +231,13 @@ export default function App() {
   const [pushStatus, setPushStatus] = useState<BackgroundPushStatus>('prompt');
   const [pushBusy, setPushBusy] = useState(false);
   const [pushFeedback, setPushFeedback] = useState('');
-  const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
   const lastPushSyncMsRef = useRef<number>(0);
+
+  // Terms of Responsibility, Privacy Policy & One-Time Permissions Consent State
+  const [policyConsent, setPolicyConsent] = useState<PolicyConsentRecord | null>(null);
+  const [policyCheckedUid, setPolicyCheckedUid] = useState<string | null>(null);
+  const [showPoliciesModal, setShowPoliciesModal] = useState(false);
 
   // WhatsApp-style in-app incoming message notification banner & live chime trackers
   const [incomingMsgBanner, setIncomingMsgBanner] = useState<{
@@ -207,6 +277,12 @@ export default function App() {
     []
   );
 
+  // Smart Offline Mode & Local Outbox Queue State (Phase 1 Mesh-Ready Transport)
+  const [isOnline, setIsOnline] = useState<boolean>(() => isDeviceOnline());
+  const [outboxPackets, setOutboxPackets] = useState<ZapeiMessagePacket[]>([]);
+  const authUserRef = useRef<User | null>(null);
+  authUserRef.current = authUser;
+
   // Unlock mobile browser audio on first touch/click so incoming calls & messages always ring loudly
   useEffect(() => {
     return installAudioUnlockListeners();
@@ -219,6 +295,46 @@ export default function App() {
     }, 4000);
   }, []);
 
+  // Subscribe to persistent offline outbox + automatic online/offline sync listeners
+  useEffect(() => {
+    const unsubOutbox = subscribeOutbox(setOutboxPackets);
+    const unsubConnectivity = installConnectivitySyncListeners({
+      getAuthUser: () => authUserRef.current,
+      onOnlineStatusChange: (online) => {
+        setIsOnline(online);
+      },
+      onOutboxFlushed: (sentCount) => {
+        showToast(
+          sentCount === 1
+            ? 'Sinal restaurado! 1 mensagem pendente enviada.'
+            : `Sinal restaurado! ${sentCount} mensagens pendentes enviadas.`
+        );
+      },
+    });
+    return () => {
+      unsubOutbox();
+      unsubConnectivity();
+    };
+  }, [showToast]);
+
+  // Also trigger outbox flush as soon as authUser finishes restoring session while online
+  useEffect(() => {
+    if (!authUser || !isOnline) return;
+    if (outboxPackets.some((p) => p.senderId === authUser.uid && p.deliveryStatus === 'pending')) {
+      void import('./lib/messageTransport').then(({ flushOfflineOutbox }) => {
+        void flushOfflineOutbox(authUser).then(({ sentCount }) => {
+          if (sentCount > 0) {
+            showToast(
+              sentCount === 1
+                ? '1 mensagem pendente sincronizada.'
+                : `${sentCount} mensagens pendentes sincronizadas.`
+            );
+          }
+        });
+      });
+    }
+  }, [authUser, isOnline, outboxPackets, showToast]);
+
   // 1. Subscribe to Firebase Auth
   useEffect(() => {
     const unsub = subscribeFirebaseAuth((user) => {
@@ -227,6 +343,12 @@ export default function App() {
       if (!user) {
         setProfile(null);
         setProfileLoaded(true);
+        setDeviceAuthState('idle');
+        setActiveAuthRequest(null);
+        setConnectedDevices([]);
+        setPendingIncomingAuthRequests([]);
+        hasSeenSelfInDevicesRef.current = false;
+        checkedDeviceUidRef.current = null;
         setContacts([]);
         setChats([]);
         setCalls([]);
@@ -256,9 +378,153 @@ export default function App() {
     });
   }, [authUser]);
 
+  // 2a. Connected Devices Gate: verify or register this device as Primary or request QR/6-digit approval
+  const authUid = authUser?.uid ?? null;
+  const profileUid = profile?.uid ?? null;
+
+  useEffect(() => {
+    if (!authUid || !profileUid) return undefined;
+    if (checkedDeviceUidRef.current === authUid) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let settled = false;
+    checkedDeviceUidRef.current = authUid;
+    hasSeenSelfInDevicesRef.current = false;
+    const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
+
+    // If opening app offline on an already-authorized device, unlock local cached chats immediately
+    if (!isDeviceOnline()) {
+      try {
+        if (localStorage.getItem(localAuthCacheKey) === authUid) {
+          settled = true;
+          setDeviceAuthState('authorized');
+          setActiveAuthRequest(null);
+          return undefined;
+        }
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    setDeviceAuthState('checking');
+
+    let timeoutId: number | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(new Error('device-check-timeout'));
+      }, 8000);
+    });
+
+    void Promise.race([
+      registerOrCheckCurrentDevice(authUid, localDeviceInfo),
+      timeoutPromise,
+    ])
+      .then((res) => {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+        if (cancelled) return;
+        settled = true;
+        if (res.authorized) {
+          try {
+            localStorage.setItem(localAuthCacheKey, authUid);
+          } catch {
+            // ignore
+          }
+          setActiveAuthRequest(null);
+          setDeviceAuthState('authorized');
+        } else {
+          setActiveAuthRequest(res.request);
+          setDeviceAuthState('pending_approval');
+        }
+      })
+      .catch((err) => {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+        console.error('Device registration check failed:', err);
+        if (cancelled) return;
+        settled = true;
+        // Fallback for offline/slow startup so the loading gate never freezes indefinitely
+        try {
+          if (localStorage.getItem(localAuthCacheKey) === authUid) {
+            setDeviceAuthState('authorized');
+            return;
+          }
+        } catch {
+          // ignore
+        }
+        setDeviceAuthState('authorized');
+      });
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      if (!settled) {
+        checkedDeviceUidRef.current = null;
+      }
+    };
+  }, [authUid, profileUid, localDeviceInfo]);
+
+  // 2a-ii. Real-time watch on activeAuthRequest while this new device waits for approval
+  useEffect(() => {
+    if (deviceAuthState !== 'pending_approval' || !activeAuthRequest || !authUser) {
+      return undefined;
+    }
+    const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
+    return subscribeAuthRequestById(activeAuthRequest.id, (updated) => {
+      if (!updated) return;
+      setActiveAuthRequest(updated);
+      if (updated.status === 'approved') {
+        try {
+          localStorage.setItem(localAuthCacheKey, authUser.uid);
+        } catch {
+          // ignore
+        }
+        setDeviceAuthState('authorized');
+        setActiveAuthRequest(null);
+        showToast('Acesso liberado pelo aparelho principal! Bem-vindo ao Zapei.');
+      }
+    });
+  }, [deviceAuthState, activeAuthRequest?.id, authUser, localDeviceInfo.deviceId, showToast]);
+
+  // 2a-iii. Real-time list of Connected Devices + instant remote session revocation listener
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized') return undefined;
+    const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
+
+    return subscribeUserDevices(authUser.uid, (devices) => {
+      setConnectedDevices(devices);
+      const stillPresent = devices.some((d) => d.deviceId === localDeviceInfo.deviceId);
+      if (stillPresent) {
+        hasSeenSelfInDevicesRef.current = true;
+      } else if (hasSeenSelfInDevicesRef.current) {
+        // This device was remotely disconnected from another device!
+        hasSeenSelfInDevicesRef.current = false;
+        try {
+          localStorage.removeItem(localAuthCacheKey);
+        } catch {
+          // ignore
+        }
+        showToast('Este aparelho foi desconectado remotamente.');
+        void signOutFirebase();
+      }
+    });
+  }, [authUser, deviceAuthState, localDeviceInfo.deviceId, showToast]);
+
+  // 2a-iv. Real-time listener on already-authorized devices for incoming new device linking requests
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized') return undefined;
+    return subscribePendingAuthRequestsForUser(
+      authUser.uid,
+      localDeviceInfo.deviceId,
+      (pending) => {
+        setPendingIncomingAuthRequests(pending);
+      }
+    );
+  }, [authUser, deviceAuthState, localDeviceInfo.deviceId]);
+
   // 2b. Sync existing browser/PWA Web Push subscription with Zapei server on login & app resume
   useEffect(() => {
-    if (!authUser) return undefined;
+    if (!authUser || deviceAuthState !== 'authorized') return undefined;
     const runSync = (force = false) => {
       const now = Date.now();
       if (!force && now - lastPushSyncMsRef.current < 45000) return;
@@ -290,7 +556,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
     };
-  }, [authUser]);
+  }, [authUser, deviceAuthState]);
 
   const handleEnableBackgroundPush = useCallback(async () => {
     if (!authUser) return;
@@ -314,9 +580,9 @@ export default function App() {
     }
   }, [authUser, showToast]);
 
-  // 3. Subscribe to all real Firestore collections once authenticated & registered
+  // 3. Subscribe to all real Firestore collections once authenticated, registered & device authorized
   useEffect(() => {
-    if (!authUser || !profile) return undefined;
+    if (!authUser || !profile || deviceAuthState !== 'authorized') return undefined;
     const uid = authUser.uid;
     chatsSubStartedAtRef.current = Date.now();
     seenChatSigRef.current.clear();
@@ -331,17 +597,17 @@ export default function App() {
       subscribePayments(uid, setPayments),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [authUser, profile?.uid]);
+  }, [authUser, profile?.uid, deviceAuthState]);
 
-  // 3a. Ensure every logged-in user (including accounts created earlier) is findable by name
+  // 3a. Ensure every logged-in user (including accounts created earlier) is findable by name or Virtual Line
   const syncedDirectoryKeyRef = useRef<string>('');
   useEffect(() => {
-    if (!profile?.uid || !profile.name.trim()) return;
-    const syncKey = `${profile.uid}|${profile.name}|${profile.statusMessage}|${profile.hasStorefront}|${profile.storefrontName}|${profile.avatarUrl ? profile.avatarUrl.length : 0}`;
+    if (!profile?.uid || !profile.name.trim() || deviceAuthState !== 'authorized') return;
+    const syncKey = `${profile.uid}|${profile.name}|${profile.virtualLine || ''}|${profile.statusMessage}|${profile.hasStorefront}|${profile.storefrontName}|${profile.avatarUrl ? profile.avatarUrl.length : 0}`;
     if (syncedDirectoryKeyRef.current === syncKey) return;
     syncedDirectoryKeyRef.current = syncKey;
     void syncPublicDirectoryEntry(profile).catch(() => {});
-  }, [profile]);
+  }, [profile, deviceAuthState]);
 
   // 3b. Automatically re-check saved contacts that weren't on Zapei yet (once per session)
   const autoResyncedUidRef = useRef<string | null>(null);
@@ -397,7 +663,13 @@ export default function App() {
     }
 
     if (newestIncoming) {
-      playMessageNotificationSound();
+      const lowerPreview = (newestIncoming.lastMessage || '').toLowerCase();
+      const isIncomingAudio =
+        lowerPreview.startsWith('mensagem de voz') ||
+        lowerPreview.startsWith('áudio') ||
+        lowerPreview.startsWith('audio') ||
+        newestIncoming.lastMessage.startsWith('🎤');
+      playMessageNotificationSound(isIncomingAudio ? 'audio' : 'text');
 
       const viewingSameChat =
         activeTab === 'chats' && selectedPeer?.uid === newestIncoming.otherUid;
@@ -425,17 +697,17 @@ export default function App() {
       for (const m of activeMessages) seenActiveMsgIdsRef.current.add(m.id);
       return;
     }
-    let hasNewFromPeer = false;
+    let newPeerKind: 'text' | 'audio' | null = null;
     for (const m of activeMessages) {
       if (!seenActiveMsgIdsRef.current.has(m.id)) {
         seenActiveMsgIdsRef.current.add(m.id);
         if (m.senderId !== profile.uid) {
-          hasNewFromPeer = true;
+          newPeerKind = m.type === 'audio' ? 'audio' : 'text';
         }
       }
     }
-    if (hasNewFromPeer) {
-      playMessageNotificationSound();
+    if (newPeerKind) {
+      playMessageNotificationSound(newPeerKind);
     }
   }, [activeMessages, profile, selectedPeer]);
 
@@ -668,8 +940,8 @@ export default function App() {
                 ...prev,
                 status: 'ended',
                 errorMessage: isPermission
-                  ? `Permissão de ${callType === 'video' ? 'câmera e microfone' : 'microfone'} negada ou dispositivo não encontrado. Autorize no navegador e tente novamente.`
-                  : 'Não foi possível iniciar a chamada WebRTC. Verifique sua conexão e permissões.',
+                  ? `Permissão de ${callType === 'video' ? 'câmera e microfone' : 'microfone'} desativada neste aparelho. Autorize em Configurações > Privacidade e Permissões.`
+                  : 'Não foi possível iniciar a chamada. Verifique sua conexão e tente novamente.',
               }
             : null
         );
@@ -1008,20 +1280,66 @@ export default function App() {
     [authUser, profile, contacts, openChatWithPeer, showToast]
   );
 
-  // Check URL query parameters when app is cold-launched from a closed-app push notification
+  // Check URL query parameters when app is cold-launched from a push notification or WhatsApp Share Target
+  const loadPendingSharedInbox = useCallback(async () => {
+    const items = await getPendingSharedPayloads();
+    if (items.length > 0) {
+      setPendingSharedPayloads(items);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!profile) return;
+    if (!profile || deviceAuthState !== 'authorized') return;
     const params = new URLSearchParams(window.location.search);
     const incomingCall = params.get('incomingCall') || undefined;
     const callAction = params.get('callAction') || undefined;
     const openChatUid = params.get('openChat') || undefined;
-    if (!incomingCall && !openChatUid) return;
+    const isSharedLaunch = params.get('shared') === '1';
 
-    window.history.replaceState({}, '', '/');
-    void processPushWakeAction({ callId: incomingCall, callAction, openChatUid });
-  }, [profile, processPushWakeAction]);
+    if (incomingCall || openChatUid || isSharedLaunch) {
+      window.history.replaceState({}, '', '/');
+    }
+    if (incomingCall || openChatUid) {
+      void processPushWakeAction({ callId: incomingCall, callAction, openChatUid });
+    }
+    // Always check IndexedDB share inbox on authorized startup (covers WhatsApp Share Target)
+    void loadPendingSharedInbox();
+  }, [profile, deviceAuthState, processPushWakeAction, loadPendingSharedInbox]);
 
-  // Listen for Service Worker notificationclick actions when app was running in background
+  // Load persisted Terms & Privacy consent record for this user/device
+  useEffect(() => {
+    if (!profile?.uid) {
+      setPolicyConsent(null);
+      setPolicyCheckedUid(null);
+      return;
+    }
+    setPolicyConsent(getPolicyConsentRecord(profile.uid));
+    setPolicyCheckedUid(profile.uid);
+  }, [profile?.uid]);
+
+  const handleAcceptPolicyAndAuthorize = useCallback(async () => {
+    if (!profile?.uid) return;
+    const saved = savePolicyConsentRecord(profile.uid);
+    setPolicyConsent(saved);
+    setPolicyCheckedUid(profile.uid);
+
+    const result = await authorizeAllZapeiResourcesOnce(authUser);
+    setPushStatus(result.pushStatus);
+    setShowPoliciesModal(false);
+    showToast('Termos aceitos e recursos do Zapei configurados neste aparelho.');
+  }, [profile?.uid, authUser, showToast]);
+
+  const handleAuthorizeResourcesFromSettings = useCallback(async () => {
+    const result = await authorizeAllZapeiResourcesOnce(authUser);
+    setPushStatus(result.pushStatus);
+    showToast(
+      result.mediaAuthorized
+        ? 'Recursos de câmera, microfone e alertas atualizados neste aparelho.'
+        : 'Permissões verificadas. Caso algum recurso esteja bloqueado, habilite nos ajustes do aparelho.'
+    );
+  }, [authUser, showToast]);
+
+  // Listen for Service Worker notificationclick actions & WhatsApp Web Share Target pings
   useEffect(() => {
     if (!profile || !('serviceWorker' in navigator)) return undefined;
     const onSwMessage = (event: MessageEvent) => {
@@ -1033,12 +1351,19 @@ export default function App() {
           senderId?: string;
           senderName?: string;
           body?: string;
+          messageType?: 'text' | 'audio' | 'image' | 'video';
           action?: string;
         };
       };
+      if (msg?.type === 'ZAPEI_SHARED_MEDIA_READY') {
+        void loadPendingSharedInbox();
+        return;
+      }
       if (msg?.type === 'ZAPEI_INCOMING_MESSAGE_PING' && msg.payload) {
         if (msg.payload.senderId !== profile.uid) {
-          playMessageNotificationSound();
+          playMessageNotificationSound(
+            msg.payload.messageType === 'audio' ? 'audio' : 'text'
+          );
         }
         return;
       }
@@ -1054,7 +1379,211 @@ export default function App() {
     };
     navigator.serviceWorker.addEventListener('message', onSwMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
-  }, [profile, processPushWakeAction]);
+  }, [profile, processPushWakeAction, loadPendingSharedInbox]);
+
+  const shareTargetRecipients = useMemo<ShareTargetRecipient[]>(() => {
+    if (!profile) return [];
+    const byUid = new Map<string, ShareTargetRecipient>();
+
+    // 1. Recent conversations first
+    for (const c of chats) {
+      if (!c.otherUid || c.otherUid === profile.uid) continue;
+      const contactMatch = contacts.find((ct) => ct.matchedUid === c.otherUid);
+      const dirMatch = directoryUsers.find((u) => u.uid === c.otherUid);
+      const name = contactMatch?.name || dirMatch?.displayName || c.otherName || 'Contato';
+      byUid.set(c.otherUid, {
+        uid: c.otherUid,
+        name,
+        subtitle: dirMatch?.virtualLine || contactMatch?.phone || 'Conversa recente',
+        initials: getInitials(name),
+        avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0F5132',
+        avatarUrl: dirMatch?.avatarUrl,
+      });
+    }
+
+    // 2. Registered contacts in user's phonebook
+    for (const ct of contacts) {
+      if (!ct.matchedUid || ct.matchedUid === profile.uid || byUid.has(ct.matchedUid)) continue;
+      const dirMatch = directoryUsers.find((u) => u.uid === ct.matchedUid);
+      byUid.set(ct.matchedUid, {
+        uid: ct.matchedUid,
+        name: ct.name,
+        subtitle: dirMatch?.virtualLine || ct.phone || 'Contato Zapei',
+        initials: ct.initials || getInitials(ct.name),
+        avatarBg: ct.avatarBg || dirMatch?.avatarColor || '#0F5132',
+        avatarUrl: dirMatch?.avatarUrl,
+      });
+    }
+
+    return Array.from(byUid.values());
+  }, [chats, contacts, directoryUsers, profile]);
+
+  const handleDismissSharedPayloads = useCallback(async () => {
+    const ids = pendingSharedPayloads.map((p) => p.id);
+    setPendingSharedPayloads([]);
+    await clearPendingSharedPayloads(ids);
+  }, [pendingSharedPayloads]);
+
+  const handleSendSharedContent = useCallback(
+    async (params: {
+      recipients: ShareTargetRecipient[];
+      items: PreparedShareItem[];
+      textMessage: string;
+      caption: string;
+      onProgress?: (current: number, total: number) => void;
+    }) => {
+      if (!profile || !authUser) return;
+      const { recipients, items, textMessage, caption, onProgress } = params;
+
+      const totalOps =
+        recipients.length * (items.length + (textMessage ? 1 : 0));
+      let completedOps = 0;
+
+      // Pre-compress shared images once before sending to 1 or multiple recipients
+      const preparedBlobs = await Promise.all(
+        items.map(async (item) => {
+          if (item.kind === 'image') {
+            try {
+              const imgFile = new File([item.blob], item.name, {
+                type: item.mimeType || 'image/jpeg',
+              });
+              const compressed = await compressImageFileToBlob(
+                imgFile,
+                MAX_IMAGE_WIDTH,
+                IMAGE_JPEG_QUALITY
+              );
+              return { item, blob: compressed.blob, mimeType: compressed.mimeType };
+            } catch {
+              return { item, blob: item.blob, mimeType: item.mimeType || 'image/jpeg' };
+            }
+          }
+          return { item, blob: item.blob, mimeType: item.mimeType };
+        })
+      );
+
+      for (const target of recipients) {
+        for (let idx = 0; idx < preparedBlobs.length; idx += 1) {
+          const { item, blob, mimeType } = preparedBlobs[idx];
+          completedOps += 1;
+          onProgress?.(completedOps, Math.max(1, totalOps));
+
+          if (!isOnline) {
+            if ((item.kind === 'image' || item.kind === 'audio') && blob.size <= 330 * 1024) {
+              const dataUrl = await blobToDataUrl(blob);
+              await sendOrQueueMessage(
+                {
+                  senderId: profile.uid,
+                  senderName: profile.name,
+                  recipientId: target.uid,
+                  recipientName: target.name,
+                  type: item.kind,
+                  text:
+                    item.kind === 'audio'
+                      ? `Mensagem de voz (${item.durationLabel || '0:00'})`
+                      : (idx === 0 && caption) || 'Foto',
+                  mediaUrl: dataUrl,
+                  audioDuration: item.kind === 'audio' ? item.durationLabel || '0:00' : undefined,
+                  pushPreviewText:
+                    item.kind === 'audio'
+                      ? `Áudio (${item.durationLabel || '0:00'})`
+                      : caption
+                        ? `Foto: ${caption}`
+                        : 'Enviou uma foto',
+                  pushMessageType: item.kind,
+                },
+                authUser
+              );
+            } else {
+              throw new Error(
+                'Sem conexão para enviar arquivos grandes compartilhados. Conecte-se à internet e tente novamente.'
+              );
+            }
+          } else {
+            await sendMediaWithTransitBridge({
+              myUid: profile.uid,
+              myName: profile.name,
+              recipientId: target.uid,
+              recipientName: target.name,
+              mediaType: item.kind,
+              blob,
+              mimeType,
+              durationLabel:
+                item.kind === 'audio'
+                  ? item.durationLabel || '0:00'
+                  : item.kind === 'video'
+                    ? item.durationLabel || undefined
+                    : undefined,
+              caption:
+                item.kind === 'image' || item.kind === 'video'
+                  ? idx === 0
+                    ? caption || (item.kind === 'image' ? 'Foto' : undefined)
+                    : item.kind === 'image'
+                      ? 'Foto'
+                      : undefined
+                  : undefined,
+              fileName: item.name,
+              authUser,
+            });
+          }
+        }
+
+        if (textMessage) {
+          completedOps += 1;
+          onProgress?.(completedOps, Math.max(1, totalOps));
+          await sendOrQueueMessage(
+            {
+              senderId: profile.uid,
+              senderName: profile.name,
+              recipientId: target.uid,
+              recipientName: target.name,
+              type: 'text',
+              text: textMessage,
+              pushPreviewText: textMessage,
+              pushMessageType: 'text',
+            },
+            authUser
+          );
+        }
+      }
+
+      playMessageSentSound();
+      const ids = pendingSharedPayloads.map((p) => p.id);
+      setPendingSharedPayloads([]);
+      await clearPendingSharedPayloads(ids);
+
+      // Open the first chosen chat automatically so the user sees the sent photo/audio right away
+      const first = recipients[0];
+      if (first) {
+        const dirMatch = directoryUsers.find((u) => u.uid === first.uid);
+        void openChatWithPeer({
+          uid: first.uid,
+          name: first.name,
+          phone: dirMatch?.virtualLine || first.subtitle,
+          initials: first.initials,
+          avatarBg: first.avatarBg,
+          avatarUrl: first.avatarUrl,
+          role: dirMatch?.role || 'normal',
+          hasStorefront: Boolean(dirMatch?.hasStorefront),
+          storefrontName: dirMatch?.storefrontName,
+        });
+      }
+
+      showToast(
+        recipients.length === 1
+          ? `Conteúdo compartilhado enviado para ${recipients[0].name}!`
+          : `Conteúdo compartilhado enviado para ${recipients.length} conversas!`
+      );
+    },
+    [
+      profile,
+      authUser,
+      isOnline,
+      pendingSharedPayloads,
+      directoryUsers,
+      openChatWithPeer,
+      showToast,
+    ]
+  );
 
   const openStorefrontByUid = useCallback(
     async (uid: string) => {
@@ -1381,9 +1910,81 @@ export default function App() {
     };
   }, [chatQueryNormalizedPhone, chatSearch, profile]);
 
+  // Outbox packets belonging to the signed-in user
+  const myOutboxPackets = useMemo(() => {
+    if (!profile) return [];
+    return outboxPackets.filter((p) => p.senderId === profile.uid);
+  }, [outboxPackets, profile]);
+
+  const pendingOutboxByChatId = useMemo(() => {
+    const map = new Map<string, ZapeiMessagePacket[]>();
+    for (const pkt of myOutboxPackets) {
+      const list = map.get(pkt.chatId) || [];
+      list.push(pkt);
+      map.set(pkt.chatId, list);
+    }
+    return map;
+  }, [myOutboxPackets]);
+
+  // Merge Firestore cached/live chats with locally queued offline messages
+  const mergedChats = useMemo(() => {
+    if (!profile || myOutboxPackets.length === 0) return chats;
+    const map = new Map<string, ChatThreadSummary>();
+    for (const c of chats) {
+      map.set(c.id, c);
+    }
+    for (const pkt of myOutboxPackets) {
+      const existing = map.get(pkt.chatId);
+      if (existing) {
+        if (pkt.timestamp >= existing.updatedAtMs) {
+          map.set(pkt.chatId, {
+            ...existing,
+            lastMessage: pkt.text,
+            lastSenderId: pkt.senderId,
+            updatedAtLabel: formatPacketTimeLabel(pkt.timestamp),
+            updatedAtMs: pkt.timestamp,
+          });
+        }
+      } else {
+        const [userA, userB] = [pkt.senderId, pkt.recipientId].sort();
+        const userAName = userA === pkt.senderId ? pkt.senderName : pkt.recipientName;
+        const userBName = userB === pkt.senderId ? pkt.senderName : pkt.recipientName;
+        map.set(pkt.chatId, {
+          id: pkt.chatId,
+          userA,
+          userB,
+          userAName,
+          userBName,
+          otherUid: pkt.recipientId,
+          otherName: pkt.recipientName,
+          lastMessage: pkt.text,
+          lastSenderId: pkt.senderId,
+          updatedAtLabel: formatPacketTimeLabel(pkt.timestamp),
+          updatedAtMs: pkt.timestamp,
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+  }, [chats, myOutboxPackets, profile]);
+
+  // Merge Firestore active chat messages with any pending offline outbox messages for this peer
+  const mergedActiveMessages = useMemo(() => {
+    if (!profile || !selectedPeer) return activeMessages;
+    const activeChatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
+    const pendingForChat = pendingOutboxByChatId.get(activeChatId);
+    if (!pendingForChat || pendingForChat.length === 0) return activeMessages;
+
+    const existingIds = new Set(activeMessages.map((m) => m.id));
+    const extras = pendingForChat
+      .filter((pkt) => !existingIds.has(pkt.id))
+      .map(packetToChatMessage);
+    if (extras.length === 0) return activeMessages;
+    return [...activeMessages, ...extras];
+  }, [activeMessages, pendingOutboxByChatId, profile, selectedPeer]);
+
   const filteredChats = useMemo(() => {
-    if (!normalizedChatQuery) return chats;
-    return chats.filter((c) => {
+    if (!normalizedChatQuery) return mergedChats;
+    return mergedChats.filter((c) => {
       const matchedContact = contacts.find((ct) => ct.matchedUid === c.otherUid);
       const dir = directoryByUid.get(c.otherUid);
       const displayName = matchedContact?.name || dir?.displayName || c.otherName;
@@ -1391,10 +1992,13 @@ export default function App() {
         normalizeSearchText(displayName).includes(normalizedChatQuery) ||
         normalizeSearchText(c.otherName).includes(normalizedChatQuery) ||
         normalizeSearchText(c.lastMessage).includes(normalizedChatQuery) ||
-        (matchedContact?.phone.toLowerCase().includes(normalizedChatQuery) ?? false)
+        (matchedContact?.phone.toLowerCase().includes(normalizedChatQuery) ?? false) ||
+        (dir?.virtualLine
+          ? normalizeSearchText(dir.virtualLine).includes(normalizedChatQuery)
+          : false)
       );
     });
-  }, [chats, contacts, directoryByUid, normalizedChatQuery]);
+  }, [mergedChats, contacts, directoryByUid, normalizedChatQuery]);
 
   // Unified Zapei people matching search (or available right away when no chats exist yet)
   const matchingZapeiPeople = useMemo(() => {
@@ -1424,7 +2028,10 @@ export default function App() {
         normalizeSearchText(c.name).includes(normalizedChatQuery) ||
         c.phone.toLowerCase().includes(normalizedChatQuery) ||
         normalizeSearchText(c.storefrontName || '').includes(normalizedChatQuery) ||
-        (dir ? normalizeSearchText(dir.displayName).includes(normalizedChatQuery) : false);
+        (dir ? normalizeSearchText(dir.displayName).includes(normalizedChatQuery) : false) ||
+        (dir?.virtualLine
+          ? normalizeSearchText(dir.virtualLine).includes(normalizedChatQuery)
+          : false);
       if (!matches) continue;
       seen.add(c.matchedUid);
       results.push({
@@ -1444,7 +2051,7 @@ export default function App() {
       });
     }
 
-    // 2. All registered users on Zapei (Public Directory)
+    // 2. All registered users on Zapei (Public Directory — includes Phone & CPF/Virtual Line users)
     for (const u of directoryUsers) {
       if (u.uid === profile?.uid) continue;
       if (shownChatUids.has(u.uid) || seen.has(u.uid)) continue;
@@ -1452,7 +2059,8 @@ export default function App() {
         !normalizedChatQuery ||
         normalizeSearchText(u.displayName).includes(normalizedChatQuery) ||
         normalizeSearchText(u.storefrontName || '').includes(normalizedChatQuery) ||
-        normalizeSearchText(u.statusMessage || '').includes(normalizedChatQuery);
+        normalizeSearchText(u.statusMessage || '').includes(normalizedChatQuery) ||
+        normalizeSearchText(u.virtualLine || '').includes(normalizedChatQuery);
       if (!matches) continue;
       seen.add(u.uid);
       results.push({
@@ -1461,9 +2069,12 @@ export default function App() {
         initials: u.initials,
         avatarBg: u.avatarColor || '#0F5132',
         avatarUrl: u.avatarUrl,
+        phone: u.virtualLine,
         subtitle: u.hasStorefront && u.storefrontName
           ? u.storefrontName
-          : u.statusMessage || 'Disponível no Zapei',
+          : u.virtualLine
+            ? `${u.virtualLine} · ${u.statusMessage || 'No Zapei'}`
+            : u.statusMessage || 'Disponível no Zapei',
         role: u.role,
         hasStorefront: u.hasStorefront,
         storefrontName: u.storefrontName,
@@ -1574,6 +2185,41 @@ export default function App() {
     );
   }
 
+  // --- CONNECTED DEVICES GATE (PRIMARY SESSION + NEW DEVICE AUTHORIZATION) ---
+  if (deviceAuthState === 'idle' || deviceAuthState === 'checking') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC]">
+        <div className="flex flex-col items-center gap-3 text-slate-600">
+          <Loader2 className="h-8 w-8 animate-spin text-[#0F5132]" />
+          <p className="text-xs font-semibold">Verificando aparelho conectado...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (deviceAuthState === 'pending_approval' && activeAuthRequest) {
+    return (
+      <DeviceAuthorizationGate
+        userName={profile.name}
+        userIdentifier={profile.virtualLine || profile.phone}
+        request={activeAuthRequest}
+        regenerating={regeneratingAuthReq}
+        onRegenerate={async () => {
+          setRegeneratingAuthReq(true);
+          try {
+            const fresh = await createDeviceAuthRequest(authUser.uid, localDeviceInfo);
+            setActiveAuthRequest(fresh);
+          } finally {
+            setRegeneratingAuthReq(false);
+          }
+        }}
+        onSignOut={async () => {
+          await signOutFirebase();
+        }}
+      />
+    );
+  }
+
   const hasCommercialPanel = profile.commercialMode !== 'buyer';
 
   const navItems: Array<{
@@ -1665,7 +2311,7 @@ export default function App() {
             <div className="hidden lg:block min-w-0 text-left">
               <p className="truncate text-xs font-bold text-white">{profile.name}</p>
               <p className="truncate font-mono text-[11px] text-slate-300 tabular-nums">
-                {profile.phone}
+                {profile.virtualLine || profile.phone}
               </p>
             </div>
           </button>
@@ -1800,48 +2446,35 @@ export default function App() {
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto pb-safe-nav md:pb-2">
-                  {/* Compact 1-tap Ringing / Install Reminder (auto-hides once active) */}
-                  {!pushBannerDismissed &&
-                    (pushStatus === 'prompt' || pushStatus === 'ios_needs_install') && (
-                      <div className="mx-3 mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/80 px-3 py-2">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <BellRing className="h-4 w-4 shrink-0 text-[#0F5132]" />
-                          <p className="text-[11px] leading-snug text-slate-700">
-                            {pushStatus === 'ios_needs_install'
-                              ? 'No iPhone, adicione à Tela de Início para receber toque de chamadas.'
-                              : 'Ative o toque para o celular chamar mesmo fora do Zapei.'}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          {pushStatus === 'prompt' ? (
-                            <button
-                              type="button"
-                              disabled={pushBusy}
-                              onClick={() => void handleEnableBackgroundPush()}
-                              className="rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-[#146c43] disabled:opacity-50"
-                            >
-                              {pushBusy ? 'Ativando...' : 'Ativar'}
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setActiveTab('settings')}
-                              className="rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-[#146c43]"
-                            >
-                              Ver passo
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setPushBannerDismissed(true)}
-                            aria-label="Fechar aviso"
-                            className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-emerald-100 hover:text-slate-700"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                  {/* Discreet Offline Mode & Sync Banner at top of Conversas */}
+                  {(!isOnline || myOutboxPackets.length > 0) && (
+                    <div
+                      className={`mx-3 mt-2.5 flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
+                        !isOnline
+                          ? 'border-amber-200 bg-amber-50/90 text-amber-900'
+                          : 'border-emerald-200 bg-emerald-50/80 text-emerald-900'
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        {!isOnline ? (
+                          <WifiOff className="h-4 w-4 shrink-0 text-amber-600" />
+                        ) : (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0F5132]" />
+                        )}
+                        <p className="text-[11px] font-medium leading-snug">
+                          {!isOnline
+                            ? 'Sem conexão — Suas mensagens serão enviadas assim que o sinal voltar'
+                            : `Sincronizando ${myOutboxPackets.length} mensagem(ns) da fila...`}
+                        </p>
                       </div>
-                    )}
+                      {!isOnline && myOutboxPackets.length > 0 && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold text-amber-900">
+                          <Clock className="h-3 w-3" />
+                          {myOutboxPackets.length}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   {/* Matching / Existing Conversations */}
                   {filteredChats.length > 0 && (
@@ -1913,8 +2546,16 @@ export default function App() {
                                 </span>
                               </div>
                               <div className="mt-0.5 flex items-center justify-between gap-2">
-                                <p className="truncate text-xs text-slate-500">
-                                  {thread.lastMessage || 'Conversa iniciada'}
+                                <p className="flex min-w-0 items-center gap-1 truncate text-xs text-slate-500">
+                                  {(pendingOutboxByChatId.get(thread.id)?.length || 0) > 0 && (
+                                    <Clock
+                                      className="h-3.5 w-3.5 shrink-0 text-amber-600"
+                                      aria-label="Aguardando rede"
+                                    />
+                                  )}
+                                  <span className="truncate">
+                                    {thread.lastMessage || 'Conversa iniciada'}
+                                  </span>
                                 </p>
                                 {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
                                   <Store className="h-3.5 w-3.5 shrink-0 text-[#0F5132]" />
@@ -2026,104 +2667,187 @@ export default function App() {
                     myUid={profile.uid}
                     myName={profile.name}
                     peer={selectedPeer}
-                    messages={activeMessages}
+                    messages={mergedActiveMessages}
                     forwardTargets={forwardTargets}
+                    isOffline={!isOnline}
+                    pendingCount={
+                      pendingOutboxByChatId.get(
+                        getDeterministicChatId(profile.uid, selectedPeer.uid)
+                      )?.length || 0
+                    }
                     onNotify={showToast}
                     onBack={() => setSelectedPeer(null)}
                     onSendText={async (text) => {
-                      await sendRealChatMessage({
-                        myUid: profile.uid,
-                        myName: profile.name,
-                        otherUid: selectedPeer.uid,
-                        otherName: selectedPeer.name,
-                        type: 'text',
-                        text,
-                      });
-                      playMessageSentSound();
-                      if (authUser) {
-                        void triggerRemoteMessagePush(authUser, {
-                          recipientId: selectedPeer.uid,
+                      const { queuedOffline } = await sendOrQueueMessage(
+                        {
+                          senderId: profile.uid,
                           senderName: profile.name,
-                          previewText: text,
-                          messageType: 'text',
-                        });
+                          recipientId: selectedPeer.uid,
+                          recipientName: selectedPeer.name,
+                          type: 'text',
+                          text,
+                          pushPreviewText: text,
+                          pushMessageType: 'text',
+                        },
+                        authUser
+                      );
+                      playMessageSentSound();
+                      if (queuedOffline) {
+                        showToast('Salva na fila — será enviada assim que o sinal voltar.');
                       }
                     }}
-                    onSendAudio={async (mediaUrl, audioDuration) => {
-                      await sendRealChatMessage({
+                    onSendAudio={async (audioBlob, audioDuration) => {
+                      if (!isOnline) {
+                        if (audioBlob.size <= 330 * 1024) {
+                          const dataUrl = await blobToDataUrl(audioBlob);
+                          await sendOrQueueMessage(
+                            {
+                              senderId: profile.uid,
+                              senderName: profile.name,
+                              recipientId: selectedPeer.uid,
+                              recipientName: selectedPeer.name,
+                              type: 'audio',
+                              text: `Mensagem de voz (${audioDuration})`,
+                              mediaUrl: dataUrl,
+                              audioDuration,
+                              pushPreviewText: `Áudio (${audioDuration})`,
+                              pushMessageType: 'audio',
+                            },
+                            authUser
+                          );
+                          playMessageSentSound();
+                          showToast('Áudio salvo na fila — será enviado assim que o sinal voltar.');
+                          return;
+                        }
+                        throw new Error('Sem conexão para enviar áudio longo. Tente novamente quando o sinal voltar.');
+                      }
+                      await sendMediaWithTransitBridge({
                         myUid: profile.uid,
                         myName: profile.name,
-                        otherUid: selectedPeer.uid,
-                        otherName: selectedPeer.name,
-                        type: 'audio',
-                        text: `Mensagem de voz (${audioDuration})`,
-                        mediaUrl,
-                        audioDuration,
+                        recipientId: selectedPeer.uid,
+                        recipientName: selectedPeer.name,
+                        mediaType: 'audio',
+                        blob: audioBlob,
+                        mimeType: audioBlob.type || 'audio/webm',
+                        durationLabel: audioDuration,
+                        authUser,
                       });
                       playMessageSentSound();
-                      if (authUser) {
-                        void triggerRemoteMessagePush(authUser, {
-                          recipientId: selectedPeer.uid,
-                          senderName: profile.name,
-                          previewText: `Áudio (${audioDuration})`,
-                          messageType: 'audio',
-                        });
-                      }
                     }}
-                    onSendImage={async (mediaUrl, caption) => {
-                      await sendRealChatMessage({
+                    onSendImage={async (imageBlob, caption) => {
+                      if (!isOnline) {
+                        if (imageBlob.size <= 330 * 1024) {
+                          const dataUrl = await blobToDataUrl(imageBlob);
+                          await sendOrQueueMessage(
+                            {
+                              senderId: profile.uid,
+                              senderName: profile.name,
+                              recipientId: selectedPeer.uid,
+                              recipientName: selectedPeer.name,
+                              type: 'image',
+                              text: caption || 'Foto',
+                              mediaUrl: dataUrl,
+                              pushPreviewText: caption ? `Foto: ${caption}` : 'Enviou uma foto',
+                              pushMessageType: 'image',
+                            },
+                            authUser
+                          );
+                          playMessageSentSound();
+                          showToast('Foto salva na fila — será enviada assim que o sinal voltar.');
+                          return;
+                        }
+                        throw new Error('Sem conexão para enviar esta foto. Tente novamente quando o sinal voltar.');
+                      }
+                      await sendMediaWithTransitBridge({
                         myUid: profile.uid,
                         myName: profile.name,
-                        otherUid: selectedPeer.uid,
-                        otherName: selectedPeer.name,
-                        type: 'image',
-                        text: caption || 'Foto',
-                        mediaUrl,
+                        recipientId: selectedPeer.uid,
+                        recipientName: selectedPeer.name,
+                        mediaType: 'image',
+                        blob: imageBlob,
+                        mimeType: imageBlob.type || 'image/jpeg',
+                        caption: caption || 'Foto',
+                        authUser,
                       });
                       playMessageSentSound();
-                      if (authUser) {
-                        void triggerRemoteMessagePush(authUser, {
-                          recipientId: selectedPeer.uid,
-                          senderName: profile.name,
-                          previewText: caption ? `Foto: ${caption}` : 'Enviou uma foto',
-                          messageType: 'image',
-                        });
+                    }}
+                    onSendVideo={async (videoBlob, videoDuration, caption) => {
+                      if (!isOnline) {
+                        throw new Error('Sem internet para enviar vídeo. Conecte-se para enviar.');
                       }
+                      await sendMediaWithTransitBridge({
+                        myUid: profile.uid,
+                        myName: profile.name,
+                        recipientId: selectedPeer.uid,
+                        recipientName: selectedPeer.name,
+                        mediaType: 'video',
+                        blob: videoBlob,
+                        mimeType: videoBlob.type || 'video/mp4',
+                        durationLabel: videoDuration || undefined,
+                        caption: caption || undefined,
+                        authUser,
+                      });
+                      playMessageSentSound();
                     }}
                     onForwardMessage={async (target, msg) => {
-                      const forwardType =
-                        msg.type === 'image' || msg.type === 'audio' ? msg.type : 'text';
-                      await sendRealChatMessage({
-                        myUid: profile.uid,
-                        myName: profile.name,
-                        otherUid: target.uid,
-                        otherName: target.name,
-                        type: forwardType,
-                        text:
-                          msg.text ||
-                          (forwardType === 'image'
-                            ? 'Foto'
-                            : forwardType === 'audio'
-                              ? `Mensagem de voz (${msg.audioDuration || '0:00'})`
-                              : ''),
-                        mediaUrl: msg.mediaUrl,
-                        audioDuration: msg.audioDuration,
-                      });
-                      playMessageSentSound();
-                      if (authUser) {
-                        void triggerRemoteMessagePush(authUser, {
+                      if (msg.type === 'image' || msg.type === 'audio' || msg.type === 'video') {
+                        const cached = await getLocalMedia(msg.id);
+                        let blobToSend: Blob | null = cached?.blob || null;
+                        if (!blobToSend && msg.mediaUrl?.startsWith('data:')) {
+                          blobToSend = dataUrlToBlob(msg.mediaUrl);
+                        }
+                        if (!blobToSend) {
+                          showToast('Esta mídia não está salva neste aparelho para encaminhar.');
+                          return;
+                        }
+                        if (!isOnline) {
+                          showToast('Conecte-se à internet para encaminhar mídias.');
+                          return;
+                        }
+                        await sendMediaWithTransitBridge({
+                          myUid: profile.uid,
+                          myName: profile.name,
                           recipientId: target.uid,
-                          senderName: profile.name,
-                          previewText:
-                            forwardType === 'image'
-                              ? 'Encaminhou uma foto'
-                              : forwardType === 'audio'
-                                ? 'Encaminhou um áudio'
-                                : msg.text,
-                          messageType: forwardType,
+                          recipientName: target.name,
+                          mediaType: msg.type,
+                          blob: blobToSend,
+                          mimeType: cached?.mimeType || blobToSend.type,
+                          durationLabel:
+                            msg.type === 'audio'
+                              ? msg.audioDuration
+                              : msg.type === 'video'
+                                ? msg.videoDuration
+                                : undefined,
+                          caption:
+                            msg.type === 'image' || msg.type === 'video'
+                              ? msg.text
+                              : undefined,
+                          authUser,
                         });
+                        playMessageSentSound();
+                        showToast(`Encaminhado para ${target.name}!`);
+                        return;
                       }
-                      showToast(`Encaminhado para ${target.name}!`);
+
+                      const { queuedOffline } = await sendOrQueueMessage(
+                        {
+                          senderId: profile.uid,
+                          senderName: profile.name,
+                          recipientId: target.uid,
+                          recipientName: target.name,
+                          type: 'text',
+                          text: msg.text || '',
+                          pushPreviewText: msg.text,
+                          pushMessageType: 'text',
+                        },
+                        authUser
+                      );
+                      playMessageSentSound();
+                      showToast(
+                        queuedOffline
+                          ? `Salvo na fila para ${target.name} (aguardando rede).`
+                          : `Encaminhado para ${target.name}!`
+                      );
                     }}
                     onStartCall={(type) => void handleStartCall(selectedPeer, type)}
                     onOpenStorefront={() => void openStorefrontByUid(selectedPeer.uid)}
@@ -2158,10 +2882,6 @@ export default function App() {
               calls={calls}
               zapeiContacts={zapeiContacts}
               directoryUsers={directoryUsers}
-              pushStatus={pushStatus}
-              pushBusy={pushBusy}
-              pushFeedback={pushFeedback}
-              onEnableBackgroundPush={handleEnableBackgroundPush}
               onStartCallWithPeer={(peer, type) => void handleStartCall(peer, type)}
             />
           )}
@@ -2402,14 +3122,36 @@ export default function App() {
           {activeTab === 'settings' && (
             <SettingsView
               profile={profile}
+              connectedDevices={connectedDevices}
+              currentDeviceId={localDeviceInfo.deviceId}
+              onDisconnectDevice={async (device) => {
+                await disconnectUserDevice(profile.uid, device.deviceId);
+                if (device.deviceId === localDeviceInfo.deviceId) {
+                  try {
+                    localStorage.removeItem(
+                      `zapei_device_auth_uid_${localDeviceInfo.deviceId}`
+                    );
+                  } catch {
+                    // ignore
+                  }
+                  showToast('Este aparelho foi desconectado.');
+                  await signOutFirebase();
+                } else {
+                  showToast(`${device.deviceName} desconectado imediatamente.`);
+                }
+              }}
               pushStatus={pushStatus}
               pushBusy={pushBusy}
               pushFeedback={pushFeedback}
               onEnableBackgroundPush={handleEnableBackgroundPush}
+              policyConsent={policyConsent}
+              onOpenPolicies={() => setShowPoliciesModal(true)}
+              onAuthorizeResources={handleAuthorizeResourcesFromSettings}
               onEditProfile={() => setShowEditProfile(true)}
               onSelectMode={(mode) => void handleSelectCommercialMode(mode)}
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenCommercialPanel={() => setActiveTab('commercial')}
+              onNotify={showToast}
               onSignOut={async () => {
                 await signOutFirebase();
               }}
@@ -2560,6 +3302,51 @@ export default function App() {
             showToast('Assinatura Comercial ativada (R$ 59,90/mês).');
           }}
           onClose={() => setShowBillingModal(false)}
+        />
+      )}
+      {/* Real-Time New Device Approval Modal (Primary / Already-Connected Device) */}
+      {pendingIncomingAuthRequests.length > 0 && (
+        <DeviceApprovalModal
+          request={pendingIncomingAuthRequests[0]}
+          onApprove={async (req) => {
+            await approveDeviceAuthRequest({
+              uid: profile.uid,
+              request: req,
+              approverDeviceId: localDeviceInfo.deviceId,
+            });
+            showToast(`Acesso autorizado para ${req.deviceName}.`);
+          }}
+          onReject={async (req) => {
+            await rejectDeviceAuthRequest(req.id, localDeviceInfo.deviceId);
+            showToast(`Solicitação de ${req.deviceName} recusada.`);
+          }}
+        />
+      )}
+
+      {/* WhatsApp / Android Web Share Target Modal (Images, Audio Notes, Videos, Text) */}
+      {pendingSharedPayloads.length > 0 && (
+        <ShareTargetModal
+          payloads={pendingSharedPayloads}
+          recipients={shareTargetRecipients}
+          onClose={() => void handleDismissSharedPayloads()}
+          onSendSharedContent={handleSendSharedContent}
+        />
+      )}
+
+      {/* Terms of Responsibility, LGPD Privacy Policy & Unified One-Time Permissions Gate */}
+      {policyCheckedUid === profile.uid && !policyConsent && (
+        <TermsAndPermissionsModal
+          mode="gate"
+          onAcceptAndAuthorize={handleAcceptPolicyAndAuthorize}
+        />
+      )}
+
+      {showPoliciesModal && (
+        <TermsAndPermissionsModal
+          mode="review"
+          existingConsent={policyConsent}
+          onAcceptAndAuthorize={handleAcceptPolicyAndAuthorize}
+          onClose={() => setShowPoliciesModal(false)}
         />
       )}
     </div>

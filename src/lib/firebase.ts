@@ -1,8 +1,12 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
+  deleteUser,
   getAuth,
   GoogleAuthProvider,
   RecaptchaVerifier,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPhoneNumber,
   signInWithPopup,
   signOut,
@@ -17,9 +21,14 @@ import {
   doc,
   getDoc,
   getDocFromServer,
+  getDocs,
   getFirestore,
+  initializeFirestore,
   onSnapshot,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -35,7 +44,9 @@ import type {
   ChatMessage,
   ChatThreadSummary,
   CommercialMode,
+  ConnectedDevice,
   Contact,
+  DeviceAuthRequest,
   DualPaymentRecord,
   FactoryConnection,
   FavoriteGrade,
@@ -52,6 +63,15 @@ import type {
   SubscriptionStatus,
   UserProfile,
 } from '../types/zapei';
+import {
+  generateRequestToken,
+  generateSixDigitCode,
+  generateVirtualLine,
+  hashCpfSha256,
+  isValidCpf,
+  maskEmailForDisplay,
+  type LocalDeviceInfo,
+} from './cpfAndDeviceUtils';
 import { DEFAULT_FAVORITE_GRADES, getInitials } from './gradeParser';
 import { formatPhoneDisplay, hashPhoneNumber } from './phoneUtils';
 
@@ -68,8 +88,25 @@ export const firebaseConfig = {
 const app: FirebaseApp =
   getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 
+function initPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
+  try {
+    return initializeFirestore(
+      firebaseApp,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    // Fallback if Firestore was already initialized or IndexedDB is unavailable (e.g., private browsing)
+    return getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
 export const auth: Auth = getAuth(app);
-export const db: Firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db: Firestore = initPersistentFirestore(app);
 export const storage: FirebaseStorage = getStorage(app);
 
 export enum OperationType {
@@ -126,12 +163,14 @@ export function handleFirestoreError(
 }
 
 export async function testFirestoreConnection(): Promise<'connected' | 'offline'> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return 'offline';
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return 'connected';
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
       return 'offline';
     }
     return 'connected';
@@ -263,13 +302,28 @@ export const DEFAULT_CATEGORY_MARGINS: Record<ProductCategory, CategoryMargin> =
   Acessórios: { mode: 'percent', value: 30 },
 };
 
-// --- USER PROFILE & PHONE HASH INDEX ---
+// --- USER PROFILE & PHONE / VIRTUAL LINE HASH INDEX ---
+
+export async function computeContactLookupHash(rawIdentifier: string): Promise<string> {
+  const trimmed = rawIdentifier.trim().toUpperCase();
+  if (trimmed.startsWith('ZAP-')) {
+    const data = new TextEncoder().encode(`zapei-vline-v1:${trimmed}`);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return hashPhoneNumber(rawIdentifier);
+}
 
 export async function registerOrUpdateUserProfile(params: {
   uid: string;
   email: string;
   displayName: string;
   phone: string;
+  virtualLine?: string;
+  authMethod?: 'phone' | 'cpf';
+  cpfHash?: string;
   statusMessage?: string;
   avatarColor?: string;
   avatarUrl?: string;
@@ -284,8 +338,38 @@ export async function registerOrUpdateUserProfile(params: {
   trialEndsAt?: number;
   favoriteGrades?: FavoriteGrade[];
 }): Promise<void> {
-  const cleanPhone = formatPhoneDisplay(params.phone);
-  const phoneHash = await hashPhoneNumber(params.phone);
+  const userRef = doc(db, 'users', params.uid);
+  const existingUser = await getDoc(userRef);
+  const existingPubData = existingUser.exists()
+    ? (existingUser.data() as Record<string, unknown>)
+    : null;
+
+  const privateRef = doc(db, 'users', params.uid, 'private', 'info');
+  const existingPrivate = await getDoc(privateRef);
+  const existingPrivData = existingPrivate.exists()
+    ? (existingPrivate.data() as Record<string, unknown>)
+    : null;
+
+  const resolvedVirtualLine =
+    params.virtualLine ||
+    (existingPubData?.virtualLine ? String(existingPubData.virtualLine) : '') ||
+    (existingPrivData?.virtualLine ? String(existingPrivData.virtualLine) : '');
+  const resolvedAuthMethod: 'phone' | 'cpf' =
+    params.authMethod ||
+    (existingPubData?.authMethod === 'cpf' || existingPrivData?.authMethod === 'cpf'
+      ? 'cpf'
+      : 'phone');
+  const resolvedCpfHash =
+    params.cpfHash ||
+    (existingPrivData?.cpfHash ? String(existingPrivData.cpfHash) : '');
+
+  const rawIdentifier = params.phone.trim() || resolvedVirtualLine;
+  const isVirtualLineValue = rawIdentifier.toUpperCase().startsWith('ZAP-');
+  const cleanPhone = isVirtualLineValue
+    ? rawIdentifier.toUpperCase()
+    : formatPhoneDisplay(rawIdentifier);
+  const phoneHash = await computeContactLookupHash(cleanPhone);
+
   const initials = getInitials(params.displayName);
   const mode = params.commercialMode ?? 'buyer';
   const subStatus = params.subscriptionStatus ?? 'free';
@@ -298,10 +382,7 @@ export async function registerOrUpdateUserProfile(params: {
     label: 'Mínimo 1 caixa · Retirada no balcão',
   };
 
-  const userRef = doc(db, 'users', params.uid);
-  const existingUser = await getDoc(userRef);
-
-  const publicData = {
+  const publicData: Record<string, unknown> = {
     uid: params.uid,
     displayName: params.displayName.slice(0, 80),
     initials,
@@ -321,8 +402,12 @@ export async function registerOrUpdateUserProfile(params: {
     deliveryPolicyLabel: policy.label.slice(0, 160),
     subscriptionStatus: subStatus,
     trialEndsAt: params.trialEndsAt ?? 0,
+    authMethod: resolvedAuthMethod,
     updatedAt: serverTimestamp(),
   };
+  if (resolvedVirtualLine) {
+    publicData.virtualLine = resolvedVirtualLine.slice(0, 24);
+  }
 
   try {
     if (existingUser.exists()) {
@@ -334,16 +419,21 @@ export async function registerOrUpdateUserProfile(params: {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}`);
   }
 
-  const privateRef = doc(db, 'users', params.uid, 'private', 'info');
-  const existingPrivate = await getDoc(privateRef);
-  const privateData = {
+  const privateData: Record<string, unknown> = {
     ownerId: params.uid,
     phone: cleanPhone.slice(0, 32),
     phoneHash,
+    authMethod: resolvedAuthMethod,
     email: params.email.slice(0, 120),
     favoriteGrades: params.favoriteGrades ?? DEFAULT_FAVORITE_GRADES,
     updatedAt: serverTimestamp(),
   };
+  if (resolvedVirtualLine) {
+    privateData.virtualLine = resolvedVirtualLine.slice(0, 24);
+  }
+  if (resolvedCpfHash && resolvedCpfHash.length === 64) {
+    privateData.cpfHash = resolvedCpfHash;
+  }
 
   try {
     if (existingPrivate.exists()) {
@@ -386,22 +476,53 @@ export async function registerOrUpdateUserProfile(params: {
     }
   }
 
+  // Also index Virtual Line hash if user has both a phone and a virtualLine
+  if (resolvedVirtualLine && cleanPhone !== resolvedVirtualLine) {
+    const vlineHash = await computeContactLookupHash(resolvedVirtualLine);
+    if (vlineHash && vlineHash !== phoneHash) {
+      try {
+        await setDoc(doc(db, 'phone_index', vlineHash), {
+          ownerId: params.uid,
+          displayName: params.displayName.slice(0, 80),
+          initials,
+          avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+          avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+          role: indexRole,
+          hasStorefront,
+          storefrontName: resolvedStorefrontName,
+          deliveryPolicyType: policy.type,
+          deliveryPolicyValue: policy.value,
+          deliveryPolicyPickup: policy.allowCounterPickup,
+          deliveryPolicyLabel: policy.label.slice(0, 160),
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // Secondary index best-effort
+      }
+    }
+  }
+
+  const directoryPayload: Record<string, unknown> = {
+    uid: params.uid,
+    displayName: params.displayName.slice(0, 80),
+    displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
+    initials,
+    statusMessage: (params.statusMessage ?? 'Disponível no Zapei').slice(0, 160),
+    avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+    avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+    role: indexRole,
+    hasStorefront,
+    storefrontName: resolvedStorefrontName,
+    deliveryPolicyLabel: policy.label.slice(0, 160),
+    isDiscoverable: true,
+    updatedAt: serverTimestamp(),
+  };
+  if (resolvedVirtualLine) {
+    directoryPayload.virtualLine = resolvedVirtualLine.slice(0, 24);
+  }
+
   try {
-    await setDoc(doc(db, 'public_directory', params.uid), {
-      uid: params.uid,
-      displayName: params.displayName.slice(0, 80),
-      displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
-      initials,
-      statusMessage: (params.statusMessage ?? 'Disponível no Zapei').slice(0, 160),
-      avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
-      avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
-      role: indexRole,
-      hasStorefront,
-      storefrontName: resolvedStorefrontName,
-      deliveryPolicyLabel: policy.label.slice(0, 160),
-      isDiscoverable: true,
-      updatedAt: serverTimestamp(),
-    });
+    await setDoc(doc(db, 'public_directory', params.uid), directoryPayload);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `public_directory/${params.uid}`);
   }
@@ -432,12 +553,22 @@ export function subscribeUserProfile(
     const effectiveSub: SubscriptionStatus =
       rawSub === 'trial' && trialEndsAt > 0 && Date.now() > trialEndsAt ? 'expired' : rawSub;
 
+    const virtualLine = publicData.virtualLine
+      ? String(publicData.virtualLine)
+      : privateData.virtualLine
+        ? String(privateData.virtualLine)
+        : undefined;
+    const authMethod: 'phone' | 'cpf' =
+      publicData.authMethod === 'cpf' || privateData.authMethod === 'cpf' ? 'cpf' : 'phone';
+
     callback({
       uid,
       name: String(publicData.displayName ?? ''),
       initials: String(publicData.initials ?? getInitials(String(publicData.displayName ?? 'ZP'))),
-      phone: String(privateData.phone ?? ''),
+      phone: String(privateData.phone ?? virtualLine ?? ''),
       phoneHash: String(privateData.phoneHash ?? ''),
+      virtualLine,
+      authMethod,
       email: String(privateData.email ?? email),
       statusMessage: String(publicData.statusMessage ?? 'Disponível no Zapei'),
       avatarBg: String(publicData.avatarColor ?? '#0F5132'),
@@ -504,6 +635,7 @@ export interface PublicDirectoryUser {
   hasStorefront: boolean;
   storefrontName: string;
   deliveryPolicyLabel: string;
+  virtualLine?: string;
 }
 
 export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<void> {
@@ -520,22 +652,27 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
       : profile.storefrontName || `Vitrine ${profile.name}`
   ).slice(0, 80);
 
+  const payload: Record<string, unknown> = {
+    uid: profile.uid,
+    displayName: profile.name.slice(0, 80),
+    displayNameLower: profile.name.trim().toLowerCase().slice(0, 80),
+    initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
+    statusMessage: (profile.statusMessage || 'Disponível no Zapei').slice(0, 160),
+    avatarColor: (profile.avatarBg || '#0F5132').slice(0, 20),
+    avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
+    role,
+    hasStorefront: Boolean(profile.hasStorefront),
+    storefrontName,
+    deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
+    isDiscoverable: true,
+    updatedAt: serverTimestamp(),
+  };
+  if (profile.virtualLine) {
+    payload.virtualLine = profile.virtualLine.slice(0, 24);
+  }
+
   try {
-    await setDoc(doc(db, 'public_directory', profile.uid), {
-      uid: profile.uid,
-      displayName: profile.name.slice(0, 80),
-      displayNameLower: profile.name.trim().toLowerCase().slice(0, 80),
-      initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
-      statusMessage: (profile.statusMessage || 'Disponível no Zapei').slice(0, 160),
-      avatarColor: (profile.avatarBg || '#0F5132').slice(0, 20),
-      avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
-      role,
-      hasStorefront: Boolean(profile.hasStorefront),
-      storefrontName,
-      deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
-      isDiscoverable: true,
-      updatedAt: serverTimestamp(),
-    });
+    await setDoc(doc(db, 'public_directory', profile.uid), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `public_directory/${profile.uid}`);
   }
@@ -574,6 +711,7 @@ export function subscribePublicDirectory(
         avatarUrl: d.avatarUrl || prev?.avatarUrl,
         storefrontName: d.storefrontName || prev?.storefrontName || '',
         statusMessage: d.statusMessage || prev?.statusMessage || 'Disponível no Zapei',
+        virtualLine: d.virtualLine || prev?.virtualLine,
       });
     }
 
@@ -600,6 +738,7 @@ export function subscribePublicDirectory(
           hasStorefront: Boolean(d.hasStorefront),
           storefrontName: String(d.storefrontName || ''),
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
+          virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
         };
       });
       mergeAndEmit();
@@ -638,6 +777,7 @@ export function subscribePublicDirectory(
             Boolean(d.hasStorefront) && String(d.subscriptionStatus || '') !== 'expired',
           storefrontName,
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
+          virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
         };
       });
       mergeAndEmit();
@@ -668,7 +808,7 @@ export interface PhoneLookupResult {
 export async function lookupRegisteredUserByPhone(
   rawPhone: string
 ): Promise<PhoneLookupResult | null> {
-  const phoneHash = await hashPhoneNumber(rawPhone);
+  const phoneHash = await computeContactLookupHash(rawPhone);
   if (!phoneHash) return null;
   try {
     const snap = await getDoc(doc(db, 'phone_index', phoneHash));
@@ -928,6 +1068,12 @@ export function subscribeChatMessages(
         timestamp: formatTimestampShort(d.createdAt as Timestamp | undefined) || 'Agora',
         mediaUrl: d.mediaUrl ? String(d.mediaUrl) : undefined,
         audioDuration: d.audioDuration ? String(d.audioDuration) : undefined,
+        videoDuration: d.videoDuration ? String(d.videoDuration) : undefined,
+        mediaTransitPath: d.mediaTransitPath ? String(d.mediaTransitPath) : undefined,
+        mediaDelivered: typeof d.mediaDelivered === 'boolean' ? d.mediaDelivered : undefined,
+        mediaSizeBytes: typeof d.mediaSizeBytes === 'number' ? d.mediaSizeBytes : undefined,
+        mediaMimeType: d.mediaMimeType ? String(d.mediaMimeType) : undefined,
+        mediaExpiresAtMs: typeof d.mediaExpiresAtMs === 'number' ? d.mediaExpiresAtMs : undefined,
         orderId: d.orderId ? String(d.orderId) : undefined,
         orderCode: d.orderCode ? String(d.orderCode) : undefined,
         orderSummary: d.orderSummary ? String(d.orderSummary) : undefined,
@@ -970,11 +1116,18 @@ export async function sendRealChatMessage(params: {
   text: string;
   mediaUrl?: string;
   audioDuration?: string;
+  videoDuration?: string;
+  mediaTransitPath?: string;
+  mediaDelivered?: boolean;
+  mediaSizeBytes?: number;
+  mediaMimeType?: string;
+  mediaExpiresAtMs?: number;
   orderId?: string;
   orderCode?: string;
   orderSummary?: string;
   orderTotal?: number;
   orderStatusLabel?: string;
+  customMessageId?: string;
 }): Promise<string> {
   const [userA, userB] = [params.myUid, params.otherUid].sort();
   const userAName = userA === params.myUid ? params.myName : params.otherName;
@@ -1014,7 +1167,10 @@ export async function sendRealChatMessage(params: {
     handleFirestoreError(error, OperationType.WRITE, `chats/${chatId}`);
   }
 
-  const msgId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const msgId =
+    params.customMessageId && params.customMessageId.trim()
+      ? params.customMessageId.trim().slice(0, 96)
+      : `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const payload: Record<string, unknown> = {
     chatId,
     userA,
@@ -1025,8 +1181,20 @@ export async function sendRealChatMessage(params: {
     text: params.text.slice(0, 1000),
     createdAt: serverTimestamp(),
   };
-  if (params.mediaUrl) payload.mediaUrl = params.mediaUrl;
+  if (typeof params.mediaUrl === 'string' && params.mediaUrl.length > 0) {
+    payload.mediaUrl = params.mediaUrl;
+  }
   if (params.audioDuration) payload.audioDuration = params.audioDuration.slice(0, 16);
+  if (params.videoDuration) payload.videoDuration = params.videoDuration.slice(0, 16);
+  if (params.mediaTransitPath) payload.mediaTransitPath = params.mediaTransitPath.slice(0, 260);
+  if (typeof params.mediaDelivered === 'boolean') payload.mediaDelivered = params.mediaDelivered;
+  if (typeof params.mediaSizeBytes === 'number' && params.mediaSizeBytes >= 0) {
+    payload.mediaSizeBytes = Math.round(params.mediaSizeBytes);
+  }
+  if (params.mediaMimeType) payload.mediaMimeType = params.mediaMimeType.slice(0, 80);
+  if (typeof params.mediaExpiresAtMs === 'number' && params.mediaExpiresAtMs >= 0) {
+    payload.mediaExpiresAtMs = Math.round(params.mediaExpiresAtMs);
+  }
   if (params.orderId) payload.orderId = params.orderId.slice(0, 128);
   if (params.orderCode) payload.orderCode = params.orderCode.slice(0, 32);
   if (params.orderSummary) payload.orderSummary = params.orderSummary.slice(0, 240);
@@ -1040,6 +1208,25 @@ export async function sendRealChatMessage(params: {
   }
 
   return chatId;
+}
+
+/**
+ * Called by the recipient immediately after persisting incoming media into local IndexedDB.
+ * Marks the message as mediaDelivered: true (blue double checks for sender) and clears
+ * any temporary inline URL from Firestore.
+ */
+export async function markChatMessageMediaDelivered(
+  chatId: string,
+  messageId: string
+): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), {
+      mediaDelivered: true,
+      mediaUrl: '',
+    });
+  } catch {
+    // Ignore if already delivered or offline
+  }
 }
 
 // --- REAL CALL HISTORY & INCOMING CALLS SUBSCRIPTION ---
@@ -1716,3 +1903,517 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
     return null;
   }
 }
+
+// --- UNIFIED CPF + RECOVERY EMAIL AUTHENTICATION (STRICT 1 VIRTUAL LINE PER CPF) ---
+
+export class CpfAuthError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+    this.name = 'CpfAuthError';
+  }
+}
+
+function formatDateTimePtBr(ts: Timestamp | undefined): string {
+  if (!ts || typeof ts.toDate !== 'function') return 'Agora';
+  const d = ts.toDate();
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} às ${hh}:${min}`;
+}
+
+export async function registerAccountWithCpf(params: {
+  name: string;
+  cpfRaw: string;
+  recoveryEmail: string;
+  password: string;
+  statusMessage?: string;
+  avatarUrl?: string;
+}): Promise<{ user: User; virtualLine: string }> {
+  const cleanName = params.name.trim();
+  const cleanEmail = params.recoveryEmail.trim().toLowerCase();
+  if (!cleanName || cleanName.length < 2) {
+    throw new CpfAuthError('invalid-name', 'Informe seu nome completo para criar a conta.');
+  }
+  if (!isValidCpf(params.cpfRaw)) {
+    throw new CpfAuthError('invalid-cpf', 'CPF inválido. Confira os 11 dígitos e tente novamente.');
+  }
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw new CpfAuthError('invalid-email', 'Informe um e-mail de recuperação válido.');
+  }
+  if (params.password.length < 6) {
+    throw new CpfAuthError('weak-password', 'A senha precisa ter pelo menos 6 caracteres.');
+  }
+
+  const cpfHash = await hashCpfSha256(params.cpfRaw);
+  if (!cpfHash) {
+    throw new CpfAuthError('invalid-cpf', 'Não foi possível validar o CPF informado.');
+  }
+
+  // Fast pre-check before creating Auth credential
+  const cpfRef = doc(db, 'cpf_registry', cpfHash);
+  const existingSnap = await getDoc(cpfRef);
+  if (existingSnap.exists()) {
+    throw new CpfAuthError(
+      'cpf-already-exists',
+      'Este CPF já possui uma conta e Linha Virtual ativa no Zapei.'
+    );
+  }
+
+  // Create Firebase Auth user using recovery email + password
+  let newUser: User;
+  try {
+    const credential = await createUserWithEmailAndPassword(auth, cleanEmail, params.password);
+    newUser = credential.user;
+  } catch (err) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+    if (code === 'auth/email-already-in-use') {
+      throw new CpfAuthError(
+        'auth/email-already-in-use',
+        'Este e-mail de recuperação já está vinculado a outra conta. Use outro e-mail ou entre na sua conta existente.'
+      );
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new CpfAuthError(
+        'auth/operation-not-allowed',
+        'O login por E-mail/Senha ainda precisa ser ativado no Firebase Console (Authentication → Sign-in method → E-mail/senha).'
+      );
+    }
+    if (code === 'auth/weak-password') {
+      throw new CpfAuthError('weak-password', 'Escolha uma senha mais forte (mínimo 6 caracteres).');
+    }
+    throw err;
+  }
+
+  const virtualLine = generateVirtualLine();
+
+  // Atomic Firestore transaction guaranteeing strictly 1 Virtual Line per CPF
+  try {
+    await runTransaction(db, async (tx) => {
+      const txSnap = await tx.get(cpfRef);
+      if (txSnap.exists()) {
+        throw new CpfAuthError(
+          'cpf-already-exists',
+          'Este CPF já possui uma conta e Linha Virtual ativa no Zapei.'
+        );
+      }
+      tx.set(cpfRef, {
+        ownerId: newUser.uid,
+        virtualLine,
+        recoveryEmail: cleanEmail,
+        createdAt: serverTimestamp(),
+      });
+    });
+  } catch (txErr) {
+    // Roll back Auth user if CPF collision happened concurrently
+    try {
+      await deleteUser(newUser);
+    } catch {
+      await signOut(auth).catch(() => {});
+    }
+    if (txErr instanceof CpfAuthError) {
+      throw txErr;
+    }
+    throw new CpfAuthError(
+      'cpf-transaction-failed',
+      'Não foi possível reservar sua Linha Virtual agora. Tente novamente.'
+    );
+  }
+
+  // Save public profile, owner-only private record, phone_index (virtualLine), and public_directory
+  await registerOrUpdateUserProfile({
+    uid: newUser.uid,
+    email: cleanEmail,
+    displayName: cleanName,
+    phone: virtualLine,
+    virtualLine,
+    authMethod: 'cpf',
+    cpfHash,
+    statusMessage: params.statusMessage || 'Disponível no Zapei',
+    avatarUrl: params.avatarUrl || '',
+  });
+
+  return { user: newUser, virtualLine };
+}
+
+export async function signInWithCpfAndPassword(
+  cpfRaw: string,
+  password: string
+): Promise<{ user: User; virtualLine: string }> {
+  if (!isValidCpf(cpfRaw)) {
+    throw new CpfAuthError('invalid-cpf', 'CPF inválido. Confira os 11 dígitos digitados.');
+  }
+  if (!password) {
+    throw new CpfAuthError('missing-password', 'Digite sua senha para entrar.');
+  }
+
+  const cpfHash = await hashCpfSha256(cpfRaw);
+  const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+  if (!snap.exists()) {
+    throw new CpfAuthError(
+      'cpf-not-found',
+      'Nenhuma conta encontrada com este CPF. Toque em "Criar Conta" para gerar sua Linha Virtual.'
+    );
+  }
+
+  const data = snap.data();
+  const recoveryEmail = String(data.recoveryEmail || '').trim().toLowerCase();
+  const virtualLine = String(data.virtualLine || '');
+  if (!recoveryEmail) {
+    throw new CpfAuthError('cpf-not-found', 'Cadastro de CPF incompleto. Tente novamente.');
+  }
+
+  try {
+    const credential = await signInWithEmailAndPassword(auth, recoveryEmail, password);
+    return { user: credential.user, virtualLine };
+  } catch (err) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+    if (
+      code === 'auth/wrong-password' ||
+      code === 'auth/invalid-credential' ||
+      code === 'auth/invalid-login-credentials'
+    ) {
+      throw new CpfAuthError(
+        'wrong-password',
+        'Senha incorreta para este CPF. Tente novamente ou use "Esqueci minha senha".'
+      );
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new CpfAuthError(
+        'too-many-requests',
+        'Muitas tentativas seguidas. Aguarde alguns minutos ou redefina sua senha.'
+      );
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new CpfAuthError(
+        'auth/operation-not-allowed',
+        'O provedor E-mail/Senha precisa estar ativado no Firebase Console.'
+      );
+    }
+    throw err;
+  }
+}
+
+export async function sendCpfPasswordReset(
+  cpfRaw: string
+): Promise<{ maskedEmail: string }> {
+  if (!isValidCpf(cpfRaw)) {
+    throw new CpfAuthError('invalid-cpf', 'Digite um CPF válido para recuperar sua senha.');
+  }
+  const cpfHash = await hashCpfSha256(cpfRaw);
+  const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+  if (!snap.exists()) {
+    throw new CpfAuthError(
+      'cpf-not-found',
+      'Nenhuma conta encontrada com este CPF no Zapei.'
+    );
+  }
+  const recoveryEmail = String(snap.data().recoveryEmail || '').trim().toLowerCase();
+  if (!recoveryEmail) {
+    throw new CpfAuthError(
+      'no-recovery-email',
+      'Esta conta não possui e-mail de recuperação cadastrado.'
+    );
+  }
+  auth.languageCode = 'pt-BR';
+  await sendPasswordResetEmail(auth, recoveryEmail);
+  return { maskedEmail: maskEmailForDisplay(recoveryEmail) };
+}
+
+// --- CONNECTED DEVICES & REAL-TIME QR / 6-DIGIT DEVICE AUTHORIZATION ---
+
+export async function createDeviceAuthRequest(
+  uid: string,
+  deviceInfo: LocalDeviceInfo
+): Promise<DeviceAuthRequest> {
+  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const requestToken = generateRequestToken();
+  const code6 = generateSixDigitCode();
+  const expiresAtMs = Date.now() + 10 * 60 * 1000; // 10 minutes validity
+
+  try {
+    await setDoc(doc(db, 'auth_requests', requestId), {
+      uid,
+      requestToken,
+      code6,
+      deviceId: deviceInfo.deviceId,
+      deviceName: deviceInfo.deviceName.slice(0, 100),
+      platform: deviceInfo.platform.slice(0, 60),
+      status: 'pending',
+      expiresAtMs,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `auth_requests/${requestId}`);
+  }
+
+  return {
+    id: requestId,
+    uid,
+    requestToken,
+    code6,
+    deviceId: deviceInfo.deviceId,
+    deviceName: deviceInfo.deviceName,
+    platform: deviceInfo.platform,
+    status: 'pending',
+    expiresAtMs,
+    createdAtMs: Date.now(),
+  };
+}
+
+export async function registerOrCheckCurrentDevice(
+  uid: string,
+  deviceInfo: LocalDeviceInfo
+): Promise<
+  | { authorized: true; isPrimary: boolean }
+  | { authorized: false; request: DeviceAuthRequest; activeDeviceCount: number }
+> {
+  const devicesCol = collection(db, 'users', uid, 'devices');
+  const qDevices = query(devicesCol, where('ownerId', '==', uid));
+  const snap = await getDocs(qDevices);
+
+  const existingDocs = snap.docs;
+  const selfDoc = existingDocs.find((d) => d.id === deviceInfo.deviceId);
+
+  if (selfDoc) {
+    const isPrimary = Boolean(selfDoc.data().primary);
+    void updateDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
+      deviceName: deviceInfo.deviceName.slice(0, 100),
+      platform: deviceInfo.platform.slice(0, 60),
+      lastActiveAt: serverTimestamp(),
+    }).catch(() => {
+      // Offline or transient update failure should not lock out an already-authorized device
+    });
+    return { authorized: true, isPrimary };
+  }
+
+  // First active device ever -> automatically becomes Aparelho Principal (primary: true)
+  if (existingDocs.length === 0) {
+    try {
+      await setDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
+        ownerId: uid,
+        deviceId: deviceInfo.deviceId,
+        deviceName: deviceInfo.deviceName.slice(0, 100),
+        platform: deviceInfo.platform.slice(0, 60),
+        primary: true,
+        createdAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        `users/${uid}/devices/${deviceInfo.deviceId}`
+      );
+    }
+    return { authorized: true, isPrimary: true };
+  }
+
+  // Another device is already active -> require real-time QR Code or 6-digit approval!
+  const request = await createDeviceAuthRequest(uid, deviceInfo);
+  return {
+    authorized: false,
+    request,
+    activeDeviceCount: existingDocs.length,
+  };
+}
+
+export function subscribeUserDevices(
+  uid: string,
+  callback: (devices: ConnectedDevice[]) => void
+): () => void {
+  const qDevices = query(
+    collection(db, 'users', uid, 'devices'),
+    where('ownerId', '==', uid)
+  );
+  return onSnapshot(
+    qDevices,
+    (snap) => {
+      const list: ConnectedDevice[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const createdAtTs = d.createdAt as Timestamp | undefined;
+        const lastActiveTs = d.lastActiveAt as Timestamp | undefined;
+        return {
+          deviceId: String(d.deviceId || docSnap.id),
+          ownerId: String(d.ownerId || uid),
+          deviceName: String(d.deviceName || 'Dispositivo'),
+          platform: String(d.platform || 'Web'),
+          primary: Boolean(d.primary),
+          authorizedByDeviceId: d.authorizedByDeviceId
+            ? String(d.authorizedByDeviceId)
+            : undefined,
+          createdAtLabel: formatDateTimePtBr(createdAtTs),
+          lastActiveAtLabel: formatDateTimePtBr(lastActiveTs),
+          createdAtMs: timestampToMs(createdAtTs),
+          lastActiveAtMs: timestampToMs(lastActiveTs),
+        };
+      });
+      list.sort(
+        (a, b) =>
+          Number(b.primary) - Number(a.primary) || b.lastActiveAtMs - a.lastActiveAtMs
+      );
+      callback(list);
+    },
+    (error) => {
+      console.error('Connected devices listener error:', error);
+    }
+  );
+}
+
+export function subscribeAuthRequestById(
+  requestId: string,
+  callback: (request: DeviceAuthRequest | null) => void
+): () => void {
+  return onSnapshot(
+    doc(db, 'auth_requests', requestId),
+    (snap) => {
+      if (!snap.exists()) {
+        callback(null);
+        return;
+      }
+      const d = snap.data();
+      callback({
+        id: snap.id,
+        uid: String(d.uid),
+        requestToken: String(d.requestToken || ''),
+        code6: String(d.code6 || ''),
+        deviceId: String(d.deviceId || ''),
+        deviceName: String(d.deviceName || 'Novo Aparelho'),
+        platform: String(d.platform || 'Web'),
+        status: (d.status as DeviceAuthRequest['status']) ?? 'pending',
+        approvedByDeviceId: d.approvedByDeviceId
+          ? String(d.approvedByDeviceId)
+          : undefined,
+        expiresAtMs: Number(d.expiresAtMs || 0),
+        createdAtMs: timestampToMs(d.createdAt as Timestamp | undefined),
+      });
+    },
+    (error) => {
+      console.error('Auth request watch error:', error);
+    }
+  );
+}
+
+export function subscribePendingAuthRequestsForUser(
+  uid: string,
+  currentDeviceId: string,
+  callback: (requests: DeviceAuthRequest[]) => void
+): () => void {
+  const qReqs = query(collection(db, 'auth_requests'), where('uid', '==', uid));
+  return onSnapshot(
+    qReqs,
+    (snap) => {
+      const now = Date.now();
+      const pending: DeviceAuthRequest[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            uid: String(d.uid),
+            requestToken: String(d.requestToken || ''),
+            code6: String(d.code6 || ''),
+            deviceId: String(d.deviceId || ''),
+            deviceName: String(d.deviceName || 'Novo Aparelho'),
+            platform: String(d.platform || 'Web'),
+            status: (d.status as DeviceAuthRequest['status']) ?? 'pending',
+            approvedByDeviceId: d.approvedByDeviceId
+              ? String(d.approvedByDeviceId)
+              : undefined,
+            expiresAtMs: Number(d.expiresAtMs || 0),
+            createdAtMs: timestampToMs(d.createdAt as Timestamp | undefined),
+          };
+        })
+        .filter(
+          (req) =>
+            req.status === 'pending' &&
+            req.deviceId !== currentDeviceId &&
+            (req.expiresAtMs === 0 || req.expiresAtMs > now)
+        )
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+      callback(pending);
+    },
+    (error) => {
+      console.error('Pending auth_requests listener error:', error);
+    }
+  );
+}
+
+export async function approveDeviceAuthRequest(params: {
+  uid: string;
+  request: DeviceAuthRequest;
+  approverDeviceId: string;
+}): Promise<void> {
+  const { uid, request, approverDeviceId } = params;
+  // 1. Register the newly authorized device under users/{uid}/devices/{deviceId}
+  try {
+    await setDoc(doc(db, 'users', uid, 'devices', request.deviceId), {
+      ownerId: uid,
+      deviceId: request.deviceId,
+      deviceName: request.deviceName.slice(0, 100),
+      platform: request.platform.slice(0, 60),
+      primary: false,
+      authorizedByDeviceId: approverDeviceId.slice(0, 128),
+      createdAt: serverTimestamp(),
+      lastActiveAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      OperationType.CREATE,
+      `users/${uid}/devices/${request.deviceId}`
+    );
+  }
+
+  // 2. Mark the request as approved so the waiting device unlocks in real time
+  try {
+    await updateDoc(doc(db, 'auth_requests', request.id), {
+      status: 'approved',
+      approvedByDeviceId: approverDeviceId.slice(0, 128),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `auth_requests/${request.id}`);
+  }
+}
+
+export async function rejectDeviceAuthRequest(
+  requestId: string,
+  approverDeviceId: string
+): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'auth_requests', requestId), {
+      status: 'rejected',
+      approvedByDeviceId: approverDeviceId.slice(0, 128),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `auth_requests/${requestId}`);
+  }
+}
+
+export async function disconnectUserDevice(
+  uid: string,
+  targetDeviceId: string
+): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'devices', targetDeviceId));
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      OperationType.DELETE,
+      `users/${uid}/devices/${targetDeviceId}`
+    );
+  }
+}
+

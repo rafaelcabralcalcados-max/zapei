@@ -312,7 +312,9 @@ async function startServer(): Promise<void> {
           ? req.body.previewText.slice(0, 180)
           : 'Nova mensagem';
       const messageType =
-        req.body?.messageType === 'audio' || req.body?.messageType === 'image'
+        req.body?.messageType === 'audio' ||
+        req.body?.messageType === 'image' ||
+        req.body?.messageType === 'video'
           ? req.body.messageType
           : 'text';
       const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -338,6 +340,11 @@ async function startServer(): Promise<void> {
       res.json({ ok: true, ...result });
     }
   );
+
+  // Fallback for PWA Web Share Target if invoked before Service Worker intercepts POST /share-target
+  app.all('/share-target', (_req: Request, res: Response) => {
+    res.redirect(303, '/?shared=1');
+  });
 
   const httpServer = http.createServer(app);
 

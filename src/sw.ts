@@ -16,6 +16,108 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+const SHARE_INBOX_DB_NAME = 'zapei_share_inbox_v1';
+const SHARE_INBOX_DB_VERSION = 1;
+const SHARE_INBOX_STORE_NAME = 'pending_shares';
+
+interface SwSharedFileRecord {
+  name: string;
+  type: string;
+  size: number;
+  blob: Blob;
+}
+
+interface SwSharedPayloadRecord {
+  id: string;
+  createdAtMs: number;
+  title: string;
+  text: string;
+  url: string;
+  files: SwSharedFileRecord[];
+}
+
+function saveSharedPayloadInSw(payload: SwSharedPayloadRecord): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(SHARE_INBOX_DB_NAME, SHARE_INBOX_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(SHARE_INBOX_STORE_NAME)) {
+        db.createObjectStore(SHARE_INBOX_STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(SHARE_INBOX_STORE_NAME, 'readwrite');
+      tx.objectStore(SHARE_INBOX_STORE_NAME).put(payload);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Intercept Web Share Target POSTs from WhatsApp / Android Share Sheet
+self.addEventListener('fetch', (event: FetchEvent) => {
+  const url = new URL(event.request.url);
+  if (event.request.method === 'POST' && url.pathname === '/share-target') {
+    event.respondWith(
+      (async () => {
+        try {
+          const formData = await event.request.formData();
+          const title = String(formData.get('title') || '').trim();
+          const text = String(formData.get('text') || '').trim();
+          const sharedUrl = String(formData.get('url') || '').trim();
+          const rawFiles = formData.getAll('media');
+
+          const files: SwSharedFileRecord[] = [];
+          for (const entry of rawFiles) {
+            if (entry instanceof File && entry.size > 0) {
+              const arrayBuffer = await entry.arrayBuffer();
+              const blob = new Blob([arrayBuffer], {
+                type: entry.type || 'application/octet-stream',
+              });
+              files.push({
+                name: entry.name || `arquivo_${Date.now()}`,
+                type: entry.type || blob.type || '',
+                size: blob.size,
+                blob,
+              });
+            }
+          }
+
+          if (files.length > 0 || title || text || sharedUrl) {
+            await saveSharedPayloadInSw({
+              id: `share_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              createdAtMs: Date.now(),
+              title,
+              text,
+              url: sharedUrl,
+              files,
+            });
+          }
+
+          const clients = await self.clients.matchAll({
+            type: 'window',
+            includeUncontrolled: true,
+          });
+          clients.forEach((client) => {
+            client.postMessage({ type: 'ZAPEI_SHARED_MEDIA_READY' });
+          });
+        } catch {
+          // Always redirect gracefully even if share payload is empty
+        }
+        return Response.redirect('/?shared=1', 303);
+      })()
+    );
+  }
+});
+
 interface ZapeiPushPayload {
   type: 'incoming_call' | 'call_cancelled' | 'new_message';
   callId?: string;

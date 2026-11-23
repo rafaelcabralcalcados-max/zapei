@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Zapei Temporary Cloud Transit Storage Rules (WhatsApp-style delivery bridge)
+// Media is uploaded to transit_media/{chatId}/{messageId} while waiting for the recipient
+// (retained up to 14 days if offline), then automatically deleted once downloaded to IndexedDB.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /transit_media/{chatId}/{messageId} {
+      function isChatParticipant() {
+        return request.auth != null
+          && (
+            chatId.matches('^' + request.auth.uid + '__.*') ||
+            chatId.matches('.*__' + request.auth.uid + '$')
+          );
+      }
+
+      allow read: if isChatParticipant();
+      allow create, update: if isChatParticipant()
+        && request.resource != null
+        && request.resource.size <= 25 * 1024 * 1024;
+      allow delete: if isChatParticipant();
+    }
+  }
+}

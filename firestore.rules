@@ -15,12 +15,17 @@ service cloud.firestore {
     function isVerified() {
       return isSignedIn() && (
         ('email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
-        ('phone_number' in request.auth.token && request.auth.token.phone_number != null)
+        ('phone_number' in request.auth.token && request.auth.token.phone_number != null) ||
+        ('firebase' in request.auth.token && request.auth.token.firebase.sign_in_provider == 'password')
       );
     }
 
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 260 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSha256(hash) {
+      return hash is string && hash.size() == 64 && hash.matches('^[a-f0-9]{64}$');
     }
 
     function incoming() {
@@ -43,7 +48,7 @@ service cloud.firestore {
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
           'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'createdAt', 'updatedAt'
+          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
@@ -65,17 +70,25 @@ service cloud.firestore {
         && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
         && data.subscriptionStatus in ['free', 'trial', 'active', 'expired']
         && (!('trialEndsAt' in data) || (data.trialEndsAt is number && data.trialEndsAt >= 0))
+        && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
+        && (!('authMethod' in data) || data.authMethod in ['phone', 'cpf'])
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidUserPrivate(data) {
       return data.keys().hasAll(['ownerId', 'phone', 'phoneHash', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'phone', 'phoneHash', 'email', 'deliveryAddress', 'favoriteGrades', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'phone', 'phoneHash', 'cpfHash', 'virtualLine', 'authMethod',
+          'email', 'deliveryAddress', 'favoriteGrades', 'createdAt', 'updatedAt'
+        ])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
         && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
         && data.phoneHash is string && data.phoneHash.size() >= 16 && data.phoneHash.size() <= 128
+        && (!('cpfHash' in data) || isValidSha256(data.cpfHash))
+        && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
+        && (!('authMethod' in data) || data.authMethod in ['phone', 'cpf'])
         && (!('email' in data) || (data.email is string && data.email.size() <= 120))
         && (!('deliveryAddress' in data) || (data.deliveryAddress is string && data.deliveryAddress.size() <= 300))
         && (!('favoriteGrades' in data) || (data.favoriteGrades is list && data.favoriteGrades.size() <= 20))
@@ -134,7 +147,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'displayName', 'displayNameLower', 'initials', 'statusMessage',
           'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
-          'deliveryPolicyLabel', 'isDiscoverable', 'updatedAt'
+          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
@@ -148,6 +161,7 @@ service cloud.firestore {
         && data.hasStorefront is bool
         && (!('storefrontName' in data) || (data.storefrontName is string && data.storefrontName.size() <= 80))
         && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
         && data.isDiscoverable is bool
         && data.updatedAt is timestamp;
     }
@@ -295,19 +309,25 @@ service cloud.firestore {
       return data.keys().hasAll(['chatId', 'userA', 'userB', 'senderId', 'senderName', 'type', 'text', 'createdAt'])
         && data.keys().hasOnly([
           'chatId', 'userA', 'userB', 'senderId', 'senderName', 'type', 'text',
-          'mediaUrl', 'audioDuration', 'orderId', 'orderCode', 'orderSummary',
-          'orderTotal', 'orderStatusLabel', 'createdAt'
+          'mediaUrl', 'audioDuration', 'videoDuration', 'mediaTransitPath',
+          'mediaDelivered', 'mediaSizeBytes', 'mediaMimeType', 'mediaExpiresAtMs',
+          'orderId', 'orderCode', 'orderSummary', 'orderTotal', 'orderStatusLabel', 'createdAt'
         ])
         && data.chatId == chatId
         && isValidId(data.userA)
         && isValidId(data.userB)
         && isValidId(data.senderId)
-        && data.senderId == request.auth.uid
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
-        && data.type in ['text', 'audio', 'image', 'order_card', 'billing_reminder']
+        && data.type in ['text', 'audio', 'image', 'video', 'order_card', 'billing_reminder']
         && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
         && (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 500000))
         && (!('audioDuration' in data) || (data.audioDuration is string && data.audioDuration.size() <= 16))
+        && (!('videoDuration' in data) || (data.videoDuration is string && data.videoDuration.size() <= 16))
+        && (!('mediaTransitPath' in data) || (data.mediaTransitPath is string && data.mediaTransitPath.size() <= 260))
+        && (!('mediaDelivered' in data) || data.mediaDelivered is bool)
+        && (!('mediaSizeBytes' in data) || (data.mediaSizeBytes is number && data.mediaSizeBytes >= 0 && data.mediaSizeBytes <= 26214400))
+        && (!('mediaMimeType' in data) || (data.mediaMimeType is string && data.mediaMimeType.size() <= 80))
+        && (!('mediaExpiresAtMs' in data) || (data.mediaExpiresAtMs is number && data.mediaExpiresAtMs >= 0))
         && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
         && (!('orderCode' in data) || (data.orderCode is string && data.orderCode.size() <= 32))
         && (!('orderSummary' in data) || (data.orderSummary is string && data.orderSummary.size() <= 240))
@@ -353,6 +373,54 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidCpfRegistry(data) {
+      return data.keys().hasAll(['ownerId', 'virtualLine', 'recoveryEmail', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'virtualLine', 'recoveryEmail', 'createdAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.virtualLine is string && data.virtualLine.size() >= 10 && data.virtualLine.size() <= 24
+        && data.recoveryEmail is string && data.recoveryEmail.size() >= 5 && data.recoveryEmail.size() <= 120
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUserDevice(data, deviceId) {
+      return data.keys().hasAll(['ownerId', 'deviceId', 'deviceName', 'platform', 'primary', 'createdAt', 'lastActiveAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'deviceId', 'deviceName', 'platform', 'primary',
+          'authorizedByDeviceId', 'createdAt', 'lastActiveAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.deviceId)
+        && data.deviceId == deviceId
+        && data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 100
+        && data.platform is string && data.platform.size() >= 1 && data.platform.size() <= 60
+        && data.primary is bool
+        && (!('authorizedByDeviceId' in data) || (data.authorizedByDeviceId is string && data.authorizedByDeviceId.size() <= 128))
+        && data.createdAt is timestamp
+        && data.lastActiveAt is timestamp;
+    }
+
+    function isValidDeviceAuthRequest(data) {
+      return data.keys().hasAll(['uid', 'requestToken', 'code6', 'deviceId', 'deviceName', 'platform', 'status', 'expiresAtMs', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'requestToken', 'code6', 'deviceId', 'deviceName', 'platform',
+          'status', 'approvedByDeviceId', 'expiresAtMs', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.requestToken is string && data.requestToken.size() >= 16 && data.requestToken.size() <= 128
+        && data.code6 is string && data.code6.size() == 6 && data.code6.matches('^[0-9]{6}$')
+        && isValidId(data.deviceId)
+        && data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 100
+        && data.platform is string && data.platform.size() >= 1 && data.platform.size() <= 60
+        && data.status in ['pending', 'approved', 'rejected', 'expired']
+        && (!('approvedByDeviceId' in data) || (data.approvedByDeviceId is string && data.approvedByDeviceId.size() <= 128))
+        && data.expiresAtMs is number && data.expiresAtMs > 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // --- Collection Rules ---
 
     // 1. Users (Public storefront / messenger profile; NO PII — all PII is strictly in /private/info)
@@ -375,7 +443,7 @@ service cloud.firestore {
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
           'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'updatedAt'
+          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'updatedAt'
         ]);
       allow delete: if false;
 
@@ -392,7 +460,10 @@ service cloud.firestore {
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'phoneHash', 'email', 'deliveryAddress', 'favoriteGrades', 'updatedAt']);
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'phone', 'phoneHash', 'cpfHash', 'virtualLine', 'authMethod',
+            'email', 'deliveryAddress', 'favoriteGrades', 'updatedAt'
+          ]);
         allow delete: if false;
       }
 
@@ -415,6 +486,24 @@ service cloud.firestore {
             'avatarColor', 'invited', 'updatedAt'
           ]);
         allow delete: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(contactId);
+      }
+
+      // Owner-only Connected Devices Subcollection (Primary + Linked Secondary Sessions)
+      match /devices/{deviceId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(deviceId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(deviceId)
+          && isValidUserDevice(incoming(), deviceId)
+          && incoming().createdAt == request.time
+          && incoming().lastActiveAt == request.time;
+        allow update: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(deviceId)
+          && isValidUserDevice(incoming(), deviceId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().deviceId == existing().deviceId
+          && incoming().createdAt == existing().createdAt
+          && incoming().lastActiveAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['deviceName', 'platform', 'primary', 'lastActiveAt']);
+        allow delete: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(deviceId);
       }
     }
 
@@ -453,9 +542,49 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'displayName', 'displayNameLower', 'initials', 'statusMessage',
           'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
-          'deliveryPolicyLabel', 'isDiscoverable', 'updatedAt'
+          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable', 'updatedAt'
         ]);
       allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
+    }
+
+    // 2c. LGPD-Safe SHA-256 CPF Registry (1 Virtual Line per CPF; exact-match GET only, zero list scraping)
+    match /cpf_registry/{cpfHash} {
+      allow get: if isValidSha256(cpfHash);
+      allow list: if false;
+      allow create: if isVerified() && isValidSha256(cpfHash)
+        && isValidCpfRegistry(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 2d. Real-Time Device Authorization Requests (QR Code + 6-Digit Approval Gate)
+    match /auth_requests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId)
+        && existing().uid == request.auth.uid;
+      allow list: if isSignedIn()
+        && existing().uid == request.auth.uid;
+      allow create: if isVerified() && isValidId(requestId)
+        && isValidDeviceAuthRequest(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(requestId)
+        && isValidDeviceAuthRequest(incoming())
+        && existing().uid == request.auth.uid
+        && existing().status == 'pending'
+        && incoming().uid == existing().uid
+        && incoming().requestToken == existing().requestToken
+        && incoming().code6 == existing().code6
+        && incoming().deviceId == existing().deviceId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['approved', 'rejected', 'expired']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approvedByDeviceId', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(requestId)
+        && existing().uid == request.auth.uid;
     }
 
     // 3. Reseller-to-Factory Connections
@@ -642,12 +771,27 @@ service cloud.firestore {
           && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
         allow create: if isVerified() && isValidId(chatId) && isValidId(messageId)
           && isValidChatMessage(incoming(), chatId)
+          && incoming().senderId == request.auth.uid
           && incoming().createdAt == request.time
           && exists(/databases/$(database)/documents/chats/$(chatId))
           && get(/databases/$(database)/documents/chats/$(chatId)).data.userA == incoming().userA
           && get(/databases/$(database)/documents/chats/$(chatId)).data.userB == incoming().userB
           && (incoming().userA == request.auth.uid || incoming().userB == request.auth.uid);
-        allow update: if false;
+        allow update: if isVerified() && isValidId(chatId) && isValidId(messageId)
+          && isValidChatMessage(incoming(), chatId)
+          && (existing().userA == request.auth.uid || existing().userB == request.auth.uid)
+          && existing().senderId != request.auth.uid
+          && existing().mediaDelivered == false
+          && incoming().mediaDelivered == true
+          && incoming().chatId == existing().chatId
+          && incoming().userA == existing().userA
+          && incoming().userB == existing().userB
+          && incoming().senderId == existing().senderId
+          && incoming().senderName == existing().senderName
+          && incoming().type == existing().type
+          && incoming().text == existing().text
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['mediaDelivered', 'mediaUrl']);
         allow delete: if false;
       }
     }

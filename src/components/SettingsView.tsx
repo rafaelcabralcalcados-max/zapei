@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   CheckCircle2,
+  Copy,
   CreditCard,
   Edit3,
   Factory,
@@ -10,36 +11,66 @@ import {
   Store,
 } from 'lucide-react';
 import type { BackgroundPushStatus } from '../lib/pushService';
-import type { CommercialMode, UserProfile } from '../types/zapei';
+import type { PolicyConsentRecord } from '../lib/policyConsent';
+import type { CommercialMode, ConnectedDevice, UserProfile } from '../types/zapei';
 import { BackgroundCallPushCard } from './BackgroundCallPushCard';
-import { MediaPermissionsCard } from './MediaPermissionsCard';
+import { ConnectedDevicesCard } from './ConnectedDevicesCard';
+import { CustomSoundsCard } from './CustomSoundsCard';
+import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
 import { PWAInstallButton } from './PWAInstallButton';
+import { StorageManagerCard } from './StorageManagerCard';
 
 interface SettingsViewProps {
   profile: UserProfile;
+  connectedDevices: ConnectedDevice[];
+  currentDeviceId: string;
+  onDisconnectDevice: (device: ConnectedDevice) => Promise<void>;
   pushStatus: BackgroundPushStatus;
   pushBusy: boolean;
   pushFeedback: string;
   onEnableBackgroundPush: () => Promise<void>;
+  policyConsent: PolicyConsentRecord | null;
+  onOpenPolicies: () => void;
+  onAuthorizeResources: () => Promise<void>;
   onEditProfile: () => void;
   onSelectMode: (mode: CommercialMode) => void;
   onOpenBilling: () => void;
   onOpenCommercialPanel: () => void;
+  onNotify?: (message: string) => void;
   onSignOut: () => Promise<void>;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   profile,
+  connectedDevices,
+  currentDeviceId,
+  onDisconnectDevice,
   pushStatus,
   pushBusy,
   pushFeedback,
   onEnableBackgroundPush,
+  policyConsent,
+  onOpenPolicies,
+  onAuthorizeResources,
   onEditProfile,
   onSelectMode,
   onOpenBilling,
   onOpenCommercialPanel,
+  onNotify,
   onSignOut,
 }) => {
+  const [copiedLine, setCopiedLine] = useState(false);
+
+  const handleCopyVirtualLine = async () => {
+    if (!profile.virtualLine) return;
+    try {
+      await navigator.clipboard.writeText(profile.virtualLine);
+      setCopiedLine(true);
+      window.setTimeout(() => setCopiedLine(false), 2000);
+    } catch {
+      // Ignore clipboard restriction
+    }
+  };
   return (
     <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
       {/* User Identity Card */}
@@ -62,9 +93,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             )}
             <div>
               <h1 className="text-lg font-bold text-slate-900">{profile.name}</h1>
-              <p className="font-mono text-xs text-slate-600 tabular-nums">
-                {profile.phone}
-              </p>
+              <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                <p className="font-mono text-xs text-slate-600 tabular-nums">
+                  {profile.virtualLine || profile.phone}
+                </p>
+                {profile.virtualLine && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyVirtualLine()}
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-[#0F5132] transition hover:bg-emerald-100"
+                  >
+                    {copiedLine ? (
+                      <>
+                        <CheckCircle2 className="h-3 w-3" />
+                        Copiada
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" />
+                        Linha Virtual
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
               <p className="mt-0.5 text-xs text-slate-500">{profile.statusMessage}</p>
             </div>
           </div>
@@ -223,6 +275,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         )}
       </section>
 
+      {/* Connected Devices (Primary Session + Remote Disconnect) */}
+      <ConnectedDevicesCard
+        devices={connectedDevices}
+        currentDeviceId={currentDeviceId}
+        onDisconnectDevice={onDisconnectDevice}
+      />
+
+      {/* WhatsApp-Style Local Media Storage Manager (IndexedDB per chat + manual cleanup) */}
+      <StorageManagerCard onNotify={onNotify} />
+
+      {/* Custom Phone Sounds for Calls, Text Messages, and Audio Messages */}
+      <CustomSoundsCard onNotify={onNotify} />
+
+      {/* Privacy, Terms of Responsibility & One-Time Device Permissions */}
+      <PrivacyAndPermissionsCard
+        consent={policyConsent}
+        pushStatus={pushStatus}
+        onOpenPolicies={onOpenPolicies}
+        onAuthorizeResources={onAuthorizeResources}
+      />
+
       {/* Real Background Call Push Notifications */}
       <BackgroundCallPushCard
         status={pushStatus}
@@ -231,19 +304,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         onEnable={onEnableBackgroundPush}
       />
 
-      {/* Camera & Microphone One-Time Pre-Authorization Card */}
-      <MediaPermissionsCard />
-
-      {/* PWA Install & Security Info */}
+      {/* PWA Install & WhatsApp Share Target Info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-2.5">
           <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#0F5132]" />
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Instalar Zapei na tela inicial
+              Instalar Zapei e Receber do WhatsApp
             </h3>
             <p className="text-xs text-slate-500">
-              Adicione o ícone do Zapei no celular ou computador para abrir em tela cheia igual a um aplicativo instalado.
+              Adicione o Zapei na tela inicial para abrir em tela cheia e fazê-lo aparecer automaticamente no botão <strong>Compartilhar</strong> do WhatsApp para enviar imagens e áudios direto para suas conversas.
             </p>
           </div>
         </div>

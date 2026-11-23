@@ -4,23 +4,40 @@ import {
   ArrowLeft,
   Camera,
   Check,
+  CheckCircle2,
   ChevronDown,
+  CreditCard,
+  Eye,
+  EyeOff,
   ExternalLink,
+  KeyRound,
   Loader2,
   Lock,
+  Mail,
   MessageCircle,
+  Phone,
   RefreshCw,
+  ShieldCheck,
   User as UserIcon,
   X,
 } from 'lucide-react';
 import type { ConfirmationResult, User } from 'firebase/auth';
 import {
   clearPhoneRecaptcha,
+  CpfAuthError,
   firebaseConfig,
+  registerAccountWithCpf,
+  sendCpfPasswordReset,
   sendWhatsAppStyleSmsCode,
+  signInWithCpfAndPassword,
   signOutFirebase,
   verifyWhatsAppStyleSmsCode,
 } from '../lib/firebase';
+import {
+  cleanCpfDigits,
+  formatCpfMask,
+  isValidCpf,
+} from '../lib/cpfAndDeviceUtils';
 import {
   compressImageFileToDataUrl,
   formatPhoneDisplay,
@@ -45,7 +62,8 @@ const COUNTRIES: CountryOption[] = [
   { code: 'ES', name: 'Espanha', dial: '34' },
 ];
 
-type GateStep = 'welcome' | 'phone' | 'otp' | 'profile';
+type GateStep = 'welcome' | 'phone' | 'otp' | 'cpf' | 'profile';
+type CpfSubMode = 'login' | 'register';
 
 interface PhoneOnboardingModalProps {
   mode: 'gate' | 'edit';
@@ -219,6 +237,17 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   const [avatarUrl, setAvatarUrl] = useState(initialAvatarUrl);
   const [editPhone, setEditPhone] = useState(initialPhone);
 
+  // Unified CPF + Recovery Email Auth state
+  const [cpfSubMode, setCpfSubMode] = useState<CpfSubMode>('login');
+  const [cpfName, setCpfName] = useState('');
+  const [cpfInput, setCpfInput] = useState('');
+  const [cpfEmail, setCpfEmail] = useState('');
+  const [cpfPassword, setCpfPassword] = useState('');
+  const [showCpfPassword, setShowCpfPassword] = useState(false);
+  const [cpfResetNotice, setCpfResetNotice] = useState('');
+  const [cpfResetBusy, setCpfResetBusy] = useState(false);
+  const cpfAuthInFlightRef = useRef(false);
+
   const [busy, setBusy] = useState(false);
   const [errorInfo, setErrorInfo] = useState<{
     message: string;
@@ -231,13 +260,15 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   // Sync step automatically when Firebase Auth state transitions after SMS confirmation
   useEffect(() => {
     if (mode !== 'gate') return;
-    if (authUser) {
-      setStep('profile');
+    if (authUser && !cpfAuthInFlightRef.current) {
       if (authUser.phoneNumber) {
+        setStep('profile');
         setEditPhone(formatPhoneDisplay(authUser.phoneNumber));
+      } else if (step !== 'cpf') {
+        setStep('profile');
       }
     }
-  }, [authUser, mode]);
+  }, [authUser, mode, step]);
 
   // Countdown timer for "Reenviar SMS"
   useEffect(() => {
@@ -396,9 +427,13 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       });
       return;
     }
+    const rawEditPhone = editPhone || initialPhone;
+    const isVirtualLineEdit = rawEditPhone.trim().toUpperCase().startsWith('ZAP-');
     const verifiedPhone =
       mode === 'edit'
-        ? formatPhoneDisplay(editPhone || initialPhone)
+        ? isVirtualLineEdit
+          ? rawEditPhone.trim().toUpperCase()
+          : formatPhoneDisplay(rawEditPhone)
         : authUser?.phoneNumber
           ? formatPhoneDisplay(authUser.phoneNumber)
           : formattedFullPhone;
@@ -422,6 +457,82 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const cpfDigits = cleanCpfDigits(cpfInput);
+  const cpfComplete = cpfDigits.length === 11;
+  const cpfValid = cpfComplete && isValidCpf(cpfInput);
+
+  const handleCpfSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorInfo(null);
+    setCpfResetNotice('');
+
+    if (!cpfValid) {
+      setErrorInfo({
+        message: 'CPF inválido. Confira os 11 dígitos informados.',
+        needsConsoleSetup: false,
+      });
+      return;
+    }
+
+    setBusy(true);
+    cpfAuthInFlightRef.current = true;
+    try {
+      if (cpfSubMode === 'register') {
+        await registerAccountWithCpf({
+          name: cpfName.trim(),
+          cpfRaw: cpfInput,
+          recoveryEmail: cpfEmail.trim(),
+          password: cpfPassword,
+        });
+      } else {
+        await signInWithCpfAndPassword(cpfInput, cpfPassword);
+      }
+    } catch (err) {
+      const needsConsole =
+        err instanceof CpfAuthError && err.code === 'auth/operation-not-allowed';
+      setErrorInfo({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível concluir o acesso por CPF. Tente novamente.',
+        needsConsoleSetup: needsConsole,
+        code: err instanceof CpfAuthError ? err.code : undefined,
+      });
+    } finally {
+      cpfAuthInFlightRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const handleCpfForgotPassword = async () => {
+    setErrorInfo(null);
+    setCpfResetNotice('');
+    if (!cpfValid) {
+      setErrorInfo({
+        message: 'Digite um CPF válido acima antes de tocar em "Esqueci minha senha".',
+        needsConsoleSetup: false,
+      });
+      return;
+    }
+    setCpfResetBusy(true);
+    try {
+      const { maskedEmail } = await sendCpfPasswordReset(cpfInput);
+      setCpfResetNotice(
+        `Link de redefinição enviado para ${maskedEmail}. Verifique sua caixa de entrada e spam.`
+      );
+    } catch (err) {
+      setErrorInfo({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível enviar o link de redefinição agora.',
+        needsConsoleSetup: false,
+      });
+    } finally {
+      setCpfResetBusy(false);
     }
   };
 
@@ -508,7 +619,9 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-600">
-                Número verificado
+                {(editPhone || initialPhone).trim().toUpperCase().startsWith('ZAP-')
+                  ? 'Linha Virtual Zapei'
+                  : 'Número verificado'}
               </label>
               <p className="mt-1 font-mono text-sm font-semibold text-slate-700 tabular-nums">
                 {editPhone || initialPhone}
@@ -545,9 +658,15 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
     );
   }
 
-  // --- FULL-SCREEN WHATSAPP-IDENTICAL LOGIN & VERIFICATION FLOW ---
+  // --- FULL-SCREEN UNIFIED LOGIN & VERIFICATION FLOW ---
   const stepIndex =
-    step === 'welcome' ? 0 : step === 'phone' ? 1 : step === 'otp' ? 2 : 3;
+    step === 'welcome'
+      ? 0
+      : step === 'phone' || step === 'cpf'
+        ? 1
+        : step === 'otp'
+          ? 2
+          : 3;
 
   return (
     <div className="relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-white md:bg-[#EFF3F6]">
@@ -567,58 +686,102 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       {/* Main Content Container */}
       <div className="mx-auto flex min-h-[100dvh] md:min-h-0 max-w-5xl flex-col justify-center md:-mt-32 md:px-6 md:pb-12">
         <div className="flex flex-1 md:flex-none flex-col md:flex-row overflow-hidden bg-white md:rounded-2xl md:border md:border-slate-200 md:shadow-lg">
-          {/* Desktop Left Column — WhatsApp Web Clean Guidance */}
+          {/* Desktop Left Column — Clean Guidance */}
           <div className="hidden md:flex md:w-5/12 flex-col justify-between border-r border-slate-100 bg-[#F8FAFC] p-9">
             <div>
               <h2 className="text-2xl font-bold tracking-tight text-slate-900">
-                Entre no Zapei com seu número de telefone
+                {step === 'cpf'
+                  ? 'Entre no Zapei com seu CPF e Linha Virtual'
+                  : 'Entre no Zapei com Telefone ou CPF'}
               </h2>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600">
-                Verificação rápida por SMS, exatamente como no WhatsApp. Seus contatos da agenda encontram você automaticamente pelo seu número.
+                {step === 'cpf'
+                  ? 'Crie sua Linha Virtual exclusiva (ZAP-XXXX-XXXX) protegida por criptografia LGPD (1 conta por CPF) e converse livremente com qualquer pessoa no Zapei.'
+                  : 'Use seu número de celular com verificação por SMS ou entre com CPF e Linha Virtual exclusiva. Todos os usuários se encontram e conversam entre si.'}
               </p>
 
               <ol className="mt-8 space-y-5 text-sm text-slate-700">
-                {[
-                  {
-                    num: '1',
-                    title: 'Insira seu número de telefone',
-                    desc: 'Escolha o país (+55 Brasil) e digite seu DDD e celular.',
-                    done: stepIndex > 1,
-                    active: stepIndex <= 1,
-                  },
-                  {
-                    num: '2',
-                    title: 'Confirme o código SMS de 6 dígitos',
-                    desc: 'Digite o código enviado por SMS para validar sua conta.',
-                    done: stepIndex > 2,
-                    active: stepIndex === 2,
-                  },
-                  {
-                    num: '3',
-                    title: 'Configure seu nome e foto',
-                    desc: 'Defina como seus contatos e clientes verão você no Zapei.',
-                    done: false,
-                    active: stepIndex === 3,
-                  },
-                ].map((item) => (
-                  <li key={item.num} className="flex items-start gap-3.5">
-                    <span
-                      className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition ${
-                        item.done
-                          ? 'bg-[#0F5132] text-white'
-                          : item.active
-                            ? 'bg-[#0D2B3E] text-white'
-                            : 'bg-slate-200 text-slate-600'
-                      }`}
-                    >
-                      {item.done ? <Check className="h-4 w-4" /> : item.num}
-                    </span>
-                    <div>
-                      <p className="font-semibold text-slate-900">{item.title}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">{item.desc}</p>
-                    </div>
-                  </li>
-                ))}
+                {step === 'cpf'
+                  ? [
+                      {
+                        num: '1',
+                        title: '1 Linha Virtual exclusiva por CPF',
+                        desc: 'Seu CPF é protegido via hash SHA-256 (LGPD) e gera uma Linha Virtual ZAP-XXXX-XXXX.',
+                        done: false,
+                        active: true,
+                      },
+                      {
+                        num: '2',
+                        title: 'E-mail de recuperação seguro',
+                        desc: 'Esqueceu a senha? Recupere o acesso facilmente pelo e-mail cadastrado.',
+                        done: false,
+                        active: false,
+                      },
+                      {
+                        num: '3',
+                        title: 'Proteção de Aparelhos Conectados',
+                        desc: 'Novos dispositivos só entram após aprovação por QR Code ou código de 6 dígitos.',
+                        done: false,
+                        active: false,
+                      },
+                    ].map((item) => (
+                      <li key={item.num} className="flex items-start gap-3.5">
+                        <span
+                          className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition ${
+                            item.active
+                              ? 'bg-[#0F5132] text-white'
+                              : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {item.num}
+                        </span>
+                        <div>
+                          <p className="font-semibold text-slate-900">{item.title}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">{item.desc}</p>
+                        </div>
+                      </li>
+                    ))
+                  : [
+                      {
+                        num: '1',
+                        title: 'Escolha Telefone (SMS) ou CPF',
+                        desc: 'Entre com seu celular (+55) ou crie sua Linha Virtual exclusiva com CPF.',
+                        done: stepIndex > 1,
+                        active: stepIndex <= 1,
+                      },
+                      {
+                        num: '2',
+                        title: 'Confirme sua identidade',
+                        desc: 'Valide o código SMS de 6 dígitos ou sua senha vinculada ao CPF.',
+                        done: stepIndex > 2,
+                        active: stepIndex === 2,
+                      },
+                      {
+                        num: '3',
+                        title: 'Converse e proteja seus aparelhos',
+                        desc: 'Seu primeiro dispositivo vira o Aparelho Principal com autorização por QR Code.',
+                        done: false,
+                        active: stepIndex === 3,
+                      },
+                    ].map((item) => (
+                      <li key={item.num} className="flex items-start gap-3.5">
+                        <span
+                          className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition ${
+                            item.done
+                              ? 'bg-[#0F5132] text-white'
+                              : item.active
+                                ? 'bg-[#0D2B3E] text-white'
+                                : 'bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {item.done ? <Check className="h-4 w-4" /> : item.num}
+                        </span>
+                        <div>
+                          <p className="font-semibold text-slate-900">{item.title}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">{item.desc}</p>
+                        </div>
+                      </li>
+                    ))}
               </ol>
             </div>
 
@@ -654,22 +817,37 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   </p>
                 </div>
 
-                <div className="mt-8 w-full max-w-sm mx-auto space-y-3">
+                <div className="mt-8 w-full max-w-sm mx-auto space-y-2.5">
                   <button
                     type="button"
-                    onClick={() => setStep('phone')}
+                    onClick={() => {
+                      setErrorInfo(null);
+                      setStep('phone');
+                    }}
                     className="h-12 w-full rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] active:scale-[0.99]"
                   >
-                    Concordar e continuar
+                    Concordar e entrar por Telefone
                   </button>
-                  <p className="text-center text-xs text-slate-400">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorInfo(null);
+                      setCpfResetNotice('');
+                      setStep('cpf');
+                    }}
+                    className="flex h-11 w-full items-center justify-center gap-2 rounded-full border-2 border-[#0F5132] bg-white text-xs font-bold tracking-wide text-[#0F5132] uppercase transition hover:bg-emerald-50 active:scale-[0.99]"
+                  >
+                    <CreditCard className="h-4 w-4" />
+                    Entrar com CPF (Linha Virtual)
+                  </button>
+                  <p className="pt-1 text-center text-xs text-slate-400">
                     Zapei · Mensagens, Ligações e Vitrines
                   </p>
                 </div>
               </>
             )}
 
-            {/* STEP 2: PHONE ENTRY (Identical to WhatsApp Phone Input) */}
+            {/* STEP 2A: PHONE ENTRY (With Dual Login Switcher) */}
             {step === 'phone' && (
               <form
                 onSubmit={handleRequestConfirmDialog}
@@ -689,12 +867,39 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       <ArrowLeft className="h-5 w-5" />
                     </button>
                     <h1 className="text-lg font-bold text-[#0F5132]">
-                      Insira seu número de telefone
+                      Entrar no Zapei
                     </h1>
                   </div>
 
+                  {/* Dual Auth Method Switcher */}
+                  <div className="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorInfo(null);
+                        setStep('phone');
+                      }}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0F5132] shadow-xs"
+                    >
+                      <Phone className="h-3.5 w-3.5" />
+                      Telefone (SMS)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorInfo(null);
+                        setCpfResetNotice('');
+                        setStep('cpf');
+                      }}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-slate-600 transition hover:text-slate-900"
+                    >
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Entrar com CPF
+                    </button>
+                  </div>
+
                   <p className="mt-4 text-center text-xs leading-relaxed text-slate-600">
-                    O Zapei precisará verificar sua conta. Podem ser aplicadas tarifas da operadora.
+                    Insira seu número de telefone. O Zapei enviará um código SMS de 6 dígitos para verificar sua conta.
                   </p>
 
                   {/* Country Dropdown with WhatsApp Bottom Border */}
@@ -795,6 +1000,290 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       </>
                     ) : (
                       'Avançar'
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* STEP 2B: CPF + RECOVERY EMAIL AUTH (Entrar / Criar Conta + Esqueci Minha Senha) */}
+            {step === 'cpf' && (
+              <form
+                onSubmit={handleCpfSubmit}
+                className="flex flex-1 flex-col justify-between"
+              >
+                <div className="mx-auto w-full max-w-sm">
+                  <div className="flex items-center justify-center relative">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorInfo(null);
+                        setCpfResetNotice('');
+                        setStep('welcome');
+                      }}
+                      className="absolute left-0 flex h-10 w-10 items-center justify-center rounded-full text-slate-600 hover:bg-slate-100"
+                      aria-label="Voltar"
+                    >
+                      <ArrowLeft className="h-5 w-5" />
+                    </button>
+                    <h1 className="text-lg font-bold text-[#0F5132]">
+                      Entrar com CPF
+                    </h1>
+                  </div>
+
+                  {/* Dual Auth Method Switcher */}
+                  <div className="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorInfo(null);
+                        setCpfResetNotice('');
+                        setStep('phone');
+                      }}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold text-slate-600 transition hover:text-slate-900"
+                    >
+                      <Phone className="h-3.5 w-3.5" />
+                      Telefone (SMS)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorInfo(null);
+                        setStep('cpf');
+                      }}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0F5132] shadow-xs"
+                    >
+                      <CreditCard className="h-3.5 w-3.5" />
+                      Entrar com CPF
+                    </button>
+                  </div>
+
+                  {/* Entrar / Criar Conta Sub-Tabs */}
+                  <div className="mt-3 flex border-b border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCpfSubMode('login');
+                        setErrorInfo(null);
+                        setCpfResetNotice('');
+                      }}
+                      className={`flex-1 pb-2.5 text-xs font-bold transition border-b-2 ${
+                        cpfSubMode === 'login'
+                          ? 'border-[#0F5132] text-[#0F5132]'
+                          : 'border-transparent text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Entrar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCpfSubMode('register');
+                        setErrorInfo(null);
+                        setCpfResetNotice('');
+                      }}
+                      className={`flex-1 pb-2.5 text-xs font-bold transition border-b-2 ${
+                        cpfSubMode === 'register'
+                          ? 'border-[#0F5132] text-[#0F5132]'
+                          : 'border-transparent text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Criar Conta
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-3.5">
+                    {cpfSubMode === 'register' && (
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Nome completo
+                        </label>
+                        <div className="relative mt-1">
+                          <UserIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            required
+                            value={cpfName}
+                            onChange={(e) => setCpfName(e.target.value)}
+                            placeholder="Como você quer aparecer no Zapei"
+                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CPF with mask 000.000.000-00 and live mathematical validation */}
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          CPF
+                        </label>
+                        {cpfComplete && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-bold ${
+                              cpfValid ? 'text-[#0F5132]' : 'text-red-600'
+                            }`}
+                          >
+                            {cpfValid ? (
+                              <>
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                CPF válido
+                              </>
+                            ) : (
+                              'CPF inválido'
+                            )}
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative mt-1">
+                        <CreditCard className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          maxLength={14}
+                          value={cpfInput}
+                          onChange={(e) => {
+                            setCpfInput(formatCpfMask(e.target.value));
+                            setErrorInfo(null);
+                          }}
+                          placeholder="000.000.000-00"
+                          className={`h-11 w-full rounded-xl border bg-white pl-9 pr-3 font-mono text-sm text-slate-900 tabular-nums focus:outline-none ${
+                            cpfComplete && !cpfValid
+                              ? 'border-red-300 focus:border-red-500'
+                              : 'border-slate-300 focus:border-[#0F5132]'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    {cpfSubMode === 'register' && (
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700">
+                          E-mail de recuperação
+                        </label>
+                        <div className="relative mt-1">
+                          <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="email"
+                            required
+                            autoComplete="email"
+                            value={cpfEmail}
+                            onChange={(e) => setCpfEmail(e.target.value)}
+                            placeholder="seuemail@exemplo.com"
+                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                          />
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          Usado apenas para recuperar sua senha caso esqueça.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Password input */}
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Senha
+                        </label>
+                        {cpfSubMode === 'login' && (
+                          <button
+                            type="button"
+                            disabled={cpfResetBusy}
+                            onClick={() => void handleCpfForgotPassword()}
+                            className="text-[11px] font-bold text-[#0F5132] hover:underline disabled:opacity-50"
+                          >
+                            {cpfResetBusy ? 'Enviando link...' : 'Esqueci minha senha'}
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative mt-1">
+                        <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type={showCpfPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          autoComplete={
+                            cpfSubMode === 'register' ? 'new-password' : 'current-password'
+                          }
+                          value={cpfPassword}
+                          onChange={(e) => setCpfPassword(e.target.value)}
+                          placeholder={
+                            cpfSubMode === 'register' ? 'Mínimo 6 caracteres' : 'Digite sua senha'
+                          }
+                          className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-10 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowCpfPassword((v) => !v)}
+                          aria-label={showCpfPassword ? 'Ocultar senha' : 'Ver senha'}
+                          className="absolute right-2.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        >
+                          {showCpfPassword ? (
+                            <EyeOff className="h-4 w-4" />
+                          ) : (
+                            <Eye className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {cpfSubMode === 'register' && (
+                      <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[11px] text-emerald-900">
+                        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+                        <span>
+                          Proteção LGPD: seu CPF é convertido em hash SHA-256 e libera{' '}
+                          <strong>1 Linha Virtual exclusiva (ZAP-XXXX-XXXX)</strong>.
+                        </span>
+                      </div>
+                    )}
+
+                    {cpfResetNotice && (
+                      <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-medium text-emerald-900">
+                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+                        <span>{cpfResetNotice}</span>
+                      </div>
+                    )}
+
+                    {errorInfo && (
+                      <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800 space-y-1.5">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                          <p className="font-medium leading-relaxed">{errorInfo.message}</p>
+                        </div>
+                        {errorInfo.needsConsoleSetup && (
+                          <a
+                            href={firebaseProvidersUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 font-semibold text-[#0F5132] underline"
+                          >
+                            Ativar E-mail/senha no Firebase Console
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-6 pb-14 md:pb-0 mx-auto w-full max-w-sm">
+                  <button
+                    type="submit"
+                    disabled={busy || !cpfValid}
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] disabled:opacity-50"
+                  >
+                    {busy ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {cpfSubMode === 'register'
+                          ? 'Criando Linha Virtual...'
+                          : 'Entrando...'}
+                      </>
+                    ) : cpfSubMode === 'register' ? (
+                      'Criar Conta e Linha Virtual'
+                    ) : (
+                      'Entrar no Zapei'
                     )}
                   </button>
                 </div>
