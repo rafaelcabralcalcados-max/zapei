@@ -364,8 +364,31 @@ async function startServer(): Promise<void> {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
+    const setNoCacheHeaders = (res: Response) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    };
+    app.use(
+      express.static(distDir, {
+        setHeaders(res, filePath) {
+          const base = path.basename(filePath);
+          if (
+            base === 'index.html' ||
+            base === 'sw.js' ||
+            base === 'registerSW.js' ||
+            base === 'manifest.webmanifest' ||
+            base === 'manifest.json'
+          ) {
+            setNoCacheHeaders(res);
+          } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
+      setNoCacheHeaders(res);
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }

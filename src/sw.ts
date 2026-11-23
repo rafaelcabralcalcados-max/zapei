@@ -8,6 +8,10 @@ declare let self: ServiceWorkerGlobalScope & {
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST || []);
 
+self.addEventListener('install', () => {
+  void self.skipWaiting();
+});
+
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     void self.skipWaiting();

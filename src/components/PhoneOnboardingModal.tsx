@@ -759,7 +759,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       {
                         num: '3',
                         title: 'Converse e proteja seus aparelhos',
-                        desc: 'Seu primeiro dispositivo vira o Aparelho Principal com autorização por QR Code.',
+                        desc: 'Seu primeiro dispositivo será definido como Aparelho Principal, permitindo autorizar novos acessos por QR Code.',
                         done: false,
                         active: stepIndex === 3,
                       },
@@ -803,11 +803,11 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     Boas-vindas ao ChatFi
                   </h1>
                   <p className="mt-3 max-w-sm text-sm leading-relaxed text-slate-500">
-                    Leia nossa{' '}
+                    Ao prosseguir, você concorda com a nossa{' '}
                     <span className="font-medium text-[#0E7A34]">
                       Política de Privacidade
-                    </span>
-                    . Toque em &ldquo;Concordar e continuar&rdquo; para aceitar os{' '}
+                    </span>{' '}
+                    e os{' '}
                     <span className="font-medium text-[#0E7A34]">
                       Termos de Serviço
                     </span>
