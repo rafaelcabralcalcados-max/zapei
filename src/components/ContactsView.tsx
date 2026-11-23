@@ -24,6 +24,7 @@ import {
   supportsNativeContactPicker,
 } from '../lib/phoneUtils';
 import { getContactPresenceDisplay } from '../lib/presenceUtils';
+import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 
 function normalizeSearchText(value: string): string {
   return value
@@ -57,6 +58,7 @@ interface ContactsViewProps {
     rawPhone: string,
     type: 'audio' | 'video'
   ) => Promise<void>;
+  onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
 }
 
 export const ContactsView: React.FC<ContactsViewProps> = ({
@@ -77,6 +79,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onStartDirectoryCall,
   onOpenDirectFoundChat,
   onStartDirectFoundCall,
+  onPreviewAvatar,
 }) => {
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -495,12 +498,22 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   key={contact.id}
                   className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <button
-                    type="button"
-                    onClick={() => onOpenChat(contact, photoUrl)}
-                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                  >
-                    <div className="relative shrink-0">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onPreviewAvatar?.({
+                          name: contact.name,
+                          initials: contact.initials,
+                          avatarBg: contact.avatarBg || '#0E7A34',
+                          avatarUrl: photoUrl,
+                          subtitle: contact.phone,
+                        })
+                      }
+                      title={`Ver foto de ${contact.name}`}
+                      aria-label={`Ampliar foto de ${contact.name}`}
+                      className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+                    >
                       {photoUrl ? (
                         <img
                           src={photoUrl}
@@ -521,8 +534,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           aria-label="Online"
                         />
                       )}
-                    </div>
-                    <div className="min-w-0">
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onOpenChat(contact, photoUrl)}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-bold text-slate-900">
                           {contact.name}
@@ -556,8 +573,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           </p>
                         );
                       })()}
-                    </div>
-                  </button>
+                    </button>
+                  </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
                     {contact.hasStorefront && (
@@ -625,12 +642,22 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 key={person.uid}
                 className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
               >
-                <button
-                  type="button"
-                  onClick={() => onOpenDirectoryChat(person)}
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                >
-                  <div className="relative shrink-0">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onPreviewAvatar?.({
+                        name: person.displayName,
+                        initials: person.initials,
+                        avatarBg: person.avatarColor || '#0E7A34',
+                        avatarUrl: person.avatarUrl,
+                        subtitle: person.virtualLine || person.storefrontName,
+                      })
+                    }
+                    title={`Ver foto de ${person.displayName}`}
+                    aria-label={`Ampliar foto de ${person.displayName}`}
+                    className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+                  >
                     {person.avatarUrl ? (
                       <img
                         src={person.avatarUrl}
@@ -651,8 +678,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         aria-label="Online"
                       />
                     )}
-                  </div>
-                  <div className="min-w-0">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenDirectoryChat(person)}
+                    className="min-w-0 flex-1 text-left"
+                  >
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-bold text-slate-900">
                         {person.displayName}
@@ -695,8 +726,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         </p>
                       );
                     })()}
-                  </div>
-                </button>
+                  </button>
+                </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
                   {person.hasStorefront && (

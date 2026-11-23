@@ -17,6 +17,7 @@ import type { User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import {
   approveDeviceAuthRequest,
+  auth,
   createDeviceAuthRequest,
   createRealFactoryConnection,
   createRealMixedOrder,
@@ -26,6 +27,7 @@ import {
   disconnectUserDevice,
   ensureCurrentDeviceRegisteredSilently,
   fetchPublicUserStorefront,
+  fetchUserProfileOnce,
   getDeterministicChatId,
   lookupRegisteredUserByPhone,
   markContactInvited,
@@ -142,6 +144,10 @@ import type {
   UserProfile,
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
+import {
+  AvatarLightboxModal,
+  type AvatarPreviewTarget,
+} from './components/AvatarLightboxModal';
 import { CallsView } from './components/CallsView';
 import { ChatFiLogo } from './components/ChatFiLogo';
 import {
@@ -188,6 +194,8 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileRetryTick, setProfileRetryTick] = useState(0);
+  const [bootSlow, setBootSlow] = useState(false);
 
   // Connected Devices & Primary Session Authorization State
   const localDeviceInfo = useMemo(() => getOrCreateLocalDeviceInfo(), []);
@@ -250,6 +258,7 @@ export default function App() {
   const [policyConsent, setPolicyConsent] = useState<PolicyConsentRecord | null>(null);
   const [policyCheckedUid, setPolicyCheckedUid] = useState<string | null>(null);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<AvatarPreviewTarget | null>(null);
 
   // WhatsApp-style in-app incoming message notification banner & live chime trackers
   const [incomingMsgBanner, setIncomingMsgBanner] = useState<{
@@ -349,7 +358,23 @@ export default function App() {
 
   // 1. Subscribe to Firebase Auth (keep already-connected session completely intact on token refreshes)
   useEffect(() => {
+    let authSettled = false;
+    const authSafetyTimer = window.setTimeout(() => {
+      if (!authSettled) {
+        authSettled = true;
+        setAuthReady(true);
+        if (auth.currentUser) {
+          lastAuthUidRef.current = auth.currentUser.uid;
+          setAuthUser(auth.currentUser);
+        } else {
+          setProfileLoaded(true);
+        }
+      }
+    }, 5000);
+
     const unsub = subscribeFirebaseAuth((user) => {
+      authSettled = true;
+      window.clearTimeout(authSafetyTimer);
       setAuthReady(true);
       if (!user) {
         lastAuthUidRef.current = null;
@@ -381,11 +406,31 @@ export default function App() {
         lastAuthUidRef.current = user.uid;
         setAuthUser(user);
         if (isDifferentUser) {
-          setProfileLoaded(false);
+          // Hydrate cached profile immediately if available on this device while live Firestore sync runs
+          let hydratedFromCache = false;
+          try {
+            const raw = localStorage.getItem(`chatfi_profile_cache_v1_${user.uid}`);
+            if (raw) {
+              const parsed = JSON.parse(raw) as UserProfile;
+              if (parsed && parsed.uid === user.uid && parsed.name) {
+                setProfile(parsed);
+                setProfileLoaded(true);
+                hydratedFromCache = true;
+              }
+            }
+          } catch {
+            // ignore storage errors
+          }
+          if (!hydratedFromCache) {
+            setProfileLoaded(false);
+          }
         }
       }
     });
-    return () => unsub();
+    return () => {
+      window.clearTimeout(authSafetyTimer);
+      unsub();
+    };
   }, []);
 
   const authUid = authUser?.uid ?? null;
@@ -395,10 +440,30 @@ export default function App() {
   useEffect(() => {
     if (!authUid) return undefined;
     return subscribeUserProfile(authUid, authUserRef.current?.email || '', (loaded) => {
-      setProfile(loaded);
+      if (loaded) {
+        setProfile(loaded);
+        try {
+          localStorage.setItem(`chatfi_profile_cache_v1_${authUid}`, JSON.stringify(loaded));
+        } catch {
+          // ignore storage quota errors
+        }
+      } else {
+        setProfile(null);
+      }
       setProfileLoaded(true);
     });
-  }, [authUid]);
+  }, [authUid, profileRetryTick]);
+
+  // 2b. Track if the initial "Conectando ao ChatFi..." splash takes too long so the user can retry or switch account
+  const isBootingSplash = !authReady || (Boolean(authUser) && !profileLoaded);
+  useEffect(() => {
+    if (!isBootingSplash) {
+      setBootSlow(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setBootSlow(true), 6000);
+    return () => window.clearTimeout(timer);
+  }, [isBootingSplash, profileRetryTick]);
 
   // 2a. Connected Devices Gate: already-authorized devices unlock IMMEDIATELY with zero checking screen;
   // only brand-new devices check Firestore once and request QR Code or 6-digit password approval.
@@ -2287,11 +2352,54 @@ export default function App() {
 
   if (!authReady || (authUser && !profileLoaded)) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC]">
-        <div className="flex flex-col items-center gap-3.5 text-slate-600">
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] p-4">
+        <div className="flex max-w-xs flex-col items-center gap-3.5 text-center text-slate-600">
           <ChatFiLogo className="h-16 w-16 rounded-2xl shadow-md" />
           <Loader2 className="h-6 w-6 animate-spin text-[#0E7A34]" />
           <p className="text-xs font-semibold">Conectando ao ChatFi...</p>
+          {bootSlow && (
+            <div className="mt-2 flex flex-col items-center gap-2">
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                A conexão está demorando mais que o normal neste aparelho.
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBootSlow(false);
+                    if (authUser) {
+                      void fetchUserProfileOnce(authUser.uid, authUser.email || '')
+                        .then((loaded) => {
+                          setProfile(loaded);
+                          setProfileLoaded(true);
+                        })
+                        .catch(() => {
+                          setProfileRetryTick((t) => t + 1);
+                        });
+                    } else {
+                      setAuthReady(true);
+                      setProfileRetryTick((t) => t + 1);
+                    }
+                  }}
+                  className="rounded-xl bg-[#0E7A34] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#0B5D27]"
+                >
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBootSlow(false);
+                    setAuthReady(true);
+                    setProfileLoaded(true);
+                    void signOutFirebase().catch(() => {});
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Voltar ao login
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2383,32 +2491,48 @@ export default function App() {
       <aside className="hidden md:flex md:w-20 lg:w-60 shrink-0 flex-col justify-between border-r border-slate-200 bg-[#0D2B3E] text-white">
         <div>
           <div className="border-b border-white/10 p-3">
-            <button
-              type="button"
-              onClick={() => setActiveTab('settings')}
-              className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-xl p-2 hover:bg-white/10 transition"
-            >
-              {profile.avatarUrl ? (
-                <img
-                  src={profile.avatarUrl}
-                  alt={profile.name}
-                  className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
-                />
-              ) : (
-                <div
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-white/20"
-                  style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
-                >
-                  {profile.initials}
-                </div>
-              )}
-              <div className="hidden lg:block min-w-0 text-left">
+            <div className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-xl p-2 hover:bg-white/10 transition">
+              <button
+                type="button"
+                onClick={() =>
+                  setAvatarPreview({
+                    name: profile.name,
+                    initials: profile.initials,
+                    avatarBg: profile.avatarBg,
+                    avatarUrl: profile.avatarUrl,
+                    subtitle: profile.virtualLine || profile.phone,
+                  })
+                }
+                title="Ampliar foto de perfil"
+                aria-label="Ampliar foto de perfil"
+                className="shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-white/40"
+              >
+                {profile.avatarUrl ? (
+                  <img
+                    src={profile.avatarUrl}
+                    alt={profile.name}
+                    className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
+                  />
+                ) : (
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-white/20"
+                    style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
+                  >
+                    {profile.initials}
+                  </div>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className="hidden lg:block min-w-0 flex-1 text-left"
+              >
                 <p className="truncate text-sm font-bold text-white">{profile.name}</p>
                 <p className="truncate font-mono text-[11px] text-slate-300 tabular-nums">
                   {profile.virtualLine || profile.phone}
                 </p>
-              </div>
-            </button>
+              </button>
+            </div>
           </div>
 
           <nav className="mt-3 space-y-1 px-2.5">
@@ -2625,33 +2749,27 @@ export default function App() {
                           matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34';
                         const isSelected = selectedPeer?.uid === thread.otherUid;
                         return (
-                          <button
+                          <div
                             key={thread.id}
-                            type="button"
-                            onClick={() =>
-                              void openChatWithPeer({
-                                uid: thread.otherUid,
-                                name: displayName,
-                                initials: getInitials(displayName),
-                                avatarBg,
-                                avatarUrl: photoUrl,
-                                phone: matchedContact?.phone,
-                                role: matchedContact?.role || dir?.role || 'normal',
-                                hasStorefront: Boolean(
-                                  matchedContact?.hasStorefront || dir?.hasStorefront
-                                ),
-                                storefrontName:
-                                  matchedContact?.storefrontName || dir?.storefrontName,
-                                deliveryPolicyLabel:
-                                  matchedContact?.deliveryPolicyLabel ||
-                                  dir?.deliveryPolicyLabel,
-                              })
-                            }
                             className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
                               isSelected ? 'bg-emerald-50/70' : 'hover:bg-slate-50'
                             }`}
                           >
-                            <div className="relative shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAvatarPreview({
+                                  name: displayName,
+                                  initials: getInitials(displayName),
+                                  avatarBg,
+                                  avatarUrl: photoUrl,
+                                  subtitle: matchedContact?.phone || dir?.virtualLine,
+                                })
+                              }
+                              title={`Ver foto de ${displayName}`}
+                              aria-label={`Ampliar foto de ${displayName}`}
+                              className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+                            >
                               {photoUrl ? (
                                 <img
                                   src={photoUrl}
@@ -2672,8 +2790,30 @@ export default function App() {
                                   aria-label="Online"
                                 />
                               )}
-                            </div>
-                            <div className="min-w-0 flex-1">
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void openChatWithPeer({
+                                  uid: thread.otherUid,
+                                  name: displayName,
+                                  initials: getInitials(displayName),
+                                  avatarBg,
+                                  avatarUrl: photoUrl,
+                                  phone: matchedContact?.phone,
+                                  role: matchedContact?.role || dir?.role || 'normal',
+                                  hasStorefront: Boolean(
+                                    matchedContact?.hasStorefront || dir?.hasStorefront
+                                  ),
+                                  storefrontName:
+                                    matchedContact?.storefrontName || dir?.storefrontName,
+                                  deliveryPolicyLabel:
+                                    matchedContact?.deliveryPolicyLabel ||
+                                    dir?.deliveryPolicyLabel,
+                                })
+                              }
+                              className="min-w-0 flex-1 text-left"
+                            >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="truncate text-sm font-bold text-slate-900">
                                   {displayName}
@@ -2698,8 +2838,8 @@ export default function App() {
                                   <Store className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
                                 )}
                               </div>
-                            </div>
-                          </button>
+                            </button>
+                          </div>
                         );
                       })}
                     </div>
@@ -2715,41 +2855,59 @@ export default function App() {
                             : `Pessoas no ChatFi (${matchingZapeiPeople.length})`}
                         </div>
                         {matchingZapeiPeople.map((person) => (
-                          <button
+                          <div
                             key={person.uid}
-                            type="button"
-                            onClick={() => {
-                              setChatSearch('');
-                              void openChatWithPeer({
-                                uid: person.uid,
-                                name: person.name,
-                                initials: person.initials,
-                                avatarBg: person.avatarBg,
-                                avatarUrl: person.avatarUrl,
-                                phone: person.phone,
-                                role: person.role,
-                                hasStorefront: person.hasStorefront,
-                                storefrontName: person.storefrontName,
-                                deliveryPolicyLabel: person.deliveryPolicyLabel,
-                              });
-                            }}
                             className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-emerald-50/50"
                           >
-                            {person.avatarUrl ? (
-                              <img
-                                src={person.avatarUrl}
-                                alt={person.name}
-                                className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                              />
-                            ) : (
-                              <div
-                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                                style={{ backgroundColor: person.avatarBg || '#0E7A34' }}
-                              >
-                                {person.initials}
-                              </div>
-                            )}
-                            <div className="min-w-0 flex-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAvatarPreview({
+                                  name: person.name,
+                                  initials: person.initials,
+                                  avatarBg: person.avatarBg || '#0E7A34',
+                                  avatarUrl: person.avatarUrl,
+                                  subtitle: person.phone || person.subtitle,
+                                })
+                              }
+                              title={`Ver foto de ${person.name}`}
+                              aria-label={`Ampliar foto de ${person.name}`}
+                              className="shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+                            >
+                              {person.avatarUrl ? (
+                                <img
+                                  src={person.avatarUrl}
+                                  alt={person.name}
+                                  className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                                />
+                              ) : (
+                                <div
+                                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                                  style={{ backgroundColor: person.avatarBg || '#0E7A34' }}
+                                >
+                                  {person.initials}
+                                </div>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setChatSearch('');
+                                void openChatWithPeer({
+                                  uid: person.uid,
+                                  name: person.name,
+                                  initials: person.initials,
+                                  avatarBg: person.avatarBg,
+                                  avatarUrl: person.avatarUrl,
+                                  phone: person.phone,
+                                  role: person.role,
+                                  hasStorefront: person.hasStorefront,
+                                  storefrontName: person.storefrontName,
+                                  deliveryPolicyLabel: person.deliveryPolicyLabel,
+                                });
+                              }}
+                              className="min-w-0 flex-1 text-left"
+                            >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="truncate text-sm font-bold text-slate-900">
                                   {person.name}
@@ -2761,8 +2919,8 @@ export default function App() {
                               <p className="mt-0.5 truncate text-xs text-slate-500">
                                 {person.subtitle}
                               </p>
-                            </div>
-                          </button>
+                            </button>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -2805,6 +2963,7 @@ export default function App() {
                     myName={profile.name}
                     peer={selectedPeer}
                     peerPresence={directoryByUid.get(selectedPeer.uid) ?? null}
+                    onPreviewAvatar={setAvatarPreview}
                     messages={mergedActiveMessages}
                     forwardTargets={forwardTargets}
                     isOffline={!isOnline}
@@ -3027,6 +3186,7 @@ export default function App() {
               currentUserUid={profile.uid}
               contacts={contacts}
               directoryUsers={directoryUsers}
+              onPreviewAvatar={setAvatarPreview}
               onLookupPhone={lookupRegisteredUserByPhone}
               onOpenDirectoryChat={(person) => {
                 void openChatWithPeer({
@@ -3284,6 +3444,7 @@ export default function App() {
               onOpenPolicies={() => setShowPoliciesModal(true)}
               onAuthorizeResources={handleAuthorizeResourcesFromSettings}
               onEditProfile={() => setShowEditProfile(true)}
+              onPreviewAvatar={setAvatarPreview}
               onUpdatePresencePrivacy={async (opts) => {
                 await updateUserPresencePrivacy(profile.uid, {
                   ...opts,
@@ -3309,6 +3470,15 @@ export default function App() {
                   showOnlineStatus: profile.showOnlineStatus !== false,
                   showLastSeen: profile.showLastSeen !== false,
                 }).catch(() => {});
+                await disconnectUserDevice(profile.uid, localDeviceInfo.deviceId).catch(() => {});
+                try {
+                  localStorage.removeItem(
+                    `zapei_device_auth_uid_${localDeviceInfo.deviceId}`
+                  );
+                  localStorage.removeItem(`chatfi_profile_cache_v1_${profile.uid}`);
+                } catch {
+                  // ignore
+                }
                 await signOutFirebase();
               }}
             />
@@ -3493,6 +3663,14 @@ export default function App() {
           existingConsent={policyConsent}
           onAcceptAndAuthorize={handleAcceptPolicyAndAuthorize}
           onClose={() => setShowPoliciesModal(false)}
+        />
+      )}
+
+      {/* WhatsApp-Style Enlarged Profile Photo Viewer */}
+      {avatarPreview && (
+        <AvatarLightboxModal
+          target={avatarPreview}
+          onClose={() => setAvatarPreview(null)}
         />
       )}
     </div>

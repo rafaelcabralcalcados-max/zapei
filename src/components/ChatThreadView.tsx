@@ -59,6 +59,7 @@ import {
   getContactPresenceDisplay,
   type PresenceSnapshot,
 } from '../lib/presenceUtils';
+import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 
 export interface ActiveChatPeer {
   uid: string;
@@ -101,6 +102,7 @@ interface ChatThreadViewProps {
   onStartCall: (type: 'audio' | 'video') => void;
   onOpenStorefront: () => void;
   onInspectOrder: (orderId?: string) => void;
+  onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
 }
 
 const QUICK_EMOJIS = [
@@ -398,6 +400,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   onStartCall,
   onOpenStorefront,
   onInspectOrder,
+  onPreviewAvatar,
 }) => {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -980,7 +983,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
-          <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() =>
+              onPreviewAvatar?.({
+                name: peer.name,
+                initials: peer.initials,
+                avatarBg: peer.avatarBg,
+                avatarUrl: peer.avatarUrl,
+                subtitle: peerPresenceDisplay.isPresence
+                  ? peerPresenceDisplay.label
+                  : peer.phone || peer.storefrontName,
+              })
+            }
+            title="Ver foto de perfil"
+            aria-label={`Ampliar foto de ${peer.name}`}
+            className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+          >
             {peer.avatarUrl ? (
               <img
                 src={peer.avatarUrl}
@@ -1001,7 +1020,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 aria-label="Online"
               />
             )}
-          </div>
+          </button>
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
               {peer.name}

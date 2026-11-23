@@ -96,6 +96,7 @@ function initPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
     return initializeFirestore(
       firebaseApp,
       {
+        experimentalAutoDetectLongPolling: true,
         localCache: persistentLocalCache({
           tabManager: persistentMultipleTabManager(),
         }),
@@ -556,118 +557,200 @@ export async function registerOrUpdateUserProfile(params: {
   }
 }
 
+function buildUserProfileFromDocs(
+  uid: string,
+  email: string,
+  publicData: Record<string, unknown> | null,
+  privateData: Record<string, unknown> | null
+): UserProfile | null {
+  if (!publicData || !privateData) return null;
+
+  const trialEndsAt = Number(publicData.trialEndsAt ?? 0);
+  const daysLeft =
+    trialEndsAt > 0
+      ? Math.max(0, Math.ceil((trialEndsAt - Date.now()) / (1000 * 60 * 60 * 24)))
+      : 0;
+  const rawSub = (publicData.subscriptionStatus as SubscriptionStatus) ?? 'free';
+  const effectiveSub: SubscriptionStatus =
+    rawSub === 'trial' && trialEndsAt > 0 && Date.now() > trialEndsAt ? 'expired' : rawSub;
+
+  const virtualLine = publicData.virtualLine
+    ? String(publicData.virtualLine)
+    : privateData.virtualLine
+      ? String(privateData.virtualLine)
+      : undefined;
+  const authMethod: 'phone' | 'cpf' =
+    publicData.authMethod === 'cpf' || privateData.authMethod === 'cpf' ? 'cpf' : 'phone';
+
+  const rawStatusMessage = String(publicData.statusMessage ?? '');
+  const sanitizedStatus = sanitizeStatusMessage(rawStatusMessage);
+
+  return {
+    uid,
+    name: String(publicData.displayName ?? ''),
+    initials: String(publicData.initials ?? getInitials(String(publicData.displayName ?? 'CF'))),
+    phone: String(privateData.phone ?? virtualLine ?? ''),
+    phoneHash: String(privateData.phoneHash ?? ''),
+    virtualLine,
+    authMethod,
+    email: String(privateData.email ?? email),
+    statusMessage: sanitizedStatus,
+    isOnline: Boolean(publicData.isOnline),
+    lastSeenAt: Number(publicData.lastSeenAt ?? 0),
+    showOnlineStatus: publicData.showOnlineStatus !== false,
+    showLastSeen: publicData.showLastSeen !== false,
+    avatarBg: String(publicData.avatarColor ?? '#0E7A34'),
+    avatarUrl: publicData.avatarUrl ? String(publicData.avatarUrl) : undefined,
+    commercialMode: (publicData.commercialMode as CommercialMode) ?? 'buyer',
+    manufacturerActivated: Boolean(publicData.manufacturerActivated),
+    resellerActivated: Boolean(publicData.resellerActivated),
+    hasStorefront: Boolean(publicData.hasStorefront),
+    subscriptionStatus: effectiveSub,
+    trialEndsAt,
+    trialDaysLeft: daysLeft,
+    storefrontName: String(publicData.storefrontName ?? ''),
+    storefrontPrivacy: (publicData.storefrontPrivacy as 'open' | 'approved') ?? 'open',
+    factoryName: String(publicData.factoryName ?? ''),
+    factoryPolicy: {
+      type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
+      value: Number(publicData.deliveryPolicyValue ?? 1),
+      allowCounterPickup: Boolean(publicData.deliveryPolicyPickup ?? true),
+      label: String(publicData.deliveryPolicyLabel ?? 'Mínimo 1 caixa'),
+    },
+    favoriteGrades:
+      Array.isArray(privateData.favoriteGrades) && privateData.favoriteGrades.length > 0
+        ? (privateData.favoriteGrades as FavoriteGrade[])
+        : DEFAULT_FAVORITE_GRADES,
+  };
+}
+
+export async function fetchUserProfileOnce(
+  uid: string,
+  email: string
+): Promise<UserProfile | null> {
+  const pubRef = doc(db, 'users', uid);
+  const privRef = doc(db, 'users', uid, 'private', 'info');
+  const [pubSnap, privSnap] = await Promise.all([getDoc(pubRef), getDoc(privRef)]);
+  return buildUserProfileFromDocs(
+    uid,
+    email,
+    pubSnap.exists() ? (pubSnap.data() as Record<string, unknown>) : null,
+    privSnap.exists() ? (privSnap.data() as Record<string, unknown>) : null
+  );
+}
+
 export function subscribeUserProfile(
   uid: string,
   email: string,
   callback: (profile: UserProfile | null) => void
 ): () => void {
+  let active = true;
   let publicData: Record<string, unknown> | null = null;
   let privateData: Record<string, unknown> | null = null;
   let publicLoaded = false;
   let privateLoaded = false;
+  let migratedLegacyStatus = false;
+  let hasEmittedOnce = false;
+  let retriedAfterError = false;
 
-  const emit = () => {
-    if (!publicLoaded || !privateLoaded) return;
-    if (!publicData || !privateData) {
-      callback(null);
-      return;
+  const pubRef = doc(db, 'users', uid);
+  const privRef = doc(db, 'users', uid, 'private', 'info');
+
+  const maybeMigrateLegacyStatus = (data: Record<string, unknown> | null) => {
+    if (
+      !migratedLegacyStatus &&
+      data &&
+      typeof data.statusMessage === 'string' &&
+      /zapei/i.test(data.statusMessage)
+    ) {
+      migratedLegacyStatus = true;
+      const clean = sanitizeStatusMessage(data.statusMessage);
+      void updateDoc(pubRef, {
+        statusMessage: clean,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
     }
-    const trialEndsAt = Number(publicData.trialEndsAt ?? 0);
-    const daysLeft =
-      trialEndsAt > 0
-        ? Math.max(0, Math.ceil((trialEndsAt - Date.now()) / (1000 * 60 * 60 * 24)))
-        : 0;
-    const rawSub = (publicData.subscriptionStatus as SubscriptionStatus) ?? 'free';
-    const effectiveSub: SubscriptionStatus =
-      rawSub === 'trial' && trialEndsAt > 0 && Date.now() > trialEndsAt ? 'expired' : rawSub;
-
-    const virtualLine = publicData.virtualLine
-      ? String(publicData.virtualLine)
-      : privateData.virtualLine
-        ? String(privateData.virtualLine)
-        : undefined;
-    const authMethod: 'phone' | 'cpf' =
-      publicData.authMethod === 'cpf' || privateData.authMethod === 'cpf' ? 'cpf' : 'phone';
-
-    const rawStatusMessage = String(publicData.statusMessage ?? '');
-    const sanitizedStatus = sanitizeStatusMessage(rawStatusMessage);
-
-    callback({
-      uid,
-      name: String(publicData.displayName ?? ''),
-      initials: String(publicData.initials ?? getInitials(String(publicData.displayName ?? 'CF'))),
-      phone: String(privateData.phone ?? virtualLine ?? ''),
-      phoneHash: String(privateData.phoneHash ?? ''),
-      virtualLine,
-      authMethod,
-      email: String(privateData.email ?? email),
-      statusMessage: sanitizedStatus,
-      isOnline: Boolean(publicData.isOnline),
-      lastSeenAt: Number(publicData.lastSeenAt ?? 0),
-      showOnlineStatus: publicData.showOnlineStatus !== false,
-      showLastSeen: publicData.showLastSeen !== false,
-      avatarBg: String(publicData.avatarColor ?? '#0E7A34'),
-      avatarUrl: publicData.avatarUrl ? String(publicData.avatarUrl) : undefined,
-      commercialMode: (publicData.commercialMode as CommercialMode) ?? 'buyer',
-      manufacturerActivated: Boolean(publicData.manufacturerActivated),
-      resellerActivated: Boolean(publicData.resellerActivated),
-      hasStorefront: Boolean(publicData.hasStorefront),
-      subscriptionStatus: effectiveSub,
-      trialEndsAt,
-      trialDaysLeft: daysLeft,
-      storefrontName: String(publicData.storefrontName ?? ''),
-      storefrontPrivacy: (publicData.storefrontPrivacy as 'open' | 'approved') ?? 'open',
-      factoryName: String(publicData.factoryName ?? ''),
-      factoryPolicy: {
-        type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
-        value: Number(publicData.deliveryPolicyValue ?? 1),
-        allowCounterPickup: Boolean(publicData.deliveryPolicyPickup ?? true),
-        label: String(publicData.deliveryPolicyLabel ?? 'Mínimo 1 caixa'),
-      },
-      favoriteGrades:
-        Array.isArray(privateData.favoriteGrades) && privateData.favoriteGrades.length > 0
-          ? (privateData.favoriteGrades as FavoriteGrade[])
-          : DEFAULT_FAVORITE_GRADES,
-    });
   };
 
-  let migratedLegacyStatus = false;
+  const emit = () => {
+    if (!active || !publicLoaded || !privateLoaded) return;
+    hasEmittedOnce = true;
+    callback(buildUserProfileFromDocs(uid, email, publicData, privateData));
+  };
+
+  const bootstrapViaGetDoc = async (forceTokenRefresh = false) => {
+    try {
+      if (forceTokenRefresh && auth.currentUser) {
+        await auth.currentUser.getIdToken(true).catch(() => {});
+      }
+      const [pubRes, privRes] = await Promise.allSettled([getDoc(pubRef), getDoc(privRef)]);
+      if (!active) return;
+      if (pubRes.status === 'fulfilled') {
+        publicLoaded = true;
+        publicData = pubRes.value.exists()
+          ? (pubRes.value.data() as Record<string, unknown>)
+          : null;
+        maybeMigrateLegacyStatus(publicData);
+      }
+      if (privRes.status === 'fulfilled') {
+        privateLoaded = true;
+        privateData = privRes.value.exists()
+          ? (privRes.value.data() as Record<string, unknown>)
+          : null;
+      }
+      emit();
+    } catch {
+      // Handled by safety fallback timer if both listeners and direct fetch fail
+    }
+  };
+
+  const handleListenerError = (path: string, error: unknown) => {
+    console.error(`Firestore profile listener error (${path}):`, error);
+    if (!active) return;
+    if (!retriedAfterError) {
+      retriedAfterError = true;
+      // On mobile fresh SMS/CPF login, retry once after refreshing the Firebase ID token
+      window.setTimeout(() => {
+        if (active && !hasEmittedOnce) {
+          void bootstrapViaGetDoc(true);
+        }
+      }, 650);
+    }
+  };
+
+  // Parallel direct getDoc bootstrap so mobile 4G/5G networks never stall waiting solely on WebChannel streams
+  void bootstrapViaGetDoc(false);
+
+  // Safety fallback timer: if neither onSnapshot nor initial getDoc resolves within 4s, retry once with a refreshed ID token
+  const fallbackTimer = window.setTimeout(() => {
+    if (!active || hasEmittedOnce) return;
+    void bootstrapViaGetDoc(true);
+  }, 4000);
 
   const unsubPub = onSnapshot(
-    doc(db, 'users', uid),
+    pubRef,
     (snap) => {
       publicLoaded = true;
       publicData = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
-      // Silently migrate legacy "Disponível no Zapei" saved in Firestore to clean "Disponível"
-      if (
-        !migratedLegacyStatus &&
-        publicData &&
-        typeof publicData.statusMessage === 'string' &&
-        /zapei/i.test(publicData.statusMessage)
-      ) {
-        migratedLegacyStatus = true;
-        const clean = sanitizeStatusMessage(publicData.statusMessage);
-        void updateDoc(doc(db, 'users', uid), {
-          statusMessage: clean,
-          updatedAt: serverTimestamp(),
-        }).catch(() => {});
-      }
+      maybeMigrateLegacyStatus(publicData);
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.GET, `users/${uid}`)
+    (error) => handleListenerError(`users/${uid}`, error)
   );
 
   const unsubPriv = onSnapshot(
-    doc(db, 'users', uid, 'private', 'info'),
+    privRef,
     (snap) => {
       privateLoaded = true;
       privateData = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.GET, `users/${uid}/private/info`)
+    (error) => handleListenerError(`users/${uid}/private/info`, error)
   );
 
   return () => {
+    active = false;
+    window.clearTimeout(fallbackTimer);
     unsubPub();
     unsubPriv();
   };

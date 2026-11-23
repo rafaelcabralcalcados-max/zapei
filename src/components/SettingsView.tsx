@@ -23,6 +23,7 @@ import { CustomSoundsCard } from './CustomSoundsCard';
 import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
 import { PWAInstallButton } from './PWAInstallButton';
 import { StorageManagerCard } from './StorageManagerCard';
+import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 
 interface SettingsViewProps {
   profile: UserProfile;
@@ -37,6 +38,7 @@ interface SettingsViewProps {
   onOpenPolicies: () => void;
   onAuthorizeResources: () => Promise<void>;
   onEditProfile: () => void;
+  onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
   onUpdatePresencePrivacy: (opts: {
     showOnlineStatus: boolean;
     showLastSeen: boolean;
@@ -61,6 +63,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenPolicies,
   onAuthorizeResources,
   onEditProfile,
+  onPreviewAvatar,
   onUpdatePresencePrivacy,
   onSelectMode,
   onOpenBilling,
@@ -104,20 +107,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3.5">
-            {profile.avatarUrl ? (
-              <img
-                src={profile.avatarUrl}
-                alt={profile.name}
-                className="h-14 w-14 shrink-0 rounded-full object-cover ring-2 ring-slate-100"
-              />
-            ) : (
-              <div
-                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white"
-                style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
-              >
-                {profile.initials}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() =>
+                onPreviewAvatar?.({
+                  name: profile.name,
+                  initials: profile.initials,
+                  avatarBg: profile.avatarBg,
+                  avatarUrl: profile.avatarUrl,
+                  subtitle: profile.virtualLine || profile.phone,
+                })
+              }
+              title="Ampliar foto de perfil"
+              aria-label="Ampliar foto de perfil"
+              className="shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+            >
+              {profile.avatarUrl ? (
+                <img
+                  src={profile.avatarUrl}
+                  alt={profile.name}
+                  className="h-14 w-14 shrink-0 rounded-full object-cover ring-2 ring-slate-100"
+                />
+              ) : (
+                <div
+                  className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white"
+                  style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
+                >
+                  {profile.initials}
+                </div>
+              )}
+            </button>
             <div>
               <h1 className="text-lg font-bold text-slate-900">{profile.name}</h1>
               <div className="mt-0.5 flex flex-wrap items-center gap-2">
