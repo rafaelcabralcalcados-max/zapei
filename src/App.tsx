@@ -57,6 +57,7 @@ import {
   type BackgroundPushStatus,
 } from './lib/pushService';
 import { formatBRL, getInitials } from './lib/gradeParser';
+import { formatPhoneDisplay } from './lib/phoneUtils';
 import type {
   CallSessionRecord,
   CategoryMargin,
@@ -227,6 +228,18 @@ export default function App() {
     ];
     return () => unsubs.forEach((u) => u());
   }, [authUser, profile?.uid]);
+
+  // 3b. Automatically re-check saved contacts that weren't on Zapei yet (once per session)
+  const autoResyncedUidRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!profile?.uid || contacts.length === 0) return;
+    if (autoResyncedUidRef.current === profile.uid) return;
+    const pending = contacts.filter((c) => !c.onZapei);
+    autoResyncedUidRef.current = profile.uid;
+    if (pending.length > 0) {
+      void resyncAllPhonebookContacts(profile.uid, pending).catch(() => {});
+    }
+  }, [profile?.uid, contacts]);
 
   // 4. Subscribe to live messages of the selected chat peer
   useEffect(() => {
@@ -1369,7 +1382,9 @@ export default function App() {
 
           {activeTab === 'contacts' && (
             <ContactsView
+              currentUserUid={profile.uid}
               contacts={contacts}
+              onLookupPhone={lookupRegisteredUserByPhone}
               onSaveContact={(name, phone) =>
                 saveRealContactToPhonebook({ ownerId: profile.uid, name, phone })
               }
@@ -1388,6 +1403,40 @@ export default function App() {
               onResyncContacts={() => resyncAllPhonebookContacts(profile.uid, contacts)}
               onMarkInvited={(contactId) => markContactInvited(profile.uid, contactId)}
               onDeleteContact={(contactId) => deletePhonebookContact(profile.uid, contactId)}
+              onOpenDirectFoundChat={async (found, rawPhone) => {
+                void saveRealContactToPhonebook({
+                  ownerId: profile.uid,
+                  name: found.displayName,
+                  phone: rawPhone,
+                }).catch(() => {});
+                await openChatWithPeer({
+                  uid: found.uid,
+                  name: found.displayName,
+                  initials: found.initials,
+                  avatarBg: found.avatarColor,
+                  phone: formatPhoneDisplay(rawPhone),
+                  role: found.role,
+                  hasStorefront: found.hasStorefront,
+                  storefrontName: found.storefrontName,
+                  deliveryPolicyLabel: found.deliveryPolicy.label,
+                });
+              }}
+              onStartDirectFoundCall={async (found, rawPhone, type) => {
+                void saveRealContactToPhonebook({
+                  ownerId: profile.uid,
+                  name: found.displayName,
+                  phone: rawPhone,
+                }).catch(() => {});
+                await handleStartCall(
+                  {
+                    uid: found.uid,
+                    name: found.displayName,
+                    initials: found.initials,
+                    avatarBg: found.avatarColor,
+                  },
+                  type
+                );
+              }}
               onOpenChat={(contact) => {
                 if (!contact.matchedUid) return;
                 void openChatWithPeer({

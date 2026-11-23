@@ -7,6 +7,14 @@
 export function normalizePhoneDigits(raw: string): string {
   const digits = raw.replace(/\D/g, '');
   if (!digits) return '';
+  // Strip leading 0 from Brazilian national format (e.g. 037984128682)
+  if (digits.startsWith('0') && (digits.length === 11 || digits.length === 12)) {
+    return `55${digits.slice(1)}`;
+  }
+  // Strip Brazilian carrier selection prefix (e.g. 01537984128682 or 02137984128682)
+  if (digits.startsWith('0') && (digits.length === 13 || digits.length === 14)) {
+    return `55${digits.slice(3)}`;
+  }
   // Default Brazil country code (55) when 10 or 11 local digits are provided
   if (digits.length === 10 || digits.length === 11) {
     return `55${digits}`;

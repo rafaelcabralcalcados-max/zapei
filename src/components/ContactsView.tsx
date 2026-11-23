@@ -1,6 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
+  Loader2,
   MessageSquare,
   Phone,
   RefreshCw,
@@ -14,7 +15,10 @@ import {
   Video,
 } from 'lucide-react';
 import type { Contact } from '../types/zapei';
+import type { PhoneLookupResult } from '../lib/firebase';
 import {
+  formatPhoneDisplay,
+  normalizePhoneDigits,
   parseVCardText,
   pickRealDeviceContacts,
   shareRealZapeiInvite,
@@ -22,7 +26,9 @@ import {
 } from '../lib/phoneUtils';
 
 interface ContactsViewProps {
+  currentUserUid: string;
   contacts: Contact[];
+  onLookupPhone: (rawPhone: string) => Promise<PhoneLookupResult | null>;
   onSaveContact: (name: string, phone: string) => Promise<{ matched: boolean; matchedName?: string }>;
   onImportBatchContacts: (
     entries: Array<{ name: string; phone: string }>
@@ -33,10 +39,18 @@ interface ContactsViewProps {
   onOpenChat: (contact: Contact) => void;
   onOpenStorefront: (contact: Contact) => void;
   onStartCall: (contact: Contact, type: 'audio' | 'video') => void;
+  onOpenDirectFoundChat: (found: PhoneLookupResult, rawPhone: string) => Promise<void>;
+  onStartDirectFoundCall: (
+    found: PhoneLookupResult,
+    rawPhone: string,
+    type: 'audio' | 'video'
+  ) => Promise<void>;
 }
 
 export const ContactsView: React.FC<ContactsViewProps> = ({
+  currentUserUid,
   contacts,
+  onLookupPhone,
   onSaveContact,
   onImportBatchContacts,
   onResyncContacts,
@@ -45,6 +59,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onOpenChat,
   onOpenStorefront,
   onStartCall,
+  onOpenDirectFoundChat,
+  onStartDirectFoundCall,
 }) => {
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -52,9 +68,51 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const [newPhone, setNewPhone] = useState('');
   const [busy, setBusy] = useState(false);
   const [statusFeedback, setStatusFeedback] = useState('');
+  const [liveLookupBusy, setLiveLookupBusy] = useState(false);
+  const [liveLookupResult, setLiveLookupResult] = useState<PhoneLookupResult | null>(null);
+  const [liveLookupCheckedPhone, setLiveLookupCheckedPhone] = useState('');
 
   const vcfInputRef = useRef<HTMLInputElement | null>(null);
   const hasNativePicker = supportsNativeContactPicker();
+
+  const searchDigits = search.replace(/\D/g, '');
+  const looksLikePhoneQuery =
+    searchDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(search.trim());
+
+  useEffect(() => {
+    if (!looksLikePhoneQuery) {
+      setLiveLookupResult(null);
+      setLiveLookupCheckedPhone('');
+      setLiveLookupBusy(false);
+      return undefined;
+    }
+
+    const normalized = normalizePhoneDigits(search);
+    if (normalized.length < 10) return undefined;
+
+    let cancelled = false;
+    setLiveLookupBusy(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const found = await onLookupPhone(search);
+        if (cancelled) return;
+        setLiveLookupResult(found && found.uid !== currentUserUid ? found : null);
+        setLiveLookupCheckedPhone(formatPhoneDisplay(search));
+      } catch {
+        if (!cancelled) {
+          setLiveLookupResult(null);
+          setLiveLookupCheckedPhone(formatPhoneDisplay(search));
+        }
+      } finally {
+        if (!cancelled) setLiveLookupBusy(false);
+      }
+    }, 280);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [search, looksLikePhoneQuery, currentUserUid, onLookupPhone]);
 
   const filtered = contacts.filter((c) => {
     const q = search.trim().toLowerCase();
@@ -278,17 +336,119 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           </form>
         )}
 
-        {/* Search Input */}
+        {/* Search Input with Instant Phone Lookup */}
         <div className="relative mt-4">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar contato por nome, telefone ou vitrine..."
-            className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm text-slate-900 focus:border-[#0F5132] focus:bg-white focus:outline-none"
+            placeholder="Buscar contato ou digitar número com DDD (ex: 37 99999-9999)..."
+            className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0F5132] focus:bg-white focus:outline-none"
           />
+          {liveLookupBusy && (
+            <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0F5132]" />
+          )}
         </div>
+
+        {/* Instant Live Lookup Result Card */}
+        {looksLikePhoneQuery && !liveLookupBusy && liveLookupResult && (
+          <div className="mt-3 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              {liveLookupResult.avatarUrl ? (
+                <img
+                  src={liveLookupResult.avatarUrl}
+                  alt={liveLookupResult.displayName}
+                  className="h-11 w-11 shrink-0 rounded-full object-cover"
+                />
+              ) : (
+                <div
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                  style={{ backgroundColor: liveLookupResult.avatarColor || '#0F5132' }}
+                >
+                  {liveLookupResult.initials}
+                </div>
+              )}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="truncate text-sm font-bold text-slate-900">
+                    {liveLookupResult.displayName}
+                  </span>
+                  <span className="rounded-md bg-[#0F5132] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    No Zapei
+                  </span>
+                </div>
+                <p className="font-mono text-xs text-slate-600 tabular-nums">
+                  {liveLookupCheckedPhone}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void onOpenDirectFoundChat(liveLookupResult, search)}
+                className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#0F5132] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#146c43]"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                Conversar
+              </button>
+              <button
+                type="button"
+                onClick={() => void onStartDirectFoundCall(liveLookupResult, search, 'audio')}
+                title="Ligação de voz"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-[#0F5132] hover:bg-emerald-50"
+              >
+                <Phone className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void onStartDirectFoundCall(liveLookupResult, search, 'video')}
+                title="Chamada de vídeo"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-[#0D2B3E] hover:bg-emerald-50"
+              >
+                <Video className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await onSaveContact(liveLookupResult.displayName, search);
+                    setStatusFeedback(`${liveLookupResult.displayName} salvo na sua agenda.`);
+                    setSearch('');
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                className="flex min-h-[38px] items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                Salvar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {looksLikePhoneQuery && !liveLookupBusy && !liveLookupResult && liveLookupCheckedPhone && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
+            <span>
+              <strong className="font-mono text-slate-800">{liveLookupCheckedPhone}</strong> ainda não entrou no Zapei.
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                await shareRealZapeiInvite(liveLookupCheckedPhone, search);
+                setStatusFeedback(`Convite preparado para ${liveLookupCheckedPhone}.`);
+              }}
+              className="inline-flex items-center gap-1 font-semibold text-[#0F5132] hover:underline"
+            >
+              <Send className="h-3.5 w-3.5" />
+              Enviar convite
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Empty State */}
@@ -296,11 +456,10 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
           <Smartphone className="mx-auto h-10 w-10 text-slate-400" />
           <h2 className="mt-3 text-base font-bold text-slate-900">
-            Sua agenda Zapei está vazia
+            Encontre seus contatos no Zapei
           </h2>
           <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-            Adicione um número real pelo botão <strong>+ Salvar número</strong>, importe um arquivo{' '}
-            <strong>.vcf</strong> (exportado do Google Contatos, Android ou iPhone) ou sincronize direto pelo celular. Qualquer contato já cadastrado com aquele número aparecerá automaticamente aqui.
+            Digite qualquer <strong>número com DDD</strong> na barra de busca acima para achar quem já tem o Zapei e começar a conversar ou ligar na hora — sem precisar importar nada. Se preferir, salve números em <strong>+ Salvar número</strong> ou importe sua agenda.
           </p>
         </div>
       ) : (

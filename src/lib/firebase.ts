@@ -476,6 +476,7 @@ export interface PhoneLookupResult {
   displayName: string;
   initials: string;
   avatarColor: string;
+  avatarUrl?: string;
   role: 'normal' | 'reseller' | 'manufacturer';
   hasStorefront: boolean;
   storefrontName: string;
@@ -496,6 +497,7 @@ export async function lookupRegisteredUserByPhone(
       displayName: String(d.displayName),
       initials: String(d.initials || getInitials(String(d.displayName))),
       avatarColor: String(d.avatarColor || '#0F5132'),
+      avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
       role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
       hasStorefront: Boolean(d.hasStorefront),
       storefrontName: String(d.storefrontName || d.displayName),
