@@ -1,0 +1,343 @@
+{
+  "entities": {
+    "UserPublic": {
+      "title": "UserPublic",
+      "description": "Public Zapei user and storefront profile without PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "initials": { "type": "string", "minLength": 1, "maxLength": 4 },
+        "statusMessage": { "type": "string", "maxLength": 160 },
+        "avatarColor": { "type": "string", "maxLength": 20 },
+        "avatarUrl": { "type": "string", "maxLength": 150000 },
+        "commercialMode": { "type": "string", "enum": ["buyer", "manufacturer", "reseller"] },
+        "manufacturerActivated": { "type": "boolean" },
+        "resellerActivated": { "type": "boolean" },
+        "hasStorefront": { "type": "boolean" },
+        "storefrontName": { "type": "string", "maxLength": 80 },
+        "storefrontPrivacy": { "type": "string", "enum": ["open", "approved"] },
+        "factoryName": { "type": "string", "maxLength": 80 },
+        "deliveryPolicyType": { "type": "string", "enum": ["boxes", "pieces", "amount"] },
+        "deliveryPolicyValue": { "type": "number" },
+        "deliveryPolicyPickup": { "type": "boolean" },
+        "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "subscriptionStatus": { "type": "string", "enum": ["free", "trial", "active", "expired"] },
+        "trialEndsAt": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "initials", "commercialMode", "hasStorefront", "subscriptionStatus", "createdAt", "updatedAt"]
+    },
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Owner-only PII record with phone number, SHA-256 phone hash, email, and saved favorite grades.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "phone": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "phoneHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 120 },
+        "deliveryAddress": { "type": "string", "maxLength": 300 },
+        "favoriteGrades": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "phone", "phoneHash", "createdAt", "updatedAt"]
+    },
+    "UserContact": {
+      "title": "UserContact",
+      "description": "Real synced device or saved phonebook contact owned strictly by a user.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "phone": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "phoneHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "matchedUid": { "type": "string", "maxLength": 128 },
+        "matchedRole": { "type": "string", "enum": ["normal", "reseller", "manufacturer"] },
+        "matchedHasStorefront": { "type": "boolean" },
+        "matchedStorefrontName": { "type": "string", "maxLength": 80 },
+        "matchedDeliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "avatarColor": { "type": "string", "maxLength": 20 },
+        "invited": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "phone", "phoneHash", "matchedHasStorefront", "invited", "createdAt", "updatedAt"]
+    },
+    "PhoneIndex": {
+      "title": "PhoneIndex",
+      "description": "Hashed phone lookup document allowing exact-match discovery without exposing raw phones or list queries.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "initials": { "type": "string", "minLength": 1, "maxLength": 4 },
+        "avatarColor": { "type": "string", "maxLength": 20 },
+        "avatarUrl": { "type": "string", "maxLength": 150000 },
+        "role": { "type": "string", "enum": ["normal", "reseller", "manufacturer"] },
+        "hasStorefront": { "type": "boolean" },
+        "storefrontName": { "type": "string", "maxLength": 80 },
+        "deliveryPolicyType": { "type": "string", "enum": ["boxes", "pieces", "amount"] },
+        "deliveryPolicyValue": { "type": "number" },
+        "deliveryPolicyPickup": { "type": "boolean" },
+        "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "displayName", "initials", "role", "hasStorefront", "updatedAt"]
+    },
+    "Connection": {
+      "title": "Connection",
+      "description": "Real reseller-to-manufacturer commercial partnership with category margins and photo review rules.",
+      "type": "object",
+      "properties": {
+        "resellerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "factoryId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "factoryName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "deliveryPolicyType": { "type": "string", "enum": ["boxes", "pieces", "amount"] },
+        "deliveryPolicyValue": { "type": "number" },
+        "deliveryPolicyPickup": { "type": "boolean" },
+        "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "reviewPhotos": { "type": "boolean" },
+        "paused": { "type": "boolean" },
+        "margins": { "type": "object" },
+        "approvedProductIds": { "type": "array" },
+        "rejectedProductIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["resellerId", "factoryId", "factoryName", "reviewPhotos", "paused", "margins", "approvedProductIds", "rejectedProductIds", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Real manufacturer catalog item with comma-separated size grade and live box inventory.",
+      "type": "object",
+      "properties": {
+        "factoryId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "factoryName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "sku": { "type": "string", "maxLength": 40 },
+        "category": { "type": "string", "enum": ["Calçados", "Bolsas", "Sapatos", "Joias", "Acessórios"] },
+        "factoryPrice": { "type": "number" },
+        "stockBoxes": { "type": "number" },
+        "gradeRaw": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 350000 },
+        "isSoldOutToday": { "type": "boolean" },
+        "moderationStatus": { "type": "string", "enum": ["approved", "flagged"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["factoryId", "factoryName", "name", "category", "factoryPrice", "stockBoxes", "gradeRaw", "imageUrl", "isSoldOutToday", "moderationStatus", "createdAt", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Real customer mixed order placed via a storefront.",
+      "type": "object",
+      "properties": {
+        "orderCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "resellerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storefrontName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "factoryIds": { "type": "array" },
+        "status": { "type": "string", "enum": ["pending_inquiry", "checking_stock", "partial_confirmed", "confirmed", "logistics_sent", "dispatched", "completed", "cancelled"] },
+        "discountMode": { "type": "string", "enum": ["fixed", "percent"] },
+        "discountValue": { "type": "number" },
+        "discountAmount": { "type": "number" },
+        "buyerSubtotal": { "type": "number" },
+        "buyerFinalTotal": { "type": "number" },
+        "factoryCostTotal": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderCode", "buyerId", "buyerName", "resellerId", "storefrontName", "factoryIds", "status", "discountMode", "discountValue", "discountAmount", "buyerSubtotal", "buyerFinalTotal", "factoryCostTotal", "createdAt", "updatedAt"]
+    },
+    "SubOrder": {
+      "title": "SubOrder",
+      "description": "Real split manufacturer order with per-item availability, partial cuts, logistics, and receipt.",
+      "type": "object",
+      "properties": {
+        "parentOrderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subOrderCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "factoryId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "factoryName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "resellerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "anonymousGroupLabel": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "items": { "type": "array" },
+        "status": { "type": "string", "enum": ["pending_inquiry", "checking_stock", "partial_confirmed", "confirmed", "logistics_sent", "dispatched", "completed", "cancelled"] },
+        "factoryCost": { "type": "number" },
+        "buyerSubtotal": { "type": "number" },
+        "logisticsType": { "type": "string", "enum": ["none", "transportadora", "distribuidora"] },
+        "logisticsCompany": { "type": "string", "maxLength": 120 },
+        "logisticsAddress": { "type": "string", "maxLength": 300 },
+        "receiptNote": { "type": "string", "maxLength": 240 },
+        "receiptUrl": { "type": "string", "maxLength": 350000 },
+        "receiptAttached": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["parentOrderId", "subOrderCode", "factoryId", "factoryName", "resellerId", "buyerId", "anonymousGroupLabel", "items", "status", "factoryCost", "buyerSubtotal", "logisticsType", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Real dual financial layer record.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "subOrderCode": { "type": "string", "maxLength": 32 },
+        "layer": { "type": "string", "enum": ["factory_reseller", "reseller_buyer"] },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "counterpartyId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "buyerId": { "type": "string", "maxLength": 128 },
+        "counterpartyName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "amount": { "type": "number" },
+        "costReference": { "type": "number" },
+        "method": { "type": "string", "enum": ["À vista", "Cartão", "Cheque", "Notinha"] },
+        "status": { "type": "string", "enum": ["Aguardando", "Parcial", "Quitado", "Em Atraso"] },
+        "dueDate": { "type": "string", "maxLength": 24 },
+        "lastReminderSent": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderCode", "layer", "ownerId", "counterpartyId", "counterpartyName", "amount", "method", "status", "dueDate", "createdAt", "updatedAt"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "Real 1-to-1 Firestore conversation thread between two authenticated Zapei users.",
+      "type": "object",
+      "properties": {
+        "userA": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userB": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userAName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "userBName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "lastMessage": { "type": "string", "maxLength": 400 },
+        "lastSenderId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userA", "userB", "userAName", "userBName", "lastMessage", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Real chat message supporting text, real recorded audio, uploaded photo, order card, or billing reminder.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "minLength": 1, "maxLength": 260 },
+        "userA": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userB": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "type": { "type": "string", "enum": ["text", "audio", "image", "order_card", "billing_reminder"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "mediaUrl": { "type": "string", "maxLength": 500000 },
+        "audioDuration": { "type": "string", "maxLength": 16 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderCode": { "type": "string", "maxLength": 32 },
+        "orderSummary": { "type": "string", "maxLength": 240 },
+        "orderTotal": { "type": "number" },
+        "orderStatusLabel": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "userA", "userB", "senderId", "senderName", "type", "text", "createdAt"]
+    },
+    "CallSession": {
+      "title": "CallSession",
+      "description": "Real WebRTC voice/video call session and signaling record.",
+      "type": "object",
+      "properties": {
+        "callerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "callerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "callerInitials": { "type": "string", "minLength": 1, "maxLength": 4 },
+        "callerAvatarColor": { "type": "string", "maxLength": 20 },
+        "calleeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "calleeName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "calleeInitials": { "type": "string", "minLength": 1, "maxLength": 4 },
+        "calleeAvatarColor": { "type": "string", "maxLength": 20 },
+        "callType": { "type": "string", "enum": ["audio", "video"] },
+        "status": { "type": "string", "enum": ["ringing", "active", "ended", "declined", "missed"] },
+        "offerSdp": { "type": "string", "maxLength": 20000 },
+        "answerSdp": { "type": "string", "maxLength": 20000 },
+        "durationLabel": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["callerId", "callerName", "calleeId", "calleeName", "callType", "status", "createdAt", "updatedAt"]
+    },
+    "IceCandidate": {
+      "title": "IceCandidate",
+      "description": "WebRTC ICE candidate for peer connection negotiation.",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiverId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "candidate": { "type": "string", "maxLength": 2000 },
+        "sdpMid": { "type": "string", "maxLength": 64 },
+        "sdpMLineIndex": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "receiverId", "candidate", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublic" },
+      "description": "Public profile and storefront metadata per user."
+    },
+    "/users/{userId}/private/{privateId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Owner-only PII including raw phone number and favorite grades."
+    },
+    "/users/{userId}/contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/UserContact" },
+      "description": "Owner-only real phonebook contacts imported from device or saved manually."
+    },
+    "/phone_index/{phoneHash}": {
+      "schema": { "$ref": "#/entities/PhoneIndex" },
+      "description": "Hashed phone lookup documents for real-time Zapei contact discovery."
+    },
+    "/connections/{connectionId}": {
+      "schema": { "$ref": "#/entities/Connection" },
+      "description": "Real reseller-to-manufacturer partnerships."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Real manufacturer products."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Real mixed customer orders."
+    },
+    "/sub_orders/{subOrderId}": {
+      "schema": { "$ref": "#/entities/SubOrder" },
+      "description": "Real split manufacturer sub-orders."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Real dual financial layer records."
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/Chat" },
+      "description": "Real 1-to-1 conversations."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Real messages inside conversations."
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/CallSession" },
+      "description": "Real WebRTC voice and video call sessions and history."
+    },
+    "/calls/{callId}/callerCandidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/IceCandidate" },
+      "description": "WebRTC ICE candidates sent by the caller."
+    },
+    "/calls/{callId}/calleeCandidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/IceCandidate" },
+      "description": "WebRTC ICE candidates sent by the callee."
+    }
+  }
+}

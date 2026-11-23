@@ -1,0 +1,6 @@
+{
+  "name": "Zapei — Mensagens e Vitrines Comerciais",
+  "description": "Mensageiro gratuito com chamadas de áudio e vídeo, agenda sincronizada e ferramentas comerciais opcionais para fabricantes e revendedores com vitrines, grade visual, pedidos mistos e financeiro duplo.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

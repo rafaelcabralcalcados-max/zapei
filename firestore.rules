@@ -1,0 +1,664 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.phone_number != null
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 260 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserPublic(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'initials', 'commercialMode', 'hasStorefront', 'subscriptionStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
+          'commercialMode', 'manufacturerActivated', 'resellerActivated',
+          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
+          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'subscriptionStatus', 'trialEndsAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.initials is string && data.initials.size() >= 1 && data.initials.size() <= 4
+        && (!('statusMessage' in data) || (data.statusMessage is string && data.statusMessage.size() <= 160))
+        && (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 20))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 150000))
+        && data.commercialMode in ['buyer', 'manufacturer', 'reseller']
+        && (!('manufacturerActivated' in data) || data.manufacturerActivated is bool)
+        && (!('resellerActivated' in data) || data.resellerActivated is bool)
+        && data.hasStorefront is bool
+        && (!('storefrontName' in data) || (data.storefrontName is string && data.storefrontName.size() <= 80))
+        && (!('storefrontPrivacy' in data) || data.storefrontPrivacy in ['open', 'approved'])
+        && (!('factoryName' in data) || (data.factoryName is string && data.factoryName.size() <= 80))
+        && (!('deliveryPolicyType' in data) || data.deliveryPolicyType in ['boxes', 'pieces', 'amount'])
+        && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
+        && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
+        && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && data.subscriptionStatus in ['free', 'trial', 'active', 'expired']
+        && (!('trialEndsAt' in data) || (data.trialEndsAt is number && data.trialEndsAt >= 0))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data) {
+      return data.keys().hasAll(['ownerId', 'phone', 'phoneHash', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'phone', 'phoneHash', 'email', 'deliveryAddress', 'favoriteGrades', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && data.phoneHash is string && data.phoneHash.size() >= 16 && data.phoneHash.size() <= 128
+        && (!('email' in data) || (data.email is string && data.email.size() <= 120))
+        && (!('deliveryAddress' in data) || (data.deliveryAddress is string && data.deliveryAddress.size() <= 300))
+        && (!('favoriteGrades' in data) || (data.favoriteGrades is list && data.favoriteGrades.size() <= 20))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserContact(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'phone', 'phoneHash', 'matchedHasStorefront', 'invited', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'name', 'phone', 'phoneHash', 'matchedUid', 'matchedRole',
+          'matchedHasStorefront', 'matchedStorefrontName', 'matchedDeliveryPolicyLabel',
+          'avatarColor', 'invited', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && data.phoneHash is string && data.phoneHash.size() >= 16 && data.phoneHash.size() <= 128
+        && (!('matchedUid' in data) || (data.matchedUid is string && data.matchedUid.size() <= 128))
+        && (!('matchedRole' in data) || data.matchedRole in ['normal', 'reseller', 'manufacturer'])
+        && data.matchedHasStorefront is bool
+        && (!('matchedStorefrontName' in data) || (data.matchedStorefrontName is string && data.matchedStorefrontName.size() <= 80))
+        && (!('matchedDeliveryPolicyLabel' in data) || (data.matchedDeliveryPolicyLabel is string && data.matchedDeliveryPolicyLabel.size() <= 160))
+        && (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 20))
+        && data.invited is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPhoneIndex(data) {
+      return data.keys().hasAll(['ownerId', 'displayName', 'initials', 'role', 'hasStorefront', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'displayName', 'initials', 'avatarColor', 'avatarUrl', 'role', 'hasStorefront',
+          'storefrontName', 'deliveryPolicyType', 'deliveryPolicyValue',
+          'deliveryPolicyPickup', 'deliveryPolicyLabel', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.initials is string && data.initials.size() >= 1 && data.initials.size() <= 4
+        && (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 20))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 150000))
+        && data.role in ['normal', 'reseller', 'manufacturer']
+        && data.hasStorefront is bool
+        && (!('storefrontName' in data) || (data.storefrontName is string && data.storefrontName.size() <= 80))
+        && (!('deliveryPolicyType' in data) || data.deliveryPolicyType in ['boxes', 'pieces', 'amount'])
+        && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
+        && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
+        && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidConnection(data) {
+      return data.keys().hasAll(['resellerId', 'factoryId', 'factoryName', 'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'resellerId', 'factoryId', 'factoryName', 'deliveryPolicyType',
+          'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.resellerId)
+        && isValidId(data.factoryId)
+        && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
+        && (!('deliveryPolicyType' in data) || data.deliveryPolicyType in ['boxes', 'pieces', 'amount'])
+        && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
+        && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
+        && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && data.reviewPhotos is bool
+        && data.paused is bool
+        && data.margins is map
+        && data.approvedProductIds is list && data.approvedProductIds.size() <= 500
+        && data.rejectedProductIds is list && data.rejectedProductIds.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['factoryId', 'factoryName', 'name', 'category', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'factoryId', 'factoryName', 'name', 'sku', 'category', 'factoryPrice',
+          'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.factoryId)
+        && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && (!('sku' in data) || (data.sku is string && data.sku.size() <= 40))
+        && data.category in ['Calçados', 'Bolsas', 'Sapatos', 'Joias', 'Acessórios']
+        && data.factoryPrice is number && data.factoryPrice >= 0 && data.factoryPrice <= 1000000
+        && data.stockBoxes is number && data.stockBoxes >= 0 && data.stockBoxes <= 100000
+        && data.gradeRaw is string && data.gradeRaw.size() >= 1 && data.gradeRaw.size() <= 200
+        && data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 350000
+        && data.isSoldOutToday is bool
+        && data.moderationStatus in ['approved', 'flagged']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['orderCode', 'buyerId', 'buyerName', 'resellerId', 'storefrontName', 'factoryIds', 'status', 'discountMode', 'discountValue', 'discountAmount', 'buyerSubtotal', 'buyerFinalTotal', 'factoryCostTotal', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'orderCode', 'buyerId', 'buyerName', 'resellerId', 'storefrontName', 'factoryIds',
+          'status', 'discountMode', 'discountValue', 'discountAmount',
+          'buyerSubtotal', 'buyerFinalTotal', 'factoryCostTotal', 'createdAt', 'updatedAt'
+        ])
+        && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
+        && isValidId(data.buyerId)
+        && data.buyerName is string && data.buyerName.size() >= 1 && data.buyerName.size() <= 80
+        && isValidId(data.resellerId)
+        && data.storefrontName is string && data.storefrontName.size() >= 1 && data.storefrontName.size() <= 80
+        && data.factoryIds is list && data.factoryIds.size() >= 1 && data.factoryIds.size() <= 10 && data.factoryIds[0] is string
+        && data.status in ['pending_inquiry', 'checking_stock', 'partial_confirmed', 'confirmed', 'logistics_sent', 'dispatched', 'completed', 'cancelled']
+        && data.discountMode in ['fixed', 'percent']
+        && data.discountValue is number && data.discountValue >= 0
+        && data.discountAmount is number && data.discountAmount >= 0
+        && data.buyerSubtotal is number && data.buyerSubtotal >= 0
+        && data.buyerFinalTotal is number && data.buyerFinalTotal >= 0
+        && data.factoryCostTotal is number && data.factoryCostTotal >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSubOrder(data) {
+      return data.keys().hasAll(['parentOrderId', 'subOrderCode', 'factoryId', 'factoryName', 'resellerId', 'buyerId', 'anonymousGroupLabel', 'items', 'status', 'factoryCost', 'buyerSubtotal', 'logisticsType', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'parentOrderId', 'subOrderCode', 'factoryId', 'factoryName', 'resellerId', 'buyerId',
+          'anonymousGroupLabel', 'deliveryPolicyLabel', 'items', 'status',
+          'factoryCost', 'buyerSubtotal', 'logisticsType', 'logisticsCompany',
+          'logisticsAddress', 'receiptNote', 'receiptUrl', 'receiptAttached',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.parentOrderId)
+        && data.subOrderCode is string && data.subOrderCode.size() >= 2 && data.subOrderCode.size() <= 32
+        && isValidId(data.factoryId)
+        && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
+        && isValidId(data.resellerId)
+        && isValidId(data.buyerId)
+        && data.anonymousGroupLabel is string && data.anonymousGroupLabel.size() >= 1 && data.anonymousGroupLabel.size() <= 40
+        && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map
+        && data.status in ['pending_inquiry', 'checking_stock', 'partial_confirmed', 'confirmed', 'logistics_sent', 'dispatched', 'completed', 'cancelled']
+        && data.factoryCost is number && data.factoryCost >= 0
+        && data.buyerSubtotal is number && data.buyerSubtotal >= 0
+        && data.logisticsType in ['none', 'transportadora', 'distribuidora']
+        && (!('logisticsCompany' in data) || (data.logisticsCompany is string && data.logisticsCompany.size() <= 120))
+        && (!('logisticsAddress' in data) || (data.logisticsAddress is string && data.logisticsAddress.size() <= 300))
+        && (!('receiptNote' in data) || (data.receiptNote is string && data.receiptNote.size() <= 240))
+        && (!('receiptUrl' in data) || (data.receiptUrl is string && data.receiptUrl.size() <= 350000))
+        && (!('receiptAttached' in data) || data.receiptAttached is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['orderId', 'orderCode', 'layer', 'ownerId', 'counterpartyId', 'counterpartyName', 'amount', 'method', 'status', 'dueDate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'orderId', 'orderCode', 'subOrderCode', 'layer', 'ownerId', 'counterpartyId',
+          'buyerId', 'counterpartyName', 'amount', 'costReference', 'method', 'status',
+          'dueDate', 'lastReminderSent', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.orderId)
+        && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
+        && (!('subOrderCode' in data) || (data.subOrderCode is string && data.subOrderCode.size() <= 32))
+        && data.layer in ['factory_reseller', 'reseller_buyer']
+        && isValidId(data.ownerId)
+        && isValidId(data.counterpartyId)
+        && (!('buyerId' in data) || isValidId(data.buyerId))
+        && data.counterpartyName is string && data.counterpartyName.size() >= 1 && data.counterpartyName.size() <= 100
+        && data.amount is number && data.amount >= 0
+        && (!('costReference' in data) || (data.costReference is number && data.costReference >= 0))
+        && data.method in ['À vista', 'Cartão', 'Cheque', 'Notinha']
+        && data.status in ['Aguardando', 'Parcial', 'Quitado', 'Em Atraso']
+        && data.dueDate is string && data.dueDate.size() >= 4 && data.dueDate.size() <= 24
+        && (!('lastReminderSent' in data) || (data.lastReminderSent is string && data.lastReminderSent.size() <= 40))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['userA', 'userB', 'userAName', 'userBName', 'lastMessage', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userA', 'userB', 'userAName', 'userBName', 'lastMessage', 'lastSenderId', 'createdAt', 'updatedAt'])
+        && isValidId(data.userA)
+        && isValidId(data.userB)
+        && data.userAName is string && data.userAName.size() >= 1 && data.userAName.size() <= 80
+        && data.userBName is string && data.userBName.size() >= 1 && data.userBName.size() <= 80
+        && data.lastMessage is string && data.lastMessage.size() <= 400
+        && (!('lastSenderId' in data) || isValidId(data.lastSenderId))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data, chatId) {
+      return data.keys().hasAll(['chatId', 'userA', 'userB', 'senderId', 'senderName', 'type', 'text', 'createdAt'])
+        && data.keys().hasOnly([
+          'chatId', 'userA', 'userB', 'senderId', 'senderName', 'type', 'text',
+          'mediaUrl', 'audioDuration', 'orderId', 'orderCode', 'orderSummary',
+          'orderTotal', 'orderStatusLabel', 'createdAt'
+        ])
+        && data.chatId == chatId
+        && isValidId(data.userA)
+        && isValidId(data.userB)
+        && isValidId(data.senderId)
+        && data.senderId == request.auth.uid
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80
+        && data.type in ['text', 'audio', 'image', 'order_card', 'billing_reminder']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
+        && (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 500000))
+        && (!('audioDuration' in data) || (data.audioDuration is string && data.audioDuration.size() <= 16))
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && (!('orderCode' in data) || (data.orderCode is string && data.orderCode.size() <= 32))
+        && (!('orderSummary' in data) || (data.orderSummary is string && data.orderSummary.size() <= 240))
+        && (!('orderTotal' in data) || (data.orderTotal is number && data.orderTotal >= 0))
+        && (!('orderStatusLabel' in data) || (data.orderStatusLabel is string && data.orderStatusLabel.size() <= 120))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCallSession(data) {
+      return data.keys().hasAll(['callerId', 'callerName', 'calleeId', 'calleeName', 'callType', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'callerId', 'callerName', 'callerInitials', 'callerAvatarColor',
+          'calleeId', 'calleeName', 'calleeInitials', 'calleeAvatarColor',
+          'callType', 'status', 'offerSdp', 'answerSdp', 'durationLabel',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.callerId)
+        && data.callerName is string && data.callerName.size() >= 1 && data.callerName.size() <= 80
+        && (!('callerInitials' in data) || (data.callerInitials is string && data.callerInitials.size() <= 4))
+        && (!('callerAvatarColor' in data) || (data.callerAvatarColor is string && data.callerAvatarColor.size() <= 20))
+        && isValidId(data.calleeId)
+        && data.calleeName is string && data.calleeName.size() >= 1 && data.calleeName.size() <= 80
+        && (!('calleeInitials' in data) || (data.calleeInitials is string && data.calleeInitials.size() <= 4))
+        && (!('calleeAvatarColor' in data) || (data.calleeAvatarColor is string && data.calleeAvatarColor.size() <= 20))
+        && data.callType in ['audio', 'video']
+        && data.status in ['ringing', 'active', 'ended', 'declined', 'missed']
+        && (!('offerSdp' in data) || (data.offerSdp is string && data.offerSdp.size() <= 20000))
+        && (!('answerSdp' in data) || (data.answerSdp is string && data.answerSdp.size() <= 20000))
+        && (!('durationLabel' in data) || (data.durationLabel is string && data.durationLabel.size() <= 32))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidIceCandidate(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'candidate', 'createdAt'])
+        && data.keys().hasOnly(['senderId', 'receiverId', 'candidate', 'sdpMid', 'sdpMLineIndex', 'createdAt'])
+        && isValidId(data.senderId)
+        && isValidId(data.receiverId)
+        && data.senderId == request.auth.uid
+        && data.candidate is string && data.candidate.size() <= 2000
+        && (!('sdpMid' in data) || (data.sdpMid is string && data.sdpMid.size() <= 64))
+        && (!('sdpMLineIndex' in data) || data.sdpMLineIndex is number)
+        && data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Users (Public storefront / messenger profile; NO PII)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (userId == request.auth.uid || existing().hasStorefront == true);
+      allow list: if isSignedIn() && (existing().uid == request.auth.uid || existing().hasStorefront == true);
+      allow create: if isVerified() && isValidId(userId) && userId == request.auth.uid
+        && isValidUserPublic(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && userId == request.auth.uid
+        && isValidUserPublic(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
+          'commercialMode', 'manufacturerActivated', 'resellerActivated',
+          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
+          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'subscriptionStatus', 'trialEndsAt', 'updatedAt'
+        ]);
+      allow delete: if false;
+
+      // Owner-only Private PII Subcollection
+      match /private/{privateId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(privateId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(privateId)
+          && isValidUserPrivate(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(privateId)
+          && isValidUserPrivate(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'phoneHash', 'email', 'deliveryAddress', 'favoriteGrades', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Owner-only Synced Device Contacts Subcollection
+      match /contacts/{contactId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(contactId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(contactId)
+          && isValidUserContact(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(contactId)
+          && isValidUserContact(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'phone', 'phoneHash', 'matchedUid', 'matchedRole',
+            'matchedHasStorefront', 'matchedStorefrontName', 'matchedDeliveryPolicyLabel',
+            'avatarColor', 'invited', 'updatedAt'
+          ]);
+        allow delete: if isVerified() && isOwner(userId) && isValidId(userId) && isValidId(contactId);
+      }
+    }
+
+    // 2. Hashed Phone Lookup Index (Exact-match GET only, zero list scraping)
+    match /phone_index/{phoneHash} {
+      allow get: if isSignedIn() && isValidId(phoneHash);
+      allow list: if false;
+      allow create: if isVerified() && isValidId(phoneHash)
+        && isValidPhoneIndex(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(phoneHash)
+        && isValidPhoneIndex(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'initials', 'avatarColor', 'avatarUrl', 'role', 'hasStorefront',
+          'storefrontName', 'deliveryPolicyType', 'deliveryPolicyValue',
+          'deliveryPolicyPickup', 'deliveryPolicyLabel', 'updatedAt'
+        ]);
+      allow delete: if isVerified() && isValidId(phoneHash) && existing().ownerId == request.auth.uid;
+    }
+
+    // 3. Reseller-to-Factory Connections
+    match /connections/{connectionId} {
+      allow get: if isSignedIn() && isValidId(connectionId)
+        && (existing().resellerId == request.auth.uid || existing().factoryId == request.auth.uid || existing().paused == false);
+      allow list: if isSignedIn()
+        && (existing().resellerId == request.auth.uid || existing().factoryId == request.auth.uid || existing().paused == false);
+      allow create: if isVerified() && isValidId(connectionId)
+        && isValidConnection(incoming())
+        && incoming().resellerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(connectionId)
+        && isValidConnection(incoming())
+        && existing().resellerId == request.auth.uid
+        && incoming().resellerId == existing().resellerId
+        && incoming().factoryId == existing().factoryId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds',
+          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'updatedAt'
+        ]);
+      allow delete: if isVerified() && isValidId(connectionId) && existing().resellerId == request.auth.uid;
+    }
+
+    // 4. Manufacturer Products
+    match /products/{productId} {
+      allow get: if isSignedIn() && isValidId(productId)
+        && (existing().factoryId == request.auth.uid || existing().moderationStatus == 'approved');
+      allow list: if isSignedIn()
+        && (existing().factoryId == request.auth.uid || existing().moderationStatus == 'approved');
+      allow create: if isVerified() && isValidId(productId)
+        && isValidProduct(incoming())
+        && incoming().factoryId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(productId)
+        && isValidProduct(incoming())
+        && existing().factoryId == request.auth.uid
+        && incoming().factoryId == existing().factoryId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'updatedAt'])
+        );
+      allow delete: if isVerified() && isValidId(productId) && existing().factoryId == request.auth.uid;
+    }
+
+    // 5. Customer Mixed Orders
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && isValidId(orderId)
+        && (existing().buyerId == request.auth.uid || existing().resellerId == request.auth.uid || request.auth.uid in existing().factoryIds);
+      allow list: if isSignedIn()
+        && (existing().buyerId == request.auth.uid || existing().resellerId == request.auth.uid || request.auth.uid in existing().factoryIds);
+      allow create: if isVerified() && isValidId(orderId)
+        && isValidOrder(incoming())
+        && incoming().buyerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(orderId)
+        && isValidOrder(incoming())
+        && !(existing().status in ['completed', 'cancelled'])
+        && incoming().orderCode == existing().orderCode
+        && incoming().buyerId == existing().buyerId
+        && incoming().resellerId == existing().resellerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Reseller forwards inquiry or applies commission-only discount
+          (existing().resellerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'discountMode', 'discountValue', 'discountAmount', 'buyerFinalTotal', 'buyerSubtotal', 'factoryCostTotal', 'updatedAt'])) ||
+          // Action: Participating manufacturer recalculates totals after partial cut / dispatch
+          (request.auth.uid in existing().factoryIds
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'buyerFinalTotal', 'buyerSubtotal', 'factoryCostTotal', 'discountAmount', 'updatedAt'])) ||
+          // Action: Buyer cancels pending order
+          (existing().buyerId == request.auth.uid
+            && existing().status == 'pending_inquiry'
+            && incoming().status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 6. Split Manufacturer Sub-Orders
+    match /sub_orders/{subOrderId} {
+      allow get: if isSignedIn() && isValidId(subOrderId)
+        && (existing().factoryId == request.auth.uid || existing().resellerId == request.auth.uid || existing().buyerId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (existing().factoryId == request.auth.uid || existing().resellerId == request.auth.uid || existing().buyerId == request.auth.uid);
+      allow create: if isVerified() && isValidId(subOrderId)
+        && isValidSubOrder(incoming())
+        && (incoming().buyerId == request.auth.uid || incoming().resellerId == request.auth.uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/orders/$(incoming().parentOrderId));
+      allow update: if isVerified() && isValidId(subOrderId)
+        && isValidSubOrder(incoming())
+        && !(existing().status in ['completed', 'cancelled'])
+        && incoming().parentOrderId == existing().parentOrderId
+        && incoming().subOrderCode == existing().subOrderCode
+        && incoming().factoryId == existing().factoryId
+        && incoming().resellerId == existing().resellerId
+        && incoming().buyerId == existing().buyerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Manufacturer confirms stock / partial cut / attaches dispatch receipt
+          (existing().factoryId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'status', 'factoryCost', 'buyerSubtotal', 'receiptNote', 'receiptUrl', 'receiptAttached', 'updatedAt'])) ||
+          // Action: Reseller forwards inquiry or attaches post-confirmation logistics
+          (existing().resellerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'logisticsType', 'logisticsCompany', 'logisticsAddress', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 7. Dual Financial Layer Payments
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId)
+        && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid);
+      allow create: if isVerified() && isValidId(paymentId)
+        && isValidPayment(incoming())
+        && (incoming().ownerId == request.auth.uid || incoming().counterpartyId == request.auth.uid || incoming().buyerId == request.auth.uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(paymentId)
+        && isValidPayment(incoming())
+        && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid)
+        && incoming().orderId == existing().orderId
+        && incoming().layer == existing().layer
+        && incoming().ownerId == existing().ownerId
+        && incoming().counterpartyId == existing().counterpartyId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Owner updates payment method, status, amount, or sends billing reminder
+          (existing().ownerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['amount', 'costReference', 'method', 'status', 'lastReminderSent', 'updatedAt'])) ||
+          // Action: Counterparty recalculates amount on partial stock cut
+          (existing().counterpartyId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['amount', 'costReference', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    // 8. Real 1-to-1 Messenger Chats & Messages (Master Gate)
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId)
+        && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
+      allow list: if isSignedIn()
+        && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
+      allow create: if isVerified() && isValidId(chatId)
+        && isValidChat(incoming())
+        && (incoming().userA == request.auth.uid || incoming().userB == request.auth.uid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(chatId)
+        && isValidChat(incoming())
+        && (existing().userA == request.auth.uid || existing().userB == request.auth.uid)
+        && incoming().userA == existing().userA
+        && incoming().userB == existing().userB
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastSenderId', 'userAName', 'userBName', 'updatedAt']);
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId)
+          && (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.userA == request.auth.uid ||
+            get(/databases/$(database)/documents/chats/$(chatId)).data.userB == request.auth.uid
+          );
+        allow list: if isSignedIn()
+          && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
+        allow create: if isVerified() && isValidId(chatId) && isValidId(messageId)
+          && isValidChatMessage(incoming(), chatId)
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/chats/$(chatId))
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.userA == incoming().userA
+          && get(/databases/$(database)/documents/chats/$(chatId)).data.userB == incoming().userB
+          && (incoming().userA == request.auth.uid || incoming().userB == request.auth.uid);
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+
+    // 9. Real WebRTC Audio & Video Call Sessions + ICE Signaling (Master Gate)
+    match /calls/{callId} {
+      allow get: if isSignedIn() && isValidId(callId)
+        && (existing().callerId == request.auth.uid || existing().calleeId == request.auth.uid);
+      allow list: if isSignedIn()
+        && (existing().callerId == request.auth.uid || existing().calleeId == request.auth.uid);
+      allow create: if isVerified() && isValidId(callId)
+        && isValidCallSession(incoming())
+        && incoming().callerId == request.auth.uid
+        && incoming().status == 'ringing'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(callId)
+        && isValidCallSession(incoming())
+        && !(existing().status in ['ended', 'declined', 'missed'])
+        && incoming().callerId == existing().callerId
+        && incoming().calleeId == existing().calleeId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Callee answers or declines
+          (existing().calleeId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'answerSdp', 'durationLabel', 'updatedAt'])) ||
+          // Action: Caller hangs up or cancels ringing
+          (existing().callerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'durationLabel', 'updatedAt']))
+        );
+      allow delete: if false;
+
+      match /callerCandidates/{candidateId} {
+        allow get: if isSignedIn() && isValidId(callId) && isValidId(candidateId)
+          && (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+        allow list: if isSignedIn()
+          && (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+        allow create: if isVerified() && isValidId(callId) && isValidId(candidateId)
+          && isValidIceCandidate(incoming())
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/calls/$(callId))
+          && get(/databases/$(database)/documents/calls/$(callId)).data.callerId == request.auth.uid
+          && get(/databases/$(database)/documents/calls/$(callId)).data.calleeId == incoming().receiverId;
+        allow update, delete: if false;
+      }
+
+      match /calleeCandidates/{candidateId} {
+        allow get: if isSignedIn() && isValidId(callId) && isValidId(candidateId)
+          && (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+        allow list: if isSignedIn()
+          && (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+        allow create: if isVerified() && isValidId(callId) && isValidId(candidateId)
+          && isValidIceCandidate(incoming())
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/calls/$(callId))
+          && get(/databases/$(database)/documents/calls/$(callId)).data.calleeId == request.auth.uid
+          && get(/databases/$(database)/documents/calls/$(callId)).data.callerId == incoming().receiverId;
+        allow update, delete: if false;
+      }
+    }
+  }
+}

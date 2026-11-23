@@ -1,0 +1,259 @@
+import React, { useState } from 'react';
+import {
+  CheckCircle2,
+  CreditCard,
+  Factory,
+  QrCode,
+  ShieldCheck,
+  Store,
+  X,
+} from 'lucide-react';
+import type { CommercialMode, UserProfile } from '../types/zapei';
+
+interface CommercialTrialModalProps {
+  targetRole: Extract<CommercialMode, 'manufacturer' | 'reseller'>;
+  defaultBusinessName?: string;
+  alreadyOnPlan?: boolean;
+  onConfirm: (businessName: string) => Promise<void>;
+  onCancel: () => void;
+}
+
+export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
+  targetRole,
+  defaultBusinessName = '',
+  alreadyOnPlan = false,
+  onConfirm,
+  onCancel,
+}) => {
+  const [businessName, setBusinessName] = useState(defaultBusinessName);
+  const [busy, setBusy] = useState(false);
+
+  const isFactory = targetRole === 'manufacturer';
+
+  const handleConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = businessName.trim();
+    if (cleaned.length < 2) return;
+    setBusy(true);
+    try {
+      await onConfirm(cleaned);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+      <form
+        onSubmit={handleConfirm}
+        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-[#0F5132]">
+            {isFactory ? <Factory className="h-6 w-6" /> : <Store className="h-6 w-6" />}
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Fechar"
+            className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <h2 className="mt-4 text-lg font-bold text-slate-900">
+          {isFactory ? 'Ativar Sou Fabricante' : 'Ativar Sou Revendedor'}
+        </h2>
+        <p className="mt-1 text-sm text-slate-600">
+          {alreadyOnPlan ? (
+            <>Digite o nome abaixo para abrir seu painel comercial agora.</>
+          ) : (
+            <>
+              <strong>30 dias grátis sem cartão.</strong> Depois apenas{' '}
+              <strong>R$ 59,90/mês</strong> — sem perder suas conversas se não renovar.
+            </>
+          )}
+        </p>
+
+        <div className="mt-5">
+          <label
+            htmlFor="zapei-business-name"
+            className="block text-xs font-bold text-slate-800"
+          >
+            {isFactory ? 'Nome da sua empresa / fábrica' : 'Nome da sua vitrine / loja'}
+          </label>
+          <input
+            id="zapei-business-name"
+            type="text"
+            autoFocus
+            required
+            minLength={2}
+            maxLength={80}
+            value={businessName}
+            onChange={(e) => setBusinessName(e.target.value)}
+            placeholder={isFactory ? 'Ex: Calçados Silva' : 'Ex: Loja Ana Moda'}
+            className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:outline-none focus:ring-2 focus:ring-[#0F5132]/15"
+          />
+        </div>
+
+        <div className="mt-4 flex items-start gap-2 rounded-xl bg-slate-50 px-3.5 py-3 text-xs text-slate-600">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+          <span>
+            {isFactory
+              ? 'Seu painel já abre pronto para postar produtos com foto, preço e grade.'
+              : 'Seu painel já abre pronto para conectar fornecedores pelo telefone e vender com sua marca.'}
+          </span>
+        </div>
+
+        <div className="mt-5 flex gap-2.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-12 flex-1 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={busy || businessName.trim().length < 2}
+            className="h-12 flex-1 rounded-xl bg-[#0F5132] text-xs font-bold text-white hover:bg-[#146c43] disabled:opacity-50"
+          >
+            {busy ? 'Abrindo painel...' : 'Ativar e abrir painel'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+interface BillingManageModalProps {
+  profile: UserProfile;
+  onRenewSubscription: (method: 'pix' | 'card') => Promise<void>;
+  onClose: () => void;
+}
+
+export const BillingManageModal: React.FC<BillingManageModalProps> = ({
+  profile,
+  onRenewSubscription,
+  onClose,
+}) => {
+  const [method, setMethod] = useState<'pix' | 'card'>('pix');
+  const [busy, setBusy] = useState(false);
+
+  const handleRenew = async () => {
+    setBusy(true);
+    try {
+      await onRenewSubscription(method);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-900">
+            Assinatura Comercial Zapei
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-600">Status atual</span>
+            <span
+              className={`rounded-md px-2 py-0.5 text-xs font-bold ${
+                profile.subscriptionStatus === 'active'
+                  ? 'bg-emerald-100 text-[#0F5132]'
+                  : profile.subscriptionStatus === 'trial'
+                    ? 'bg-blue-100 text-[#0D2B3E]'
+                    : 'bg-orange-100 text-orange-800'
+              }`}
+            >
+              {profile.subscriptionStatus === 'active'
+                ? 'Plano Comercial Ativo'
+                : profile.subscriptionStatus === 'trial'
+                  ? `Teste Grátis (${profile.trialDaysLeft} dias restantes)`
+                  : 'Vitrine Pausada'}
+            </span>
+          </div>
+          <div className="mt-2 flex items-baseline justify-between">
+            <span className="text-xs text-slate-500">Plano Mensal (Fabricante/Revendedor)</span>
+            <span className="font-mono text-base font-bold text-slate-900 tabular-nums">
+              R$ 59,90/mês
+            </span>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Mensagens, chamadas de áudio/vídeo e histórico financeiro permanecem gratuitos mesmo se a vitrine for pausada.
+          </p>
+        </div>
+
+        <div className="mt-4">
+          <label className="block text-xs font-semibold text-slate-700">
+            Forma de pagamento para ativar/renovar
+          </label>
+          <div className="mt-2 grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => setMethod('pix')}
+              className={`flex h-12 items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition ${
+                method === 'pix'
+                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <QrCode className="h-4 w-4" />
+              Pix Instantâneo
+            </button>
+            <button
+              type="button"
+              onClick={() => setMethod('card')}
+              className={`flex h-12 items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition ${
+                method === 'card'
+                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <CreditCard className="h-4 w-4" />
+              Cartão de Crédito
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-start gap-2 rounded-xl bg-emerald-50/70 p-3 text-xs text-[#0F5132]">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Ao confirmar, sua assinatura comercial ficará ativa imediatamente em sua conta.
+          </span>
+        </div>
+
+        <div className="mt-5 flex gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 flex-1 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Fechar
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleRenew()}
+            disabled={busy}
+            className="h-11 flex-1 rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+          >
+            {busy ? 'Processando...' : 'Ativar Plano R$ 59,90'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
