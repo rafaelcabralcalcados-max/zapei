@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Phone,
   PhoneIncoming,
@@ -6,6 +6,7 @@ import {
   PhoneOutgoing,
   Video,
 } from 'lucide-react';
+import type { PublicDirectoryUser } from '../lib/firebase';
 import type { BackgroundPushStatus } from '../lib/pushService';
 import type { CallSessionRecord, Contact } from '../types/zapei';
 import { BackgroundCallPushCard } from './BackgroundCallPushCard';
@@ -14,13 +15,19 @@ interface CallsViewProps {
   myUid: string;
   calls: CallSessionRecord[];
   zapeiContacts: Contact[];
+  directoryUsers: PublicDirectoryUser[];
   pushStatus: BackgroundPushStatus;
   pushBusy: boolean;
   pushFeedback: string;
   onEnableBackgroundPush: () => Promise<void>;
-  onStartCallWithContact: (contact: Contact, type: 'audio' | 'video') => void;
-  onCallBackPeer: (
-    peer: { uid: string; name: string; initials: string; avatarBg: string },
+  onStartCallWithPeer: (
+    peer: {
+      uid: string;
+      name: string;
+      initials: string;
+      avatarBg: string;
+      avatarUrl?: string;
+    },
     type: 'audio' | 'video'
   ) => void;
 }
@@ -29,13 +36,59 @@ export const CallsView: React.FC<CallsViewProps> = ({
   myUid,
   calls,
   zapeiContacts,
+  directoryUsers,
   pushStatus,
   pushBusy,
   pushFeedback,
   onEnableBackgroundPush,
-  onStartCallWithContact,
-  onCallBackPeer,
+  onStartCallWithPeer,
 }) => {
+  const directoryByUid = useMemo(() => {
+    const map = new Map<string, PublicDirectoryUser>();
+    for (const u of directoryUsers) {
+      map.set(u.uid, u);
+    }
+    return map;
+  }, [directoryUsers]);
+
+  const callablePeers = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Array<{
+      uid: string;
+      name: string;
+      initials: string;
+      avatarBg: string;
+      avatarUrl?: string;
+    }> = [];
+
+    for (const c of zapeiContacts) {
+      if (!c.matchedUid || c.matchedUid === myUid || seen.has(c.matchedUid)) continue;
+      seen.add(c.matchedUid);
+      const dir = directoryByUid.get(c.matchedUid);
+      list.push({
+        uid: c.matchedUid,
+        name: c.name,
+        initials: c.initials,
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarUrl: dir?.avatarUrl,
+      });
+    }
+
+    for (const u of directoryUsers) {
+      if (u.uid === myUid || seen.has(u.uid)) continue;
+      seen.add(u.uid);
+      list.push({
+        uid: u.uid,
+        name: u.displayName,
+        initials: u.initials,
+        avatarBg: u.avatarColor || '#0F5132',
+        avatarUrl: u.avatarUrl,
+      });
+    }
+
+    return list;
+  }, [zapeiContacts, directoryUsers, directoryByUid, myUid]);
+
   return (
     <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
       {/* Real Closed-App / Locked-Screen Web Push Activation */}
@@ -52,42 +105,50 @@ export const CallsView: React.FC<CallsViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Ligações de Voz e Vídeo</h1>
             <p className="text-xs text-slate-500">
-              Faça ligações de voz e vídeo gratuitas para qualquer contato no Zapei.
+              Faça ligações de voz e vídeo gratuitas para qualquer pessoa no Zapei.
             </p>
           </div>
         </div>
 
-        {zapeiContacts.length > 0 ? (
+        {callablePeers.length > 0 ? (
           <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
-            {zapeiContacts.map((contact) => (
+            {callablePeers.map((peer) => (
               <div
-                key={contact.id}
-                className="flex min-w-[168px] shrink-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5"
+                key={peer.uid}
+                className="flex min-w-[176px] shrink-0 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2.5"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <div
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                    style={{ backgroundColor: contact.avatarBg || '#0F5132' }}
-                  >
-                    {contact.initials}
-                  </div>
+                  {peer.avatarUrl ? (
+                    <img
+                      src={peer.avatarUrl}
+                      alt={peer.name}
+                      className="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                    />
+                  ) : (
+                    <div
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                      style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
+                    >
+                      {peer.initials}
+                    </div>
+                  )}
                   <span className="truncate text-xs font-semibold text-slate-900">
-                    {contact.name}
+                    {peer.name}
                   </span>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => onStartCallWithContact(contact, 'audio')}
-                    title={`Ligar para ${contact.name}`}
+                    onClick={() => onStartCallWithPeer(peer, 'audio')}
+                    title={`Ligar para ${peer.name}`}
                     className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#0F5132] border border-slate-200 hover:bg-emerald-50"
                   >
                     <Phone className="h-3.5 w-3.5" />
                   </button>
                   <button
                     type="button"
-                    onClick={() => onStartCallWithContact(contact, 'video')}
-                    title={`Vídeo com ${contact.name}`}
+                    onClick={() => onStartCallWithPeer(peer, 'video')}
+                    title={`Vídeo com ${peer.name}`}
                     className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#0D2B3E] border border-slate-200 hover:bg-slate-100"
                   >
                     <Video className="h-3.5 w-3.5" />
@@ -98,7 +159,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
           </div>
         ) : (
           <p className="mt-3 rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs text-slate-500">
-            Adicione contatos na aba <strong>Contatos</strong> para iniciar ligações de voz ou vídeo em tempo real.
+            Assim que outra pessoa entrar no Zapei, ela aparece aqui com foto para você ligar por voz ou vídeo.
           </p>
         )}
       </section>
@@ -126,11 +187,13 @@ export const CallsView: React.FC<CallsViewProps> = ({
             {calls.map((call) => {
               const isOutgoing = call.callerId === myUid;
               const peerUid = isOutgoing ? call.calleeId : call.callerId;
+              const dir = directoryByUid.get(peerUid);
               const peerName = isOutgoing ? call.calleeName : call.callerName;
               const peerInitials = isOutgoing ? call.calleeInitials : call.callerInitials;
               const peerAvatarColor = isOutgoing
                 ? call.calleeAvatarColor
                 : call.callerAvatarColor;
+              const peerAvatarUrl = dir?.avatarUrl;
               const isMissed =
                 call.status === 'missed' || call.status === 'declined';
 
@@ -140,12 +203,20 @@ export const CallsView: React.FC<CallsViewProps> = ({
                   className="flex items-center justify-between gap-3 px-4 py-3"
                 >
                   <div className="flex min-w-0 items-center gap-3">
-                    <div
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                      style={{ backgroundColor: peerAvatarColor || '#0D2B3E' }}
-                    >
-                      {peerInitials}
-                    </div>
+                    {peerAvatarUrl ? (
+                      <img
+                        src={peerAvatarUrl}
+                        alt={peerName}
+                        className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                      />
+                    ) : (
+                      <div
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                        style={{ backgroundColor: peerAvatarColor || '#0D2B3E' }}
+                      >
+                        {peerInitials}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <p
                         className={`truncate text-sm font-bold ${
@@ -182,12 +253,13 @@ export const CallsView: React.FC<CallsViewProps> = ({
                     <button
                       type="button"
                       onClick={() =>
-                        onCallBackPeer(
+                        onStartCallWithPeer(
                           {
                             uid: peerUid,
                             name: peerName,
                             initials: peerInitials,
                             avatarBg: peerAvatarColor,
+                            avatarUrl: peerAvatarUrl,
                           },
                           'audio'
                         )
@@ -200,12 +272,13 @@ export const CallsView: React.FC<CallsViewProps> = ({
                     <button
                       type="button"
                       onClick={() =>
-                        onCallBackPeer(
+                        onStartCallWithPeer(
                           {
                             uid: peerUid,
                             name: peerName,
                             initials: peerInitials,
                             avatarBg: peerAvatarColor,
+                            avatarUrl: peerAvatarUrl,
                           },
                           'video'
                         )

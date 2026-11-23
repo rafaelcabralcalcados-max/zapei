@@ -9,6 +9,7 @@ import {
   Settings,
   Store,
   Users,
+  X,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -60,7 +61,7 @@ import {
   type BackgroundPushStatus,
 } from './lib/pushService';
 import { formatBRL, getInitials } from './lib/gradeParser';
-import { formatPhoneDisplay } from './lib/phoneUtils';
+import { formatPhoneDisplay, normalizePhoneDigits } from './lib/phoneUtils';
 import type {
   CallSessionRecord,
   CategoryMargin,
@@ -100,6 +101,14 @@ import {
 } from './components/SubscriptionModals';
 
 type MainTab = 'chats' | 'calls' | 'contacts' | 'commercial' | 'settings';
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
 
 export default function App() {
   // Real Firebase Auth & Profile State
@@ -292,6 +301,7 @@ export default function App() {
     );
 
     if (incoming) {
+      const callerDir = directoryUsers.find((u) => u.uid === incoming.callerId);
       setActiveCall({
         callId: incoming.id,
         direction: 'incoming',
@@ -300,13 +310,14 @@ export default function App() {
         peerName: incoming.callerName,
         peerInitials: incoming.callerInitials,
         peerAvatarColor: incoming.callerAvatarColor,
+        peerAvatarUrl: callerDir?.avatarUrl,
         status: 'ringing',
         offerSdp: incoming.offerSdp,
         localStream: null,
         remoteStream: null,
       });
     }
-  }, [calls, profile, activeCall]);
+  }, [calls, profile, activeCall, directoryUsers]);
 
   // Helper: persist full profile updates cleanly
   const persistProfileUpdate = useCallback(
@@ -342,12 +353,20 @@ export default function App() {
 
   const handleStartCall = useCallback(
     async (
-      peer: { uid: string; name: string; initials: string; avatarBg: string },
+      peer: {
+        uid: string;
+        name: string;
+        initials: string;
+        avatarBg: string;
+        avatarUrl?: string;
+      },
       callType: 'audio' | 'video'
     ) => {
       if (!profile) return;
       webrtcHandleRef.current?.cleanup();
       webrtcHandleRef.current = null;
+      const livePhoto =
+        peer.avatarUrl || directoryUsers.find((u) => u.uid === peer.uid)?.avatarUrl;
 
       setActiveCall({
         callId: 'pending',
@@ -357,6 +376,7 @@ export default function App() {
         peerName: peer.name,
         peerInitials: peer.initials,
         peerAvatarColor: peer.avatarBg || '#0D2B3E',
+        peerAvatarUrl: livePhoto,
         status: 'connecting',
         localStream: null,
         remoteStream: null,
@@ -433,7 +453,7 @@ export default function App() {
         );
       }
     },
-    [authUser, profile, showToast]
+    [authUser, profile, showToast, directoryUsers]
   );
 
   const handleAcceptIncomingCall = useCallback(async () => {
@@ -533,7 +553,9 @@ export default function App() {
 
   const openChatWithPeer = useCallback(
     async (peer: ActiveChatPeer) => {
-      setSelectedPeer(peer);
+      const livePhoto =
+        peer.avatarUrl || directoryUsers.find((u) => u.uid === peer.uid)?.avatarUrl;
+      setSelectedPeer({ ...peer, avatarUrl: livePhoto });
       setActiveTab('chats');
       // Refresh live storefront info for this peer
       const live = await fetchPublicUserStorefront(peer.uid);
@@ -557,7 +579,7 @@ export default function App() {
         );
       }
     },
-    []
+    [directoryUsers]
   );
 
   // 6. Handle closed-app / locked-screen wake-up via Web Push deep link or Service Worker postMessage
@@ -989,21 +1011,204 @@ export default function App() {
     [profile]
   );
 
-  // Derived lists
+  // Derived lists & WhatsApp-style unified search
+  const directoryByUid = useMemo(() => {
+    const map = new Map<string, PublicDirectoryUser>();
+    for (const u of directoryUsers) {
+      map.set(u.uid, u);
+    }
+    return map;
+  }, [directoryUsers]);
+
   const zapeiContacts = useMemo(
     () => contacts.filter((c) => c.onZapei && c.matchedUid),
     [contacts]
   );
 
+  const normalizedChatQuery = normalizeSearchText(chatSearch);
+  const chatQueryDigits = chatSearch.replace(/\D/g, '');
+  const chatQueryNormalizedPhone =
+    chatQueryDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(chatSearch.trim())
+      ? normalizePhoneDigits(chatSearch)
+      : '';
+
+  const [chatPhoneMatch, setChatPhoneMatch] = useState<{
+    uid: string;
+    name: string;
+    initials: string;
+    avatarBg: string;
+    avatarUrl?: string;
+    phone: string;
+    role: 'normal' | 'reseller' | 'manufacturer';
+    hasStorefront: boolean;
+    storefrontName: string;
+    deliveryPolicyLabel: string;
+  } | null>(null);
+  const [chatPhoneLookupBusy, setChatPhoneLookupBusy] = useState(false);
+
+  useEffect(() => {
+    if (!chatQueryNormalizedPhone || !profile) {
+      setChatPhoneMatch(null);
+      setChatPhoneLookupBusy(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setChatPhoneLookupBusy(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const found = await lookupRegisteredUserByPhone(chatSearch);
+        if (cancelled) return;
+        if (found && found.uid !== profile.uid) {
+          setChatPhoneMatch({
+            uid: found.uid,
+            name: found.displayName,
+            initials: found.initials,
+            avatarBg: found.avatarColor,
+            avatarUrl: found.avatarUrl,
+            phone: formatPhoneDisplay(chatSearch),
+            role: found.role,
+            hasStorefront: found.hasStorefront,
+            storefrontName: found.storefrontName,
+            deliveryPolicyLabel: found.deliveryPolicy.label,
+          });
+        } else {
+          setChatPhoneMatch(null);
+        }
+      } catch {
+        if (!cancelled) setChatPhoneMatch(null);
+      } finally {
+        if (!cancelled) setChatPhoneLookupBusy(false);
+      }
+    }, 260);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [chatQueryNormalizedPhone, chatSearch, profile]);
+
   const filteredChats = useMemo(() => {
-    const q = chatSearch.trim().toLowerCase();
-    if (!q) return chats;
-    return chats.filter(
-      (c) =>
-        c.otherName.toLowerCase().includes(q) ||
-        c.lastMessage.toLowerCase().includes(q)
-    );
-  }, [chats, chatSearch]);
+    if (!normalizedChatQuery) return chats;
+    return chats.filter((c) => {
+      const matchedContact = contacts.find((ct) => ct.matchedUid === c.otherUid);
+      const dir = directoryByUid.get(c.otherUid);
+      const displayName = matchedContact?.name || dir?.displayName || c.otherName;
+      return (
+        normalizeSearchText(displayName).includes(normalizedChatQuery) ||
+        normalizeSearchText(c.otherName).includes(normalizedChatQuery) ||
+        normalizeSearchText(c.lastMessage).includes(normalizedChatQuery) ||
+        (matchedContact?.phone.toLowerCase().includes(normalizedChatQuery) ?? false)
+      );
+    });
+  }, [chats, contacts, directoryByUid, normalizedChatQuery]);
+
+  // Unified Zapei people matching search (or available right away when no chats exist yet)
+  const matchingZapeiPeople = useMemo(() => {
+    const shownChatUids = new Set(filteredChats.map((c) => c.otherUid));
+    const seen = new Set<string>();
+    const results: Array<{
+      uid: string;
+      name: string;
+      initials: string;
+      avatarBg: string;
+      avatarUrl?: string;
+      phone?: string;
+      subtitle: string;
+      role: 'normal' | 'reseller' | 'manufacturer';
+      hasStorefront: boolean;
+      storefrontName?: string;
+      deliveryPolicyLabel?: string;
+    }> = [];
+
+    // 1. Saved contacts who are on Zapei
+    for (const c of zapeiContacts) {
+      if (!c.matchedUid || c.matchedUid === profile?.uid) continue;
+      if (shownChatUids.has(c.matchedUid) || seen.has(c.matchedUid)) continue;
+      const dir = directoryByUid.get(c.matchedUid);
+      const matches =
+        !normalizedChatQuery ||
+        normalizeSearchText(c.name).includes(normalizedChatQuery) ||
+        c.phone.toLowerCase().includes(normalizedChatQuery) ||
+        normalizeSearchText(c.storefrontName || '').includes(normalizedChatQuery) ||
+        (dir ? normalizeSearchText(dir.displayName).includes(normalizedChatQuery) : false);
+      if (!matches) continue;
+      seen.add(c.matchedUid);
+      results.push({
+        uid: c.matchedUid,
+        name: c.name,
+        initials: c.initials,
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarUrl: dir?.avatarUrl,
+        phone: c.phone,
+        subtitle: c.hasStorefront && c.storefrontName
+          ? c.storefrontName
+          : dir?.statusMessage || 'No Zapei',
+        role: c.role,
+        hasStorefront: c.hasStorefront,
+        storefrontName: c.storefrontName,
+        deliveryPolicyLabel: c.deliveryPolicyLabel,
+      });
+    }
+
+    // 2. All registered users on Zapei (Public Directory)
+    for (const u of directoryUsers) {
+      if (u.uid === profile?.uid) continue;
+      if (shownChatUids.has(u.uid) || seen.has(u.uid)) continue;
+      const matches =
+        !normalizedChatQuery ||
+        normalizeSearchText(u.displayName).includes(normalizedChatQuery) ||
+        normalizeSearchText(u.storefrontName || '').includes(normalizedChatQuery) ||
+        normalizeSearchText(u.statusMessage || '').includes(normalizedChatQuery);
+      if (!matches) continue;
+      seen.add(u.uid);
+      results.push({
+        uid: u.uid,
+        name: u.displayName,
+        initials: u.initials,
+        avatarBg: u.avatarColor || '#0F5132',
+        avatarUrl: u.avatarUrl,
+        subtitle: u.hasStorefront && u.storefrontName
+          ? u.storefrontName
+          : u.statusMessage || 'Disponível no Zapei',
+        role: u.role,
+        hasStorefront: u.hasStorefront,
+        storefrontName: u.storefrontName,
+        deliveryPolicyLabel: u.deliveryPolicyLabel,
+      });
+    }
+
+    // 3. Direct phone match if user typed a phone number in Conversas
+    if (
+      chatPhoneMatch &&
+      !shownChatUids.has(chatPhoneMatch.uid) &&
+      !seen.has(chatPhoneMatch.uid)
+    ) {
+      results.unshift({
+        uid: chatPhoneMatch.uid,
+        name: chatPhoneMatch.name,
+        initials: chatPhoneMatch.initials,
+        avatarBg: chatPhoneMatch.avatarBg,
+        avatarUrl: chatPhoneMatch.avatarUrl,
+        phone: chatPhoneMatch.phone,
+        subtitle: chatPhoneMatch.hasStorefront && chatPhoneMatch.storefrontName
+          ? chatPhoneMatch.storefrontName
+          : chatPhoneMatch.phone,
+        role: chatPhoneMatch.role,
+        hasStorefront: chatPhoneMatch.hasStorefront,
+        storefrontName: chatPhoneMatch.storefrontName,
+        deliveryPolicyLabel: chatPhoneMatch.deliveryPolicyLabel,
+      });
+    }
+
+    return results;
+  }, [
+    filteredChats,
+    zapeiContacts,
+    directoryUsers,
+    directoryByUid,
+    normalizedChatQuery,
+    profile?.uid,
+    chatPhoneMatch,
+  ]);
 
   const allSubOrders = useMemo(
     () => orders.flatMap((o) => o.subOrders),
@@ -1189,90 +1394,200 @@ export default function App() {
                   <div className="relative mt-2.5">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
-                      type="text"
+                      type="search"
+                      name="zapei_chat_search"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={chatSearch}
                       onChange={(e) => setChatSearch(e.target.value)}
-                      placeholder="Buscar conversas..."
-                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm focus:border-[#0F5132] focus:bg-white focus:outline-none"
+                      placeholder="Buscar conversa ou pessoa no Zapei..."
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm focus:border-[#0F5132] focus:bg-white focus:outline-none"
                     />
+                    {chatPhoneLookupBusy ? (
+                      <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0F5132]" />
+                    ) : chatSearch ? (
+                      <button
+                        type="button"
+                        onClick={() => setChatSearch('')}
+                        aria-label="Limpar busca"
+                        className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
 
-                <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100 pb-safe-nav md:pb-2">
-                  {filteredChats.length === 0 ? (
+                <div className="flex-1 min-h-0 overflow-y-auto pb-safe-nav md:pb-2">
+                  {/* Matching / Existing Conversations */}
+                  {filteredChats.length > 0 && (
+                    <div className="divide-y divide-slate-100">
+                      {normalizedChatQuery && (
+                        <div className="bg-slate-50/80 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                          Conversas ({filteredChats.length})
+                        </div>
+                      )}
+                      {filteredChats.map((thread) => {
+                        const matchedContact = contacts.find(
+                          (c) => c.matchedUid === thread.otherUid
+                        );
+                        const dir = directoryByUid.get(thread.otherUid);
+                        const displayName =
+                          matchedContact?.name || dir?.displayName || thread.otherName;
+                        const photoUrl = dir?.avatarUrl;
+                        const avatarBg =
+                          matchedContact?.avatarBg || dir?.avatarColor || '#0F5132';
+                        const isSelected = selectedPeer?.uid === thread.otherUid;
+                        return (
+                          <button
+                            key={thread.id}
+                            type="button"
+                            onClick={() =>
+                              void openChatWithPeer({
+                                uid: thread.otherUid,
+                                name: displayName,
+                                initials: getInitials(displayName),
+                                avatarBg,
+                                avatarUrl: photoUrl,
+                                phone: matchedContact?.phone,
+                                role: matchedContact?.role || dir?.role || 'normal',
+                                hasStorefront: Boolean(
+                                  matchedContact?.hasStorefront || dir?.hasStorefront
+                                ),
+                                storefrontName:
+                                  matchedContact?.storefrontName || dir?.storefrontName,
+                                deliveryPolicyLabel:
+                                  matchedContact?.deliveryPolicyLabel ||
+                                  dir?.deliveryPolicyLabel,
+                              })
+                            }
+                            className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
+                              isSelected ? 'bg-emerald-50/70' : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            {photoUrl ? (
+                              <img
+                                src={photoUrl}
+                                alt={displayName}
+                                className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                              />
+                            ) : (
+                              <div
+                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                                style={{ backgroundColor: avatarBg }}
+                              >
+                                {getInitials(displayName)}
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-sm font-bold text-slate-900">
+                                  {displayName}
+                                </span>
+                                <span className="shrink-0 font-mono text-[11px] text-slate-400 tabular-nums">
+                                  {thread.updatedAtLabel}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 flex items-center justify-between gap-2">
+                                <p className="truncate text-xs text-slate-500">
+                                  {thread.lastMessage || 'Conversa iniciada'}
+                                </p>
+                                {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
+                                  <Store className="h-3.5 w-3.5 shrink-0 text-[#0F5132]" />
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Unified WhatsApp-Style Results: People on Zapei (shown when searching OR when user has no chats yet) */}
+                  {(Boolean(normalizedChatQuery) || chats.length === 0) &&
+                    matchingZapeiPeople.length > 0 && (
+                      <div className="divide-y divide-slate-100 border-t border-slate-100">
+                        <div className="bg-slate-50/80 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                          {normalizedChatQuery
+                            ? `No Zapei (${matchingZapeiPeople.length})`
+                            : `Pessoas no Zapei (${matchingZapeiPeople.length})`}
+                        </div>
+                        {matchingZapeiPeople.map((person) => (
+                          <button
+                            key={person.uid}
+                            type="button"
+                            onClick={() => {
+                              setChatSearch('');
+                              void openChatWithPeer({
+                                uid: person.uid,
+                                name: person.name,
+                                initials: person.initials,
+                                avatarBg: person.avatarBg,
+                                avatarUrl: person.avatarUrl,
+                                phone: person.phone,
+                                role: person.role,
+                                hasStorefront: person.hasStorefront,
+                                storefrontName: person.storefrontName,
+                                deliveryPolicyLabel: person.deliveryPolicyLabel,
+                              });
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-emerald-50/50"
+                          >
+                            {person.avatarUrl ? (
+                              <img
+                                src={person.avatarUrl}
+                                alt={person.name}
+                                className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                              />
+                            ) : (
+                              <div
+                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                                style={{ backgroundColor: person.avatarBg || '#0F5132' }}
+                              >
+                                {person.initials}
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-sm font-bold text-slate-900">
+                                  {person.name}
+                                </span>
+                                <span className="shrink-0 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-[#0F5132]">
+                                  No Zapei
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-xs text-slate-500">
+                                {person.subtitle}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                  {/* Empty State only when neither chats nor matching Zapei users exist */}
+                  {filteredChats.length === 0 && matchingZapeiPeople.length === 0 && (
                     <div className="p-6 text-center">
                       <MessageSquare className="mx-auto h-9 w-9 text-slate-300" />
                       <p className="mt-3 text-sm font-semibold text-slate-800">
-                        Nenhuma conversa iniciada ainda
+                        {normalizedChatQuery
+                          ? `Nenhuma pessoa chamada "${chatSearch.trim()}" no Zapei ainda`
+                          : 'Nenhuma conversa iniciada ainda'}
                       </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Vá até a aba <strong>Contatos</strong>, salve ou importe números da sua agenda e comece a conversar ou ligar em tempo real.
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                        {normalizedChatQuery
+                          ? 'Assim que ela abrir o Zapei no celular dela com a versão atualizada, o nome e a foto aparecem automaticamente aqui.'
+                          : 'Digite o nome de quem já usa o Zapei na busca acima ou abra Contatos para conversar ou ligar em tempo real.'}
                       </p>
                       <button
                         type="button"
                         onClick={() => setActiveTab('contacts')}
                         className="mt-4 rounded-xl bg-[#0F5132] px-4 py-2 text-xs font-semibold text-white hover:bg-[#146c43]"
                       >
-                        Abrir Agenda de Contatos
+                        Abrir Contatos
                       </button>
                     </div>
-                  ) : (
-                    filteredChats.map((thread) => {
-                      const matchedContact = contacts.find(
-                        (c) => c.matchedUid === thread.otherUid
-                      );
-                      const displayName = matchedContact?.name || thread.otherName;
-                      const isSelected = selectedPeer?.uid === thread.otherUid;
-                      return (
-                        <button
-                          key={thread.id}
-                          type="button"
-                          onClick={() =>
-                            void openChatWithPeer({
-                              uid: thread.otherUid,
-                              name: displayName,
-                              initials: getInitials(displayName),
-                              avatarBg: matchedContact?.avatarBg || '#0F5132',
-                              phone: matchedContact?.phone,
-                              role: matchedContact?.role || 'normal',
-                              hasStorefront: Boolean(matchedContact?.hasStorefront),
-                              storefrontName: matchedContact?.storefrontName,
-                              deliveryPolicyLabel: matchedContact?.deliveryPolicyLabel,
-                            })
-                          }
-                          className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
-                            isSelected ? 'bg-emerald-50/70' : 'hover:bg-slate-50'
-                          }`}
-                        >
-                          <div
-                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                            style={{
-                              backgroundColor: matchedContact?.avatarBg || '#0F5132',
-                            }}
-                          >
-                            {getInitials(displayName)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-sm font-bold text-slate-900">
-                                {displayName}
-                              </span>
-                              <span className="shrink-0 font-mono text-[11px] text-slate-400 tabular-nums">
-                                {thread.updatedAtLabel}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 flex items-center justify-between gap-2">
-                              <p className="truncate text-xs text-slate-500">
-                                {thread.lastMessage || 'Conversa iniciada'}
-                              </p>
-                              {matchedContact?.hasStorefront && (
-                                <Store className="h-3.5 w-3.5 shrink-0 text-[#0F5132]" />
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })
                   )}
                 </div>
               </section>
@@ -1375,23 +1690,12 @@ export default function App() {
               myUid={profile.uid}
               calls={calls}
               zapeiContacts={zapeiContacts}
+              directoryUsers={directoryUsers}
               pushStatus={pushStatus}
               pushBusy={pushBusy}
               pushFeedback={pushFeedback}
               onEnableBackgroundPush={handleEnableBackgroundPush}
-              onStartCallWithContact={(contact, type) => {
-                if (!contact.matchedUid) return;
-                void handleStartCall(
-                  {
-                    uid: contact.matchedUid,
-                    name: contact.name,
-                    initials: contact.initials,
-                    avatarBg: contact.avatarBg,
-                  },
-                  type
-                );
-              }}
-              onCallBackPeer={(peer, type) => void handleStartCall(peer, type)}
+              onStartCallWithPeer={(peer, type) => void handleStartCall(peer, type)}
             />
           )}
 
@@ -1407,6 +1711,7 @@ export default function App() {
                   name: person.displayName,
                   initials: person.initials,
                   avatarBg: person.avatarColor,
+                  avatarUrl: person.avatarUrl,
                   role: person.role,
                   hasStorefront: person.hasStorefront,
                   storefrontName: person.storefrontName,
@@ -1423,6 +1728,7 @@ export default function App() {
                     name: person.displayName,
                     initials: person.initials,
                     avatarBg: person.avatarColor,
+                    avatarUrl: person.avatarUrl,
                   },
                   type
                 );
@@ -1456,6 +1762,7 @@ export default function App() {
                   name: found.displayName,
                   initials: found.initials,
                   avatarBg: found.avatarColor,
+                  avatarUrl: found.avatarUrl,
                   phone: formatPhoneDisplay(rawPhone),
                   role: found.role,
                   hasStorefront: found.hasStorefront,
@@ -1475,17 +1782,19 @@ export default function App() {
                     name: found.displayName,
                     initials: found.initials,
                     avatarBg: found.avatarColor,
+                    avatarUrl: found.avatarUrl,
                   },
                   type
                 );
               }}
-              onOpenChat={(contact) => {
+              onOpenChat={(contact, avatarUrl) => {
                 if (!contact.matchedUid) return;
                 void openChatWithPeer({
                   uid: contact.matchedUid,
                   name: contact.name,
                   initials: contact.initials,
                   avatarBg: contact.avatarBg,
+                  avatarUrl,
                   phone: contact.phone,
                   role: contact.role,
                   hasStorefront: contact.hasStorefront,
@@ -1498,7 +1807,7 @@ export default function App() {
                   void openStorefrontByUid(contact.matchedUid);
                 }
               }}
-              onStartCall={(contact, type) => {
+              onStartCall={(contact, type, avatarUrl) => {
                 if (!contact.matchedUid) return;
                 void handleStartCall(
                   {
@@ -1506,6 +1815,7 @@ export default function App() {
                     name: contact.name,
                     initials: contact.initials,
                     avatarBg: contact.avatarBg,
+                    avatarUrl,
                   },
                   type
                 );

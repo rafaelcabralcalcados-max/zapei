@@ -20,6 +20,7 @@ export interface ActiveCallUIState {
   peerName: string;
   peerInitials: string;
   peerAvatarColor: string;
+  peerAvatarUrl?: string;
   status: 'ringing' | 'connecting' | 'active' | 'ended' | 'declined' | 'missed';
   offerSdp?: string;
   localStream: MediaStream | null;
@@ -193,6 +194,12 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
                   className="h-full w-full object-cover"
                 />
               </div>
+            ) : call.peerAvatarUrl ? (
+              <img
+                src={call.peerAvatarUrl}
+                alt={call.peerName}
+                className="mx-auto mt-6 h-24 w-24 rounded-full object-cover shadow-lg ring-4 ring-white/15"
+              />
             ) : (
               <div
                 className="mx-auto mt-6 flex h-24 w-24 items-center justify-center rounded-full text-2xl font-bold text-white shadow-lg ring-4 ring-white/10"

@@ -24,6 +24,7 @@ export interface ActiveChatPeer {
   name: string;
   initials: string;
   avatarBg: string;
+  avatarUrl?: string;
   phone?: string;
   role: 'normal' | 'reseller' | 'manufacturer';
   hasStorefront: boolean;
@@ -308,12 +309,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
-          <div
-            className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-            style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
-          >
-            {peer.initials}
-          </div>
+          {peer.avatarUrl ? (
+            <img
+              src={peer.avatarUrl}
+              alt={peer.name}
+              className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+            />
+          ) : (
+            <div
+              className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+              style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
+            >
+              {peer.initials}
+            </div>
+          )}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
               {peer.name}
