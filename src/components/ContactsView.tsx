@@ -23,6 +23,7 @@ import {
   shareRealZapeiInvite,
   supportsNativeContactPicker,
 } from '../lib/phoneUtils';
+import { getContactPresenceDisplay } from '../lib/presenceUtils';
 
 function normalizeSearchText(value: string): string {
   return value
@@ -499,20 +500,28 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     onClick={() => onOpenChat(contact, photoUrl)}
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
                   >
-                    {photoUrl ? (
-                      <img
-                        src={photoUrl}
-                        alt={contact.name}
-                        className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                      />
-                    ) : (
-                      <div
-                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                        style={{ backgroundColor: contact.avatarBg || '#0E7A34' }}
-                      >
-                        {contact.initials}
-                      </div>
-                    )}
+                    <div className="relative shrink-0">
+                      {photoUrl ? (
+                        <img
+                          src={photoUrl}
+                          alt={contact.name}
+                          className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                          style={{ backgroundColor: contact.avatarBg || '#0E7A34' }}
+                        >
+                          {contact.initials}
+                        </div>
+                      )}
+                      {getContactPresenceDisplay(dir).isOnline && (
+                        <span
+                          className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                          aria-label="Online"
+                        />
+                      )}
+                    </div>
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-bold text-slate-900">
@@ -525,11 +534,28 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           </span>
                         )}
                       </div>
-                      <p className="truncate text-xs text-slate-500">
-                        {contact.storefrontName
-                          ? contact.storefrontName
-                          : dir?.statusMessage || contact.phone}
-                      </p>
+                      {(() => {
+                        const presence = getContactPresenceDisplay(dir, {
+                          fallback: contact.storefrontName || contact.phone,
+                        });
+                        return (
+                          <p
+                            className={`truncate text-xs ${
+                              presence.isOnline
+                                ? 'font-semibold text-[#0E7A34]'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            {presence.isOnline
+                              ? contact.storefrontName
+                                ? `online · ${contact.storefrontName}`
+                                : 'online'
+                              : presence.isPresence
+                                ? presence.label
+                                : contact.storefrontName || presence.label}
+                          </p>
+                        );
+                      })()}
                     </div>
                   </button>
 
@@ -604,20 +630,28 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   onClick={() => onOpenDirectoryChat(person)}
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
-                  {person.avatarUrl ? (
-                    <img
-                      src={person.avatarUrl}
-                      alt={person.displayName}
-                      className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                    />
-                  ) : (
-                    <div
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                      style={{ backgroundColor: person.avatarColor || '#0E7A34' }}
-                    >
-                      {person.initials}
-                    </div>
-                  )}
+                  <div className="relative shrink-0">
+                    {person.avatarUrl ? (
+                      <img
+                        src={person.avatarUrl}
+                        alt={person.displayName}
+                        className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                      />
+                    ) : (
+                      <div
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                        style={{ backgroundColor: person.avatarColor || '#0E7A34' }}
+                      >
+                        {person.initials}
+                      </div>
+                    )}
+                    {getContactPresenceDisplay(person).isOnline && (
+                      <span
+                        className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                        aria-label="Online"
+                      />
+                    )}
+                  </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-bold text-slate-900">
@@ -635,11 +669,32 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         </span>
                       )}
                     </div>
-                    <p className="truncate text-xs text-slate-500">
-                      {person.hasStorefront && person.storefrontName
-                        ? person.storefrontName
-                        : person.statusMessage || 'Disponível no ChatFi'}
-                    </p>
+                    {(() => {
+                      const presence = getContactPresenceDisplay(person, {
+                        fallback: person.hasStorefront && person.storefrontName
+                          ? person.storefrontName
+                          : undefined,
+                      });
+                      return (
+                        <p
+                          className={`truncate text-xs ${
+                            presence.isOnline
+                              ? 'font-semibold text-[#0E7A34]'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {presence.isOnline
+                            ? person.hasStorefront && person.storefrontName
+                              ? `online · ${person.storefrontName}`
+                              : 'online'
+                            : presence.isPresence
+                              ? presence.label
+                              : person.hasStorefront && person.storefrontName
+                                ? person.storefrontName
+                                : presence.label}
+                        </p>
+                      );
+                    })()}
                   </div>
                 </button>
 

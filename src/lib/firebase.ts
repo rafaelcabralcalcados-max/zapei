@@ -64,6 +64,7 @@ import type {
   SubscriptionStatus,
   UserProfile,
 } from '../types/zapei';
+import { DEFAULT_STATUS_MESSAGE, sanitizeStatusMessage } from './presenceUtils';
 import {
   generateRequestToken,
   generateSixDigitCode,
@@ -339,6 +340,8 @@ export async function registerOrUpdateUserProfile(params: {
   subscriptionStatus?: SubscriptionStatus;
   trialEndsAt?: number;
   favoriteGrades?: FavoriteGrade[];
+  showOnlineStatus?: boolean;
+  showLastSeen?: boolean;
 }): Promise<void> {
   const userRef = doc(db, 'users', params.uid);
   const existingUser = await getDoc(userRef);
@@ -384,11 +387,26 @@ export async function registerOrUpdateUserProfile(params: {
     label: 'Mínimo 1 caixa · Retirada no balcão',
   };
 
+  const resolvedShowOnline =
+    params.showOnlineStatus ??
+    (existingPubData?.showOnlineStatus !== undefined
+      ? Boolean(existingPubData.showOnlineStatus)
+      : true);
+  const resolvedShowLastSeen =
+    params.showLastSeen ??
+    (existingPubData?.showLastSeen !== undefined
+      ? Boolean(existingPubData.showLastSeen)
+      : true);
+  const cleanStatusMessage = sanitizeStatusMessage(
+    params.statusMessage ?? (existingPubData?.statusMessage ? String(existingPubData.statusMessage) : '')
+  ).slice(0, 160);
+  const nowMs = Date.now();
+
   const publicData: Record<string, unknown> = {
     uid: params.uid,
     displayName: params.displayName.slice(0, 80),
     initials,
-    statusMessage: (params.statusMessage ?? 'Disponível no ChatFi').slice(0, 160),
+    statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
     avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
     commercialMode: mode,
@@ -405,6 +423,10 @@ export async function registerOrUpdateUserProfile(params: {
     subscriptionStatus: subStatus,
     trialEndsAt: params.trialEndsAt ?? 0,
     authMethod: resolvedAuthMethod,
+    showOnlineStatus: resolvedShowOnline,
+    showLastSeen: resolvedShowLastSeen,
+    isOnline: resolvedShowOnline,
+    lastSeenAt: resolvedShowLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
   if (resolvedVirtualLine) {
@@ -509,7 +531,7 @@ export async function registerOrUpdateUserProfile(params: {
     displayName: params.displayName.slice(0, 80),
     displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
     initials,
-    statusMessage: (params.statusMessage ?? 'Disponível no ChatFi').slice(0, 160),
+    statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
     avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
     role: indexRole,
@@ -517,6 +539,10 @@ export async function registerOrUpdateUserProfile(params: {
     storefrontName: resolvedStorefrontName,
     deliveryPolicyLabel: policy.label.slice(0, 160),
     isDiscoverable: true,
+    showOnlineStatus: resolvedShowOnline,
+    showLastSeen: resolvedShowLastSeen,
+    isOnline: resolvedShowOnline,
+    lastSeenAt: resolvedShowLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
   if (resolvedVirtualLine) {
@@ -563,16 +589,23 @@ export function subscribeUserProfile(
     const authMethod: 'phone' | 'cpf' =
       publicData.authMethod === 'cpf' || privateData.authMethod === 'cpf' ? 'cpf' : 'phone';
 
+    const rawStatusMessage = String(publicData.statusMessage ?? '');
+    const sanitizedStatus = sanitizeStatusMessage(rawStatusMessage);
+
     callback({
       uid,
       name: String(publicData.displayName ?? ''),
-      initials: String(publicData.initials ?? getInitials(String(publicData.displayName ?? 'ZP'))),
+      initials: String(publicData.initials ?? getInitials(String(publicData.displayName ?? 'CF'))),
       phone: String(privateData.phone ?? virtualLine ?? ''),
       phoneHash: String(privateData.phoneHash ?? ''),
       virtualLine,
       authMethod,
       email: String(privateData.email ?? email),
-      statusMessage: String(publicData.statusMessage ?? 'Disponível no ChatFi'),
+      statusMessage: sanitizedStatus,
+      isOnline: Boolean(publicData.isOnline),
+      lastSeenAt: Number(publicData.lastSeenAt ?? 0),
+      showOnlineStatus: publicData.showOnlineStatus !== false,
+      showLastSeen: publicData.showLastSeen !== false,
       avatarBg: String(publicData.avatarColor ?? '#0E7A34'),
       avatarUrl: publicData.avatarUrl ? String(publicData.avatarUrl) : undefined,
       commercialMode: (publicData.commercialMode as CommercialMode) ?? 'buyer',
@@ -598,11 +631,27 @@ export function subscribeUserProfile(
     });
   };
 
+  let migratedLegacyStatus = false;
+
   const unsubPub = onSnapshot(
     doc(db, 'users', uid),
     (snap) => {
       publicLoaded = true;
       publicData = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+      // Silently migrate legacy "Disponível no Zapei" saved in Firestore to clean "Disponível"
+      if (
+        !migratedLegacyStatus &&
+        publicData &&
+        typeof publicData.statusMessage === 'string' &&
+        /zapei/i.test(publicData.statusMessage)
+      ) {
+        migratedLegacyStatus = true;
+        const clean = sanitizeStatusMessage(publicData.statusMessage);
+        void updateDoc(doc(db, 'users', uid), {
+          statusMessage: clean,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
       emit();
     },
     (error) => handleFirestoreError(error, OperationType.GET, `users/${uid}`)
@@ -638,6 +687,10 @@ export interface PublicDirectoryUser {
   storefrontName: string;
   deliveryPolicyLabel: string;
   virtualLine?: string;
+  isOnline?: boolean;
+  lastSeenAt?: number;
+  showOnlineStatus?: boolean;
+  showLastSeen?: boolean;
 }
 
 export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<void> {
@@ -654,12 +707,16 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
       : profile.storefrontName || `Vitrine ${profile.name}`
   ).slice(0, 80);
 
+  const showOnline = profile.showOnlineStatus !== false;
+  const showLastSeen = profile.showLastSeen !== false;
+  const nowMs = Date.now();
+
   const payload: Record<string, unknown> = {
     uid: profile.uid,
     displayName: profile.name.slice(0, 80),
     displayNameLower: profile.name.trim().toLowerCase().slice(0, 80),
     initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
-    statusMessage: (profile.statusMessage || 'Disponível no ChatFi').slice(0, 160),
+    statusMessage: sanitizeStatusMessage(profile.statusMessage).slice(0, 160),
     avatarColor: (profile.avatarBg || '#0E7A34').slice(0, 20),
     avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
     role,
@@ -667,6 +724,10 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     storefrontName,
     deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
     isDiscoverable: true,
+    showOnlineStatus: showOnline,
+    showLastSeen,
+    isOnline: showOnline && typeof document !== 'undefined' ? document.visibilityState === 'visible' : showOnline,
+    lastSeenAt: showLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
   if (profile.virtualLine) {
@@ -677,6 +738,75 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     await setDoc(doc(db, 'public_directory', profile.uid), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `public_directory/${profile.uid}`);
+  }
+}
+
+/**
+ * Publishes lightweight WhatsApp-style presence ("online" / "visto por último") to
+ * `public_directory/{uid}` without touching `users/{uid}` (so the local session never flickers).
+ * Respects user privacy at the data layer: never publishes online=true or timestamps when disabled.
+ */
+export async function updateUserPresenceHeartbeat(
+  uid: string,
+  opts: {
+    isOnline: boolean;
+    showOnlineStatus: boolean;
+    showLastSeen: boolean;
+  }
+): Promise<void> {
+  if (!uid) return;
+  const showOnline = opts.showOnlineStatus !== false;
+  const showLastSeen = opts.showLastSeen !== false;
+  const effectiveOnline = showOnline ? opts.isOnline : false;
+  const effectiveLastSeen = showLastSeen ? Date.now() : 0;
+
+  try {
+    await updateDoc(doc(db, 'public_directory', uid), {
+      isOnline: effectiveOnline,
+      lastSeenAt: effectiveLastSeen,
+      showOnlineStatus: showOnline,
+      showLastSeen,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-fatal: directory entry may not exist yet or network is temporarily offline
+  }
+}
+
+/**
+ * Persists user's WhatsApp-style presence privacy choice ("online" and "visto por último")
+ * to both `users/{uid}` and `public_directory/{uid}` immediately.
+ */
+export async function updateUserPresencePrivacy(
+  uid: string,
+  opts: {
+    showOnlineStatus: boolean;
+    showLastSeen: boolean;
+    currentlyOnline: boolean;
+  }
+): Promise<void> {
+  if (!uid) return;
+  const effectiveOnline = opts.showOnlineStatus ? opts.currentlyOnline : false;
+  const effectiveLastSeen = opts.showLastSeen ? Date.now() : 0;
+
+  const patch = {
+    showOnlineStatus: opts.showOnlineStatus,
+    showLastSeen: opts.showLastSeen,
+    isOnline: effectiveOnline,
+    lastSeenAt: effectiveLastSeen,
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await updateDoc(doc(db, 'users', uid), patch);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+  }
+
+  try {
+    await updateDoc(doc(db, 'public_directory', uid), patch);
+  } catch {
+    // Directory doc will sync on next profile sync if not created yet
   }
 }
 
@@ -707,13 +837,32 @@ export function subscribePublicDirectory(
     for (const d of dirList) {
       if (d.uid === myUid || !d.displayName) continue;
       const prev = merged.get(d.uid);
+      const showOnline =
+        d.showOnlineStatus !== undefined
+          ? d.showOnlineStatus
+          : prev?.showOnlineStatus !== undefined
+            ? prev.showOnlineStatus
+            : true;
+      const showLastSeen =
+        d.showLastSeen !== undefined
+          ? d.showLastSeen
+          : prev?.showLastSeen !== undefined
+            ? prev.showLastSeen
+            : true;
+
       merged.set(d.uid, {
         ...prev,
         ...d,
         avatarUrl: d.avatarUrl || prev?.avatarUrl,
         storefrontName: d.storefrontName || prev?.storefrontName || '',
-        statusMessage: d.statusMessage || prev?.statusMessage || 'Disponível no ChatFi',
+        statusMessage: sanitizeStatusMessage(d.statusMessage || prev?.statusMessage),
         virtualLine: d.virtualLine || prev?.virtualLine,
+        showOnlineStatus: showOnline,
+        showLastSeen,
+        isOnline: showOnline ? Boolean(d.isOnline ?? prev?.isOnline) : false,
+        lastSeenAt: showLastSeen
+          ? Math.max(Number(d.lastSeenAt || 0), Number(prev?.lastSeenAt || 0))
+          : 0,
       });
     }
 
@@ -729,11 +878,13 @@ export function subscribePublicDirectory(
       dirList = snap.docs.map((docSnap) => {
         const d = docSnap.data();
         const displayName = String(d.displayName || '');
+        const showOnline = d.showOnlineStatus !== false;
+        const showLastSeen = d.showLastSeen !== false;
         return {
           uid: String(d.uid || docSnap.id),
           displayName,
           initials: String(d.initials || getInitials(displayName || 'CF')),
-          statusMessage: String(d.statusMessage || 'Disponível no ChatFi'),
+          statusMessage: sanitizeStatusMessage(String(d.statusMessage || '')),
           avatarColor: String(d.avatarColor || '#0E7A34'),
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
           role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
@@ -741,6 +892,10 @@ export function subscribePublicDirectory(
           storefrontName: String(d.storefrontName || ''),
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
           virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
+          showOnlineStatus: showOnline,
+          showLastSeen,
+          isOnline: showOnline ? Boolean(d.isOnline) : false,
+          lastSeenAt: showLastSeen ? Number(d.lastSeenAt || 0) : 0,
         };
       });
       mergeAndEmit();
@@ -767,11 +922,13 @@ export function subscribePublicDirectory(
           mode === 'manufacturer'
             ? String(d.factoryName || d.storefrontName || displayName)
             : String(d.storefrontName || '');
+        const showOnline = d.showOnlineStatus !== false;
+        const showLastSeen = d.showLastSeen !== false;
         return {
           uid: String(d.uid || docSnap.id),
           displayName,
           initials: String(d.initials || getInitials(displayName || 'CF')),
-          statusMessage: String(d.statusMessage || 'Disponível no ChatFi'),
+          statusMessage: sanitizeStatusMessage(String(d.statusMessage || '')),
           avatarColor: String(d.avatarColor || '#0E7A34'),
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
           role,
@@ -780,6 +937,10 @@ export function subscribePublicDirectory(
           storefrontName,
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
           virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
+          showOnlineStatus: showOnline,
+          showLastSeen,
+          isOnline: showOnline ? Boolean(d.isOnline) : false,
+          lastSeenAt: showLastSeen ? Number(d.lastSeenAt || 0) : 0,
         };
       });
       mergeAndEmit();
@@ -2039,7 +2200,7 @@ export async function registerAccountWithCpf(params: {
     virtualLine,
     authMethod: 'cpf',
     cpfHash,
-    statusMessage: params.statusMessage || 'Disponível no ChatFi',
+    statusMessage: sanitizeStatusMessage(params.statusMessage) || DEFAULT_STATUS_MESSAGE,
     avatarUrl: params.avatarUrl || '',
   });
 

@@ -236,6 +236,10 @@ export interface UserProfile {
   authMethod?: 'phone' | 'cpf';
   email: string;
   statusMessage: string;
+  isOnline?: boolean;
+  lastSeenAt?: number;
+  showOnlineStatus: boolean;
+  showLastSeen: boolean;
   avatarBg: string;
   avatarUrl?: string;
   commercialMode: CommercialMode;

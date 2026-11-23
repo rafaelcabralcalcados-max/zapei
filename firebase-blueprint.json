@@ -26,6 +26,10 @@
         "trialEndsAt": { "type": "number" },
         "virtualLine": { "type": "string", "maxLength": 24 },
         "authMethod": { "type": "string", "enum": ["phone", "cpf"] },
+        "isOnline": { "type": "boolean" },
+        "lastSeenAt": { "type": "number" },
+        "showOnlineStatus": { "type": "boolean" },
+        "showLastSeen": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -110,6 +114,10 @@
         "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
         "virtualLine": { "type": "string", "maxLength": 24 },
         "isDiscoverable": { "type": "boolean" },
+        "isOnline": { "type": "boolean" },
+        "lastSeenAt": { "type": "number" },
+        "showOnlineStatus": { "type": "boolean" },
+        "showLastSeen": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "displayNameLower", "initials", "role", "hasStorefront", "isDiscoverable", "updatedAt"]

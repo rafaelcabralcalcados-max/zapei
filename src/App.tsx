@@ -56,8 +56,16 @@ import {
   updateRealPayment,
   updateRealProductStock,
   updateRealSubOrder,
+  updateUserPresenceHeartbeat,
+  updateUserPresencePrivacy,
   type PublicDirectoryUser,
 } from './lib/firebase';
+import {
+  DEFAULT_STATUS_MESSAGE,
+  getContactPresenceDisplay,
+  isUserEffectivelyOnline,
+  sanitizeStatusMessage,
+} from './lib/presenceUtils';
 import { getOrCreateLocalDeviceInfo, isVirtualLineFormat } from './lib/cpfAndDeviceUtils';
 import {
   answerRealIncomingCall,
@@ -650,11 +658,65 @@ export default function App() {
   const syncedDirectoryKeyRef = useRef<string>('');
   useEffect(() => {
     if (!profile?.uid || !profile.name.trim() || deviceAuthState !== 'authorized') return;
-    const syncKey = `${profile.uid}|${profile.name}|${profile.virtualLine || ''}|${profile.statusMessage}|${profile.hasStorefront}|${profile.storefrontName}|${profile.avatarUrl ? profile.avatarUrl.length : 0}`;
+    const syncKey = `${profile.uid}|${profile.name}|${profile.virtualLine || ''}|${profile.statusMessage}|${profile.showOnlineStatus}|${profile.showLastSeen}|${profile.hasStorefront}|${profile.storefrontName}|${profile.avatarUrl ? profile.avatarUrl.length : 0}`;
     if (syncedDirectoryKeyRef.current === syncKey) return;
     syncedDirectoryKeyRef.current = syncKey;
     void syncPublicDirectoryEntry(profile).catch(() => {});
   }, [profile, deviceAuthState]);
+
+  // 3a-ii. WhatsApp-style real-time presence heartbeat ("online" / "visto por último às HH:mm")
+  // Writes only to `public_directory/{uid}` so the local session stays 100% calm and never flickers.
+  const showOnlineSetting = profile?.showOnlineStatus !== false;
+  const showLastSeenSetting = profile?.showLastSeen !== false;
+  useEffect(() => {
+    if (!authUid || !profileUid || deviceAuthState !== 'authorized' || !isOnline) {
+      return undefined;
+    }
+    const publish = (onlineNow: boolean) => {
+      void updateUserPresenceHeartbeat(authUid, {
+        isOnline: onlineNow,
+        showOnlineStatus: showOnlineSetting,
+        showLastSeen: showLastSeenSetting,
+      });
+    };
+
+    const isVisible =
+      typeof document === 'undefined' || document.visibilityState === 'visible';
+    publish(isVisible);
+
+    // Only keep periodic heartbeat running if user exposes online or last seen
+    const intervalId =
+      showOnlineSetting || showLastSeenSetting
+        ? window.setInterval(() => {
+            if (document.visibilityState === 'visible') {
+              publish(true);
+            }
+          }, 45_000)
+        : null;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        publish(true);
+      } else {
+        publish(false);
+      }
+    };
+
+    const handlePageHide = () => {
+      publish(false);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
+
+    return () => {
+      if (intervalId !== null) window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+    };
+  }, [authUid, profileUid, deviceAuthState, isOnline, showOnlineSetting, showLastSeenSetting]);
 
   // 3b. Automatically re-check saved contacts that weren't on Zapei yet (once per session)
   const autoResyncedUidRef = useRef<string | null>(null);
@@ -861,7 +923,11 @@ export default function App() {
         email: authUser.email || base?.email || '',
         displayName: overrides.name ?? base?.name ?? authUser.displayName ?? 'Usuário ChatFi',
         phone: overrides.phone ?? base?.phone ?? '',
-        statusMessage: overrides.statusMessage ?? base?.statusMessage ?? 'Disponível no ChatFi',
+        statusMessage: sanitizeStatusMessage(
+          overrides.statusMessage ?? base?.statusMessage ?? DEFAULT_STATUS_MESSAGE
+        ),
+        showOnlineStatus: overrides.showOnlineStatus ?? base?.showOnlineStatus ?? true,
+        showLastSeen: overrides.showLastSeen ?? base?.showLastSeen ?? true,
         avatarColor: overrides.avatarBg ?? base?.avatarBg ?? '#0E7A34',
         avatarUrl: overrides.avatarUrl ?? base?.avatarUrl ?? '',
         commercialMode: overrides.commercialMode ?? base?.commercialMode ?? 'buyer',
@@ -2087,6 +2153,9 @@ export default function App() {
           : false);
       if (!matches) continue;
       seen.add(c.matchedUid);
+      const contactPresence = getContactPresenceDisplay(dir, {
+        fallback: c.hasStorefront && c.storefrontName ? c.storefrontName : DEFAULT_STATUS_MESSAGE,
+      });
       results.push({
         uid: c.matchedUid,
         name: c.name,
@@ -2095,8 +2164,10 @@ export default function App() {
         avatarUrl: dir?.avatarUrl,
         phone: c.phone,
         subtitle: c.hasStorefront && c.storefrontName
-          ? c.storefrontName
-          : dir?.statusMessage || 'No ChatFi',
+          ? contactPresence.isOnline
+            ? `online · ${c.storefrontName}`
+            : c.storefrontName
+          : contactPresence.label,
         role: c.role,
         hasStorefront: c.hasStorefront,
         storefrontName: c.storefrontName,
@@ -2116,6 +2187,9 @@ export default function App() {
         normalizeSearchText(u.virtualLine || '').includes(normalizedChatQuery);
       if (!matches) continue;
       seen.add(u.uid);
+      const userPresence = getContactPresenceDisplay(u, {
+        fallback: u.hasStorefront && u.storefrontName ? u.storefrontName : DEFAULT_STATUS_MESSAGE,
+      });
       results.push({
         uid: u.uid,
         name: u.displayName,
@@ -2124,10 +2198,14 @@ export default function App() {
         avatarUrl: u.avatarUrl,
         phone: u.virtualLine,
         subtitle: u.hasStorefront && u.storefrontName
-          ? u.storefrontName
-          : u.virtualLine
-            ? `${u.virtualLine} · ${u.statusMessage || 'No ChatFi'}`
-            : u.statusMessage || 'Disponível no ChatFi',
+          ? userPresence.isOnline
+            ? `online · ${u.storefrontName}`
+            : u.storefrontName
+          : userPresence.isPresence
+            ? userPresence.label
+            : u.virtualLine
+              ? `${u.virtualLine} · ${userPresence.label}`
+              : userPresence.label,
         role: u.role,
         hasStorefront: u.hasStorefront,
         storefrontName: u.storefrontName,
@@ -2573,20 +2651,28 @@ export default function App() {
                               isSelected ? 'bg-emerald-50/70' : 'hover:bg-slate-50'
                             }`}
                           >
-                            {photoUrl ? (
-                              <img
-                                src={photoUrl}
-                                alt={displayName}
-                                className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                              />
-                            ) : (
-                              <div
-                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                                style={{ backgroundColor: avatarBg }}
-                              >
-                                {getInitials(displayName)}
-                              </div>
-                            )}
+                            <div className="relative shrink-0">
+                              {photoUrl ? (
+                                <img
+                                  src={photoUrl}
+                                  alt={displayName}
+                                  className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                                />
+                              ) : (
+                                <div
+                                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                                  style={{ backgroundColor: avatarBg }}
+                                >
+                                  {getInitials(displayName)}
+                                </div>
+                              )}
+                              {isUserEffectivelyOnline(dir) && (
+                                <span
+                                  className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                                  aria-label="Online"
+                                />
+                              )}
+                            </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="truncate text-sm font-bold text-slate-900">
@@ -2718,6 +2804,7 @@ export default function App() {
                     myUid={profile.uid}
                     myName={profile.name}
                     peer={selectedPeer}
+                    peerPresence={directoryByUid.get(selectedPeer.uid) ?? null}
                     messages={mergedActiveMessages}
                     forwardTargets={forwardTargets}
                     isOffline={!isOnline}
@@ -3197,11 +3284,31 @@ export default function App() {
               onOpenPolicies={() => setShowPoliciesModal(true)}
               onAuthorizeResources={handleAuthorizeResourcesFromSettings}
               onEditProfile={() => setShowEditProfile(true)}
+              onUpdatePresencePrivacy={async (opts) => {
+                await updateUserPresencePrivacy(profile.uid, {
+                  ...opts,
+                  currentlyOnline: isOnline,
+                });
+                if (!opts.showOnlineStatus && !opts.showLastSeen) {
+                  showToast('Modo invisível ativado: seu online e visto por último estão ocultos.');
+                } else if (!opts.showOnlineStatus) {
+                  showToast('Status online ocultado para seus contatos.');
+                } else if (!opts.showLastSeen) {
+                  showToast('Horário de "visto por último" ocultado.');
+                } else {
+                  showToast('Status online e "visto por último" visíveis normalmente.');
+                }
+              }}
               onSelectMode={(mode) => void handleSelectCommercialMode(mode)}
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenCommercialPanel={() => setActiveTab('commercial')}
               onNotify={showToast}
               onSignOut={async () => {
+                await updateUserPresenceHeartbeat(profile.uid, {
+                  isOnline: false,
+                  showOnlineStatus: profile.showOnlineStatus !== false,
+                  showLastSeen: profile.showLastSeen !== false,
+                }).catch(() => {});
                 await signOutFirebase();
               }}
             />

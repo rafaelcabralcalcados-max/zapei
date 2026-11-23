@@ -48,7 +48,8 @@ service cloud.firestore {
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
           'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'createdAt', 'updatedAt'
+          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
+          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
@@ -72,6 +73,10 @@ service cloud.firestore {
         && (!('trialEndsAt' in data) || (data.trialEndsAt is number && data.trialEndsAt >= 0))
         && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
         && (!('authMethod' in data) || data.authMethod in ['phone', 'cpf'])
+        && (!('isOnline' in data) || data.isOnline is bool)
+        && (!('lastSeenAt' in data) || (data.lastSeenAt is number && data.lastSeenAt >= 0))
+        && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool)
+        && (!('showLastSeen' in data) || data.showLastSeen is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -147,7 +152,8 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'displayName', 'displayNameLower', 'initials', 'statusMessage',
           'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
-          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable', 'updatedAt'
+          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable',
+          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == request.auth.uid
@@ -163,6 +169,10 @@ service cloud.firestore {
         && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
         && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
         && data.isDiscoverable is bool
+        && (!('isOnline' in data) || data.isOnline is bool)
+        && (!('lastSeenAt' in data) || (data.lastSeenAt is number && data.lastSeenAt >= 0))
+        && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool)
+        && (!('showLastSeen' in data) || data.showLastSeen is bool)
         && data.updatedAt is timestamp;
     }
 
@@ -443,7 +453,8 @@ service cloud.firestore {
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
           'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'updatedAt'
+          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
+          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
         ]);
       allow delete: if false;
 
@@ -542,7 +553,8 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'displayName', 'displayNameLower', 'initials', 'statusMessage',
           'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
-          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable', 'updatedAt'
+          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable',
+          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
         ]);
       allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
     }

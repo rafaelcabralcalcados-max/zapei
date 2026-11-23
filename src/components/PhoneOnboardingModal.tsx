@@ -42,6 +42,7 @@ import {
   compressImageFileToDataUrl,
   formatPhoneDisplay,
 } from '../lib/phoneUtils';
+import { DEFAULT_STATUS_MESSAGE, sanitizeStatusMessage } from '../lib/presenceUtils';
 import { ChatFiLogo } from './ChatFiLogo';
 
 interface CountryOption {
@@ -234,7 +235,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
 
   // Profile setup state (WhatsApp Step 4 & Edit mode)
   const [name, setName] = useState(initialName || authUser?.displayName || '');
-  const [statusMessage, setStatusMessage] = useState(initialStatus);
+  const [statusMessage, setStatusMessage] = useState(() => sanitizeStatusMessage(initialStatus));
   const [avatarUrl, setAvatarUrl] = useState(initialAvatarUrl);
   const [editPhone, setEditPhone] = useState(initialPhone);
 
@@ -444,7 +445,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       await onSaveProfile(
         name.trim(),
         verifiedPhone,
-        statusMessage.trim() || 'Disponível no ChatFi',
+        sanitizeStatusMessage(statusMessage) || DEFAULT_STATUS_MESSAGE,
         avatarUrl || undefined
       );
       onClose?.();
@@ -613,7 +614,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                 type="text"
                 value={statusMessage}
                 onChange={(e) => setStatusMessage(e.target.value)}
-                placeholder="Disponível no ChatFi"
+                placeholder="Disponível"
                 className="mt-1 h-11 w-full border-b-2 border-slate-200 bg-transparent px-1 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
               />
             </div>

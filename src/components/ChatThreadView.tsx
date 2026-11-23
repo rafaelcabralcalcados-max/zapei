@@ -55,6 +55,10 @@ import {
   extractAudioDurationLabel,
   normalizeSharedAudioMimeType,
 } from '../lib/shareTargetInbox';
+import {
+  getContactPresenceDisplay,
+  type PresenceSnapshot,
+} from '../lib/presenceUtils';
 
 export interface ActiveChatPeer {
   uid: string;
@@ -82,6 +86,7 @@ interface ChatThreadViewProps {
   myUid: string;
   myName: string;
   peer: ActiveChatPeer;
+  peerPresence?: PresenceSnapshot | null;
   messages: ChatMessage[];
   forwardTargets?: ForwardTarget[];
   isOffline?: boolean;
@@ -378,6 +383,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   myUid,
   myName,
   peer,
+  peerPresence,
   messages,
   forwardTargets = [],
   isOffline = false,
@@ -399,6 +405,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [mediaError, setMediaError] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setPresenceNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const peerPresenceDisplay = useMemo(
+    () =>
+      getContactPresenceDisplay(peerPresence, {
+        fallback: peer.hasStorefront
+          ? peer.storefrontName || 'Vitrine comercial ativa'
+          : peer.phone || 'Disponível',
+        nowMs: presenceNowMs,
+      }),
+    [peerPresence, peer.hasStorefront, peer.storefrontName, peer.phone, presenceNowMs]
+  );
 
   // WhatsApp-style local IndexedDB media map (instant zero-network playback + auto transit download)
   const [resolvedMedia, setResolvedMedia] = useState<Record<string, MediaResolveResult>>({});
@@ -957,28 +980,48 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
-          {peer.avatarUrl ? (
-            <img
-              src={peer.avatarUrl}
-              alt={peer.name}
-              className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-            />
-          ) : (
-            <div
-              className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-              style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
-            >
-              {peer.initials}
-            </div>
-          )}
+          <div className="relative shrink-0">
+            {peer.avatarUrl ? (
+              <img
+                src={peer.avatarUrl}
+                alt={peer.name}
+                className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+              />
+            ) : (
+              <div
+                className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
+              >
+                {peer.initials}
+              </div>
+            )}
+            {peerPresenceDisplay.isOnline && (
+              <span
+                className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                aria-label="Online"
+              />
+            )}
+          </div>
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
               {peer.name}
             </h2>
-            <p className="truncate text-xs text-slate-500">
-              {peer.hasStorefront
-                ? peer.storefrontName || 'Vitrine comercial ativa'
-                : peer.phone || 'Online no ChatFi'}
+            <p
+              className={`truncate text-xs ${
+                peerPresenceDisplay.isOnline
+                  ? 'font-semibold text-[#0E7A34]'
+                  : 'text-slate-500'
+              }`}
+            >
+              {peerPresenceDisplay.isOnline
+                ? peer.hasStorefront && peer.storefrontName
+                  ? `online · ${peer.storefrontName}`
+                  : 'online'
+                : peerPresenceDisplay.isPresence
+                  ? peerPresenceDisplay.label
+                  : peer.hasStorefront
+                    ? peer.storefrontName || 'Vitrine comercial ativa'
+                    : peerPresenceDisplay.label}
             </p>
           </div>
         </div>

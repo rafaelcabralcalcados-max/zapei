@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import {
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   Edit3,
+  Eye,
+  EyeOff,
   Factory,
   LogOut,
   MessageSquare,
@@ -12,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { BackgroundPushStatus } from '../lib/pushService';
 import type { PolicyConsentRecord } from '../lib/policyConsent';
+import { sanitizeStatusMessage } from '../lib/presenceUtils';
 import type { CommercialMode, ConnectedDevice, UserProfile } from '../types/zapei';
 import { BackgroundCallPushCard } from './BackgroundCallPushCard';
 import { ConnectedDevicesCard } from './ConnectedDevicesCard';
@@ -33,6 +37,10 @@ interface SettingsViewProps {
   onOpenPolicies: () => void;
   onAuthorizeResources: () => Promise<void>;
   onEditProfile: () => void;
+  onUpdatePresencePrivacy: (opts: {
+    showOnlineStatus: boolean;
+    showLastSeen: boolean;
+  }) => Promise<void>;
   onSelectMode: (mode: CommercialMode) => void;
   onOpenBilling: () => void;
   onOpenCommercialPanel: () => void;
@@ -53,6 +61,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenPolicies,
   onAuthorizeResources,
   onEditProfile,
+  onUpdatePresencePrivacy,
   onSelectMode,
   onOpenBilling,
   onOpenCommercialPanel,
@@ -60,6 +69,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSignOut,
 }) => {
   const [copiedLine, setCopiedLine] = useState(false);
+  const [presenceSaving, setPresenceSaving] = useState(false);
+
+  const showOnlineStatus = profile.showOnlineStatus !== false;
+  const showLastSeen = profile.showLastSeen !== false;
+  const cleanStatus = sanitizeStatusMessage(profile.statusMessage);
+
+  const handleTogglePresence = async (next: {
+    showOnlineStatus: boolean;
+    showLastSeen: boolean;
+  }) => {
+    if (presenceSaving) return;
+    setPresenceSaving(true);
+    try {
+      await onUpdatePresencePrivacy(next);
+    } finally {
+      setPresenceSaving(false);
+    }
+  };
 
   const handleCopyVirtualLine = async () => {
     if (!profile.virtualLine) return;
@@ -117,7 +144,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </button>
                 )}
               </div>
-              <p className="mt-0.5 text-xs text-slate-500">{profile.statusMessage}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span>{cleanStatus}</span>
+                <span className="text-slate-300">•</span>
+                {showOnlineStatus ? (
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-[#0E7A34]">
+                    <span className="h-2 w-2 rounded-full bg-[#0E7A34]" />
+                    online
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 font-medium text-slate-500">
+                    <EyeOff className="h-3.5 w-3.5" />
+                    Status online oculto
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -139,6 +180,158 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Sair
             </button>
           </div>
+        </div>
+      </section>
+
+      {/* WhatsApp-Style Presence Privacy Controls (Online & Visto por último) */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0E7A34]">
+              {showOnlineStatus || showLastSeen ? (
+                <Eye className="h-5 w-5" />
+              ) : (
+                <EyeOff className="h-5 w-5 text-slate-600" />
+              )}
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                Visto por último e Online
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Escolha se seus contatos podem ver quando você está online ou o horário do seu último acesso.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={presenceSaving}
+            onClick={() =>
+              void handleTogglePresence(
+                showOnlineStatus || showLastSeen
+                  ? { showOnlineStatus: false, showLastSeen: false }
+                  : { showOnlineStatus: true, showLastSeen: true }
+              )
+            }
+            className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition disabled:opacity-60 ${
+              !showOnlineStatus && !showLastSeen
+                ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34] hover:bg-emerald-100'
+                : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {!showOnlineStatus && !showLastSeen ? (
+              <>
+                <Eye className="h-3.5 w-3.5" />
+                Voltar a mostrar
+              </>
+            ) : (
+              <>
+                <EyeOff className="h-3.5 w-3.5" />
+                Ficar invisível
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 transition hover:border-slate-300">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-sm font-bold text-slate-900">
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    showOnlineStatus ? 'bg-[#0E7A34]' : 'bg-slate-300'
+                  }`}
+                />
+                Mostrar quando estou online
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {showOnlineStatus
+                  ? 'Seus contatos veem "online" enquanto você usa o ChatFi.'
+                  : 'Ninguém sabe quando você está com o ChatFi aberto.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showOnlineStatus}
+              disabled={presenceSaving}
+              onClick={() =>
+                void handleTogglePresence({
+                  showOnlineStatus: !showOnlineStatus,
+                  showLastSeen,
+                })
+              }
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-60 ${
+                showOnlineStatus ? 'bg-[#0E7A34]' : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  showOnlineStatus ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </label>
+
+          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 transition hover:border-slate-300">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-sm font-bold text-slate-900">
+                <Clock className="h-3.5 w-3.5 text-slate-600" />
+                Mostrar "visto por último"
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {showLastSeen
+                  ? 'Exibe "visto por último hoje às HH:mm" ao sair.'
+                  : 'O horário do seu último acesso fica oculto para todos.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showLastSeen}
+              disabled={presenceSaving}
+              onClick={() =>
+                void handleTogglePresence({
+                  showOnlineStatus,
+                  showLastSeen: !showLastSeen,
+                })
+              }
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-60 ${
+                showLastSeen ? 'bg-[#0E7A34]' : 'bg-slate-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  showLastSeen ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
+          <span className="font-semibold text-slate-800">Como seus contatos veem você:</span>
+          {showOnlineStatus && showLastSeen ? (
+            <span className="text-[#0E7A34] font-medium">
+              online · visto por último hoje às{' '}
+              {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          ) : showOnlineStatus ? (
+            <span className="text-[#0E7A34] font-medium">
+              online (horário de último acesso oculto)
+            </span>
+          ) : showLastSeen ? (
+            <span className="font-medium text-slate-700">
+              visto por último hoje às{' '}
+              {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}{' '}
+              (indicador online oculto)
+            </span>
+          ) : (
+            <span className="font-medium text-slate-600">
+              Apenas "{cleanStatus}" — ninguém vê se você está online ou seu último acesso
+            </span>
+          )}
         </div>
       </section>
 
