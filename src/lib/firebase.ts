@@ -147,8 +147,9 @@ export async function signInWithGoogleFirebase(): Promise<User> {
 }
 
 let activeRecaptchaVerifier: RecaptchaVerifier | null = null;
+let activeRecaptchaHost: HTMLDivElement | null = null;
 
-export function clearPhoneRecaptcha(): void {
+export function clearPhoneRecaptcha(containerId = 'zapei-recaptcha-container'): void {
   if (activeRecaptchaVerifier) {
     try {
       activeRecaptchaVerifier.clear();
@@ -157,22 +158,53 @@ export function clearPhoneRecaptcha(): void {
     }
     activeRecaptchaVerifier = null;
   }
+
+  if (activeRecaptchaHost) {
+    try {
+      activeRecaptchaHost.remove();
+    } catch {
+      // already detached
+    }
+    activeRecaptchaHost = null;
+  }
+
+  if (typeof document !== 'undefined') {
+    const wrapper = document.getElementById(containerId);
+    if (wrapper) {
+      wrapper.replaceChildren();
+    }
+  }
 }
 
 export async function sendWhatsAppStyleSmsCode(
   e164Phone: string,
   recaptchaContainerId: string
 ): Promise<ConfirmationResult> {
-  clearPhoneRecaptcha();
+  clearPhoneRecaptcha(recaptchaContainerId);
   auth.languageCode = 'pt-BR';
-  const verifier = new RecaptchaVerifier(auth, recaptchaContainerId, {
+
+  let wrapper = document.getElementById(recaptchaContainerId);
+  if (!wrapper) {
+    wrapper = document.createElement('div');
+    wrapper.id = recaptchaContainerId;
+    document.body.appendChild(wrapper);
+  }
+  wrapper.replaceChildren();
+
+  const freshHost = document.createElement('div');
+  freshHost.id = `zapei-recaptcha-host-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  wrapper.appendChild(freshHost);
+  activeRecaptchaHost = freshHost;
+
+  const verifier = new RecaptchaVerifier(auth, freshHost, {
     size: 'invisible',
   });
   activeRecaptchaVerifier = verifier;
+
   try {
     return await signInWithPhoneNumber(auth, e164Phone, verifier);
   } catch (error) {
-    clearPhoneRecaptcha();
+    clearPhoneRecaptcha(recaptchaContainerId);
     throw error;
   }
 }

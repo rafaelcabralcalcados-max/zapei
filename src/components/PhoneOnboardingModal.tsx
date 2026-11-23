@@ -138,13 +138,44 @@ function parseFirebasePhoneError(err: unknown): {
       message: 'Muitas tentativas seguidas. Aguarde alguns minutos antes de solicitar outro SMS.',
     };
   }
+  if (code === 'auth/captcha-check-failed') {
+    return {
+      code,
+      needsConsoleSetup: false,
+      message:
+        'A verificação de segurança não foi concluída. Toque em Avançar para tentar novamente.',
+    };
+  }
+  if (code === 'auth/network-request-failed') {
+    return {
+      code,
+      needsConsoleSetup: false,
+      message: 'Sem conexão com a internet. Verifique seu sinal e tente novamente.',
+    };
+  }
+  if (code === 'auth/quota-exceeded') {
+    return {
+      code,
+      needsConsoleSetup: false,
+      message:
+        'O limite diário de envio de SMS foi atingido temporariamente. Tente novamente mais tarde.',
+    };
+  }
+  const rawMessage = err instanceof Error ? err.message : '';
+  if (rawMessage.toLowerCase().includes('recaptcha')) {
+    return {
+      code,
+      needsConsoleSetup: false,
+      message:
+        'A verificação de segurança precisou ser reiniciada. Toque em Avançar novamente.',
+    };
+  }
   return {
     code,
     needsConsoleSetup: false,
     message:
-      err instanceof Error
-        ? err.message
-        : 'Não foi possível concluir a verificação por SMS. Tente novamente.',
+      rawMessage ||
+      'Não foi possível concluir a verificação por SMS. Tente novamente.',
   };
 }
 
@@ -251,6 +282,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   };
 
   const handleSendRealSms = async () => {
+    if (busy) return;
     setShowConfirmDialog(false);
     setErrorInfo(null);
     setBusy(true);
@@ -741,7 +773,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   )}
                 </div>
 
-                <div className="mt-8 mx-auto w-full max-w-sm">
+                <div className="mt-8 pb-14 md:pb-0 mx-auto w-full max-w-sm">
                   <button
                     type="submit"
                     disabled={busy}
@@ -1005,8 +1037,9 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               </button>
               <button
                 type="button"
+                disabled={busy}
                 onClick={() => void handleSendRealSms()}
-                className="min-h-[44px] px-5 text-xs font-bold tracking-wide text-[#0F5132] uppercase hover:bg-emerald-50 rounded-lg"
+                className="min-h-[44px] px-5 text-xs font-bold tracking-wide text-[#0F5132] uppercase hover:bg-emerald-50 rounded-lg disabled:opacity-50"
               >
                 OK
               </button>
