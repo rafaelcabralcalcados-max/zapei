@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Gauge,
   Mic,
   MicOff,
   Phone,
@@ -10,11 +11,14 @@ import {
   VideoOff,
   Volume2,
   VolumeX,
+  Wifi,
 } from 'lucide-react';
 import {
   startRingbackToneAudio,
   startRingtoneAudio,
   unlockCallAudio,
+  type CallNetworkHealth,
+  type VideoQualityMode,
 } from '../lib/webrtcService';
 
 export interface ActiveCallUIState {
@@ -31,6 +35,8 @@ export interface ActiveCallUIState {
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
   remotePushDelivered?: boolean | null;
+  networkHealth?: CallNetworkHealth;
+  videoQuality?: VideoQualityMode;
   errorMessage?: string;
 }
 
@@ -40,6 +46,7 @@ interface ActiveCallModalProps {
   onDeclineIncoming: () => void;
   onEndCall: (durationLabel: string) => void;
   onSwitchCamera?: () => Promise<void>;
+  onChangeVideoQuality?: (mode: VideoQualityMode) => void;
 }
 
 export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
@@ -48,6 +55,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
   onDeclineIncoming,
   onEndCall,
   onSwitchCamera,
+  onChangeVideoQuality,
 }) => {
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
@@ -108,34 +116,66 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
 
   const mainIsLocal = isVideoActive ? swappedView : true;
 
-  // Attach audio stream always to hidden <audio> element (prevents double-audio echo)
+  // Auto-hide controls after 4.5s during active video call (reduces mobile GPU overdraw & feels like WhatsApp)
   useEffect(() => {
-    if (remoteAudioRef.current && call.remoteStream) {
-      remoteAudioRef.current.srcObject = call.remoteStream;
-      remoteAudioRef.current.muted = remoteMuted;
-      void remoteAudioRef.current.play().catch(() => {});
-    }
-  }, [call.remoteStream, call.status, remoteMuted]);
+    if (!isVideoActive || !controlsVisible) return undefined;
+    const t = window.setTimeout(() => setControlsVisible(false), 4500);
+    return () => window.clearTimeout(t);
+  }, [isVideoActive, controlsVisible]);
 
-  // Attach main full-screen video stream
+  // Attach audio stream always to hidden <audio> element (only reassign if stream changed to avoid glitches)
+  useEffect(() => {
+    const el = remoteAudioRef.current;
+    if (!el || !call.remoteStream) return;
+    if (el.srcObject !== call.remoteStream) {
+      el.srcObject = call.remoteStream;
+    }
+    el.muted = remoteMuted;
+    if (el.paused) {
+      void el.play().catch(() => {});
+    }
+  }, [call.remoteStream, remoteMuted]);
+
+  const showMainVideo = isVideoCall && Boolean(mainStream) && (!mainIsLocal || !cameraOff);
+  const showPipVideo = isVideoActive && Boolean(pipStream) && (mainIsLocal || !cameraOff);
+
+  // Attach main full-screen video stream ONLY when stream reference changes or element remounts (prevents decoder flush/freezes!)
   useEffect(() => {
     const el = mainVideoRef.current;
     if (!el) return;
-    el.srcObject = mainStream;
-    if (mainStream) {
+    if (el.srcObject !== mainStream) {
+      el.srcObject = mainStream;
+    }
+    if (mainStream && el.paused) {
       void el.play().catch(() => {});
     }
-  }, [mainStream, call.status, cameraOff, swappedView]);
+  }, [mainStream, showMainVideo]);
 
-  // Attach floating PiP video stream
+  // Attach floating PiP video stream ONLY when stream reference changes or element remounts
   useEffect(() => {
     const el = pipVideoRef.current;
     if (!el) return;
-    el.srcObject = pipStream;
-    if (pipStream) {
+    if (el.srcObject !== pipStream) {
+      el.srcObject = pipStream;
+    }
+    if (pipStream && el.paused) {
       void el.play().catch(() => {});
     }
-  }, [pipStream, call.status, cameraOff, swappedView]);
+  }, [pipStream, showPipVideo]);
+
+  const currentQuality: VideoQualityMode = call.videoQuality || 'auto';
+  const cycleQualityMode = () => {
+    if (!onChangeVideoQuality) return;
+    const next: VideoQualityMode =
+      currentQuality === 'auto'
+        ? 'economy'
+        : currentQuality === 'economy'
+          ? 'hd'
+          : 'auto';
+    onChangeVideoQuality(next);
+  };
+  const qualityLabel =
+    currentQuality === 'economy' ? 'Leve 4G' : currentQuality === 'hd' ? 'HD' : 'Auto';
 
   const formattedTime = `${Math.floor(seconds / 60)
     .toString()
@@ -196,9 +236,6 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
     return 'Chamada encerrada';
   };
 
-  const showMainVideo = isVideoCall && Boolean(mainStream) && (!mainIsLocal || !cameraOff);
-  const showPipVideo = isVideoActive && Boolean(pipStream) && (mainIsLocal || !cameraOff);
-
   return (
     <div className="fixed inset-0 z-50 h-[100dvh] w-full overflow-hidden bg-[#06151E] text-white select-none">
       {/* Hidden real remote audio playback element */}
@@ -217,16 +254,17 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
             autoPlay
             muted
             playsInline
-            className="h-full w-full object-cover"
+            disablePictureInPicture
+            className="h-full w-full object-cover transform-gpu"
           />
           {/* Subtle top & bottom readability gradients */}
           <div
-            className={`pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-black/70 via-black/30 to-transparent transition-opacity duration-200 ${
+            className={`pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/70 via-black/25 to-transparent transition-opacity duration-200 ${
               controlsVisible || !isVideoActive ? 'opacity-100' : 'opacity-0'
             }`}
           />
           <div
-            className={`pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/80 via-black/35 to-transparent transition-opacity duration-200 ${
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-black/75 via-black/30 to-transparent transition-opacity duration-200 ${
               controlsVisible || !isVideoActive ? 'opacity-100' : 'opacity-0'
             }`}
           />
@@ -236,22 +274,22 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
         <div className="absolute inset-0 bg-gradient-to-b from-[#0D2B3E] via-[#091D2B] to-[#051018]" />
       )}
 
-      {/* TOP OVERLAY HEADER (Peer Info + Live Timer) */}
+      {/* TOP OVERLAY HEADER (Peer Info + Live Timer — solid translucent bg without GPU-heavy video blur) */}
       <header
-        className={`relative z-20 flex items-center justify-between gap-3 px-4 pt-safe pb-3 transition-opacity duration-200 ${
+        className={`relative z-20 flex items-center justify-between gap-2 px-3.5 sm:px-4 pt-safe pb-3 transition-opacity duration-200 ${
           isVideoActive && !controlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
       >
-        <div className="flex min-w-0 items-center gap-3 rounded-2xl bg-black/35 px-3 py-2 backdrop-blur-md">
+        <div className="flex min-w-0 items-center gap-2.5 rounded-2xl bg-black/65 px-3 py-2">
           {call.peerAvatarUrl ? (
             <img
               src={call.peerAvatarUrl}
               alt={call.peerName}
-              className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
+              className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
             />
           ) : (
             <div
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/20"
+              className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/20"
               style={{ backgroundColor: call.peerAvatarColor || '#0F5132' }}
             >
               {call.peerInitials}
@@ -262,28 +300,63 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
               {call.peerName}
             </h2>
             <div className="flex items-center gap-1.5 text-xs text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
               <span className="font-mono tabular-nums">{statusText()}</span>
             </div>
           </div>
         </div>
 
-        {/* Quick Camera Flip button on top-right during video call */}
-        {isVideoCall && call.localStream && onSwitchCamera && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void handleFlipCamera();
-            }}
-            disabled={flippingCamera || cameraOff}
-            title="Virar câmera (frontal / traseira)"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition hover:bg-black/60 disabled:opacity-40"
-          >
-            <SwitchCamera className={`h-5 w-5 ${flippingCamera ? 'animate-spin' : ''}`} />
-          </button>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* 1-tap Video Quality toggle (Auto / Leve 4G / HD) */}
+          {isVideoActive && onChangeVideoQuality && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                cycleQualityMode();
+              }}
+              title="Alterar velocidade do vídeo (Auto / Leve 4G / HD)"
+              className={`inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-xs font-bold transition ${
+                currentQuality === 'economy'
+                  ? 'bg-emerald-600/90 text-white'
+                  : 'bg-black/65 text-white hover:bg-black/80'
+              }`}
+            >
+              <Gauge className="h-3.5 w-3.5" />
+              <span>{qualityLabel}</span>
+            </button>
+          )}
+
+          {/* Quick Camera Flip button on top-right during video call */}
+          {isVideoCall && call.localStream && onSwitchCamera && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleFlipCamera();
+              }}
+              disabled={flippingCamera || cameraOff}
+              title="Virar câmera (frontal / traseira)"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-black/65 text-white transition hover:bg-black/80 disabled:opacity-40"
+            >
+              <SwitchCamera className={`h-5 w-5 ${flippingCamera ? 'animate-spin' : ''}`} />
+            </button>
+          )}
+        </div>
       </header>
+
+      {/* Live Reconnecting / Weak Signal Indicator */}
+      {call.status === 'active' &&
+        (call.networkHealth === 'reconnecting' || call.networkHealth === 'poor') && (
+          <div className="pointer-events-none fixed inset-x-0 top-20 z-30 flex justify-center px-4 pt-safe">
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-black/80 px-3.5 py-1.5 text-xs font-semibold text-amber-200 shadow-lg">
+              <Wifi className="h-3.5 w-3.5 animate-pulse" />
+              {call.networkHealth === 'reconnecting'
+                ? 'Reconectando vídeo automaticamente...'
+                : 'Sinal fraco — vídeo ajustado para não travar'}
+            </div>
+          </div>
+        )}
 
       {/* FLOATING SELF-PREVIEW PiP (Tap to swap full-screen & mini view like WhatsApp) */}
       {showPipVideo && (
@@ -303,7 +376,8 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
             autoPlay
             muted
             playsInline
-            className="h-full w-full object-cover"
+            disablePictureInPicture
+            className="h-full w-full object-cover transform-gpu"
           />
         </button>
       )}
@@ -373,13 +447,13 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
         </div>
       )}
 
-      {/* BOTTOM FLOATING ACTION DOCK (WhatsApp-style) */}
+      {/* BOTTOM FLOATING ACTION DOCK (WhatsApp-style — translucent dark surface, zero GPU blur lag) */}
       <footer
         className={`fixed inset-x-0 bottom-0 z-30 px-4 pt-3 pb-safe transition-opacity duration-200 ${
           isVideoActive && !controlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
         }`}
       >
-        <div className="mx-auto max-w-md rounded-3xl border border-white/15 bg-black/55 px-4 py-3.5 backdrop-blur-xl shadow-2xl">
+        <div className="mx-auto max-w-md rounded-3xl border border-white/15 bg-black/75 px-4 py-3.5 shadow-2xl">
           {call.direction === 'incoming' && call.status === 'ringing' && !call.errorMessage ? (
             <div className="flex items-center justify-around gap-4">
               <button

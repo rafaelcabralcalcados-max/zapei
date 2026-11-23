@@ -297,7 +297,7 @@ async function startServer(): Promise<void> {
     res.json({ ok: true, ...firstResult });
   });
 
-  // 5. Real background chat message push alert
+  // 5. Real background chat message push alert (unique messageId so every message chimes & vibrates)
   app.post(
     '/api/push/notify-message',
     requireFirebaseAuth,
@@ -311,6 +311,11 @@ async function startServer(): Promise<void> {
         typeof req.body?.previewText === 'string'
           ? req.body.previewText.slice(0, 180)
           : 'Nova mensagem';
+      const messageType =
+        req.body?.messageType === 'audio' || req.body?.messageType === 'image'
+          ? req.body.messageType
+          : 'text';
+      const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
       if (!recipientId || recipientId === senderId) {
         res.status(400).json({ error: 'Destinatário inválido.' });
@@ -324,6 +329,8 @@ async function startServer(): Promise<void> {
           senderId,
           senderName,
           body: previewText,
+          messageType,
+          messageId,
         },
         { ttl: 3600, urgency: 'high' }
       );

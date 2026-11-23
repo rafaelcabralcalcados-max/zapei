@@ -250,6 +250,7 @@ export async function triggerRemoteMessagePush(
     recipientId: string;
     senderName: string;
     previewText: string;
+    messageType?: 'text' | 'audio' | 'image';
   }
 ): Promise<void> {
   try {

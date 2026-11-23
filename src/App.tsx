@@ -51,10 +51,13 @@ import {
 import {
   answerRealIncomingCall,
   installAudioUnlockListeners,
+  playMessageNotificationSound,
+  playMessageSentSound,
   queryMediaPermissionSnapshot,
   startRealOutgoingCall,
   updateRealCallStatus,
   type RealWebRTCSessionHandle,
+  type VideoQualityMode,
 } from './lib/webrtcService';
 import {
   enableRealBackgroundCallPush,
@@ -166,7 +169,45 @@ export default function App() {
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
   const lastPushSyncMsRef = useRef<number>(0);
 
-  // Unlock mobile browser audio on first touch/click so incoming calls always ring loudly
+  // WhatsApp-style in-app incoming message notification banner & live chime trackers
+  const [incomingMsgBanner, setIncomingMsgBanner] = useState<{
+    senderId: string;
+    senderName: string;
+    initials: string;
+    avatarBg: string;
+    avatarUrl?: string;
+    preview: string;
+  } | null>(null);
+  const seenChatSigRef = useRef<Map<string, string>>(new Map());
+  const chatsSubStartedAtRef = useRef<number>(0);
+  const seenActiveMsgIdsRef = useRef<Set<string>>(new Set());
+  const incomingBannerTimerRef = useRef<number | null>(null);
+
+  const showIncomingMsgBanner = useCallback(
+    (payload: {
+      senderId: string;
+      senderName: string;
+      initials: string;
+      avatarBg: string;
+      avatarUrl?: string;
+      preview: string;
+    }) => {
+      setIncomingMsgBanner(payload);
+      if (incomingBannerTimerRef.current) {
+        window.clearTimeout(incomingBannerTimerRef.current);
+      }
+      incomingBannerTimerRef.current = window.setTimeout(() => {
+        setIncomingMsgBanner((curr) =>
+          curr && curr.senderId === payload.senderId && curr.preview === payload.preview
+            ? null
+            : curr
+        );
+      }, 5500);
+    },
+    []
+  );
+
+  // Unlock mobile browser audio on first touch/click so incoming calls & messages always ring loudly
   useEffect(() => {
     return installAudioUnlockListeners();
   }, []);
@@ -224,9 +265,23 @@ export default function App() {
       lastPushSyncMsRef.current = now;
       void syncExistingPushSubscription(authUser).then(setPushStatus);
     };
+    const clearBadge = () => {
+      try {
+        const nav = navigator as Navigator & { clearAppBadge?: () => Promise<void> };
+        if (typeof nav.clearAppBadge === 'function') {
+          void nav.clearAppBadge().catch(() => {});
+        }
+      } catch {
+        // Ignore on unsupported browsers
+      }
+    };
     runSync(true);
+    clearBadge();
     const onVisible = () => {
-      if (document.visibilityState === 'visible') runSync(false);
+      if (document.visibilityState === 'visible') {
+        runSync(false);
+        clearBadge();
+      }
     };
     const onFocus = () => runSync(false);
     document.addEventListener('visibilitychange', onVisible);
@@ -263,6 +318,8 @@ export default function App() {
   useEffect(() => {
     if (!authUser || !profile) return undefined;
     const uid = authUser.uid;
+    chatsSubStartedAtRef.current = Date.now();
+    seenChatSigRef.current.clear();
     const unsubs = [
       subscribeUserContacts(uid, setContacts),
       subscribePublicDirectory(uid, setDirectoryUsers),
@@ -302,11 +359,85 @@ export default function App() {
   useEffect(() => {
     if (!authUser || !selectedPeer) {
       setActiveMessages([]);
+      seenActiveMsgIdsRef.current.clear();
       return undefined;
     }
     const chatId = getDeterministicChatId(authUser.uid, selectedPeer.uid);
+    seenActiveMsgIdsRef.current.clear();
     return subscribeChatMessages(chatId, authUser.uid, setActiveMessages);
   }, [authUser, selectedPeer?.uid]);
+
+  // 4b. WhatsApp-style incoming text/audio/photo message chime & floating banner across ALL chats
+  useEffect(() => {
+    if (!profile) {
+      seenChatSigRef.current.clear();
+      return;
+    }
+
+    const isInitialHydrationWindow = Date.now() - chatsSubStartedAtRef.current < 2500;
+    let newestIncoming: ChatThreadSummary | null = null;
+    for (const c of chats) {
+      const sig = `${c.updatedAtMs}|${c.lastSenderId || ''}|${c.lastMessage}`;
+      const prevSig = seenChatSigRef.current.get(c.id);
+      seenChatSigRef.current.set(c.id, sig);
+
+      const isBrandNewChatAfterBoot = prevSig === undefined && !isInitialHydrationWindow;
+      const isUpdatedExistingChat = prevSig !== undefined && prevSig !== sig;
+
+      if (
+        (isBrandNewChatAfterBoot || isUpdatedExistingChat) &&
+        c.lastSenderId &&
+        c.lastSenderId !== profile.uid &&
+        c.lastMessage
+      ) {
+        if (!newestIncoming || c.updatedAtMs >= newestIncoming.updatedAtMs) {
+          newestIncoming = c;
+        }
+      }
+    }
+
+    if (newestIncoming) {
+      playMessageNotificationSound();
+
+      const viewingSameChat =
+        activeTab === 'chats' && selectedPeer?.uid === newestIncoming.otherUid;
+      if (!viewingSameChat) {
+        const contactMatch = contacts.find((ct) => ct.matchedUid === newestIncoming.otherUid);
+        const dirMatch = directoryUsers.find((u) => u.uid === newestIncoming.otherUid);
+        const senderName =
+          contactMatch?.name || dirMatch?.displayName || newestIncoming.otherName || 'Nova mensagem';
+        showIncomingMsgBanner({
+          senderId: newestIncoming.otherUid,
+          senderName,
+          initials: getInitials(senderName),
+          avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0F5132',
+          avatarUrl: dirMatch?.avatarUrl,
+          preview: newestIncoming.lastMessage,
+        });
+      }
+    }
+  }, [chats, profile, activeTab, selectedPeer?.uid, contacts, directoryUsers, showIncomingMsgBanner]);
+
+  // 4c. Chime when a new text/audio/photo arrives inside the currently open chat thread
+  useEffect(() => {
+    if (!profile || !selectedPeer || activeMessages.length === 0) return;
+    if (seenActiveMsgIdsRef.current.size === 0) {
+      for (const m of activeMessages) seenActiveMsgIdsRef.current.add(m.id);
+      return;
+    }
+    let hasNewFromPeer = false;
+    for (const m of activeMessages) {
+      if (!seenActiveMsgIdsRef.current.has(m.id)) {
+        seenActiveMsgIdsRef.current.add(m.id);
+        if (m.senderId !== profile.uid) {
+          hasNewFromPeer = true;
+        }
+      }
+    }
+    if (hasNewFromPeer) {
+      playMessageNotificationSound();
+    }
+  }, [activeMessages, profile, selectedPeer]);
 
   // 5. Listen for real incoming WebRTC calls from Firestore
   useEffect(() => {
@@ -479,6 +610,9 @@ export default function App() {
           onRemoteStream: (stream) => {
             setActiveCall((prev) => (prev ? { ...prev, remoteStream: stream } : null));
           },
+          onNetworkHealthChange: (networkHealth) => {
+            setActiveCall((prev) => (prev ? { ...prev, networkHealth } : null));
+          },
           onStatusChange: (status) => {
             if (status === 'ended' || status === 'declined' || status === 'missed') {
               webrtcHandleRef.current?.cleanup();
@@ -568,6 +702,9 @@ export default function App() {
         offerSdp: activeCall.offerSdp,
         onRemoteStream: (stream) => {
           setActiveCall((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+        },
+        onNetworkHealthChange: (networkHealth) => {
+          setActiveCall((prev) => (prev ? { ...prev, networkHealth } : null));
         },
         onStatusChange: (status) => {
           if (status === 'ended' || status === 'declined' || status === 'missed') {
@@ -796,6 +933,9 @@ export default function App() {
                 onRemoteStream: (stream) => {
                   setActiveCall((prev) => (prev ? { ...prev, remoteStream: stream } : null));
                 },
+                onNetworkHealthChange: (networkHealth) => {
+                  setActiveCall((prev) => (prev ? { ...prev, networkHealth } : null));
+                },
                 onStatusChange: (status) => {
                   if (status === 'ended' || status === 'declined' || status === 'missed') {
                     webrtcHandleRef.current?.cleanup();
@@ -891,9 +1031,17 @@ export default function App() {
           kind?: string;
           callId?: string;
           senderId?: string;
+          senderName?: string;
+          body?: string;
           action?: string;
         };
       };
+      if (msg?.type === 'ZAPEI_INCOMING_MESSAGE_PING' && msg.payload) {
+        if (msg.payload.senderId !== profile.uid) {
+          playMessageNotificationSound();
+        }
+        return;
+      }
       if (msg?.type !== 'ZAPEI_PUSH_ACTION' || !msg.payload) return;
       if (msg.payload.kind === 'incoming_call' && msg.payload.callId) {
         void processPushWakeAction({
@@ -1541,6 +1689,59 @@ export default function App() {
           </header>
         )}
 
+        {/* WhatsApp-Style Floating Incoming Message Alert Banner */}
+        {incomingMsgBanner && (
+          <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:w-96 pt-safe">
+            <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+              <button
+                type="button"
+                onClick={() => {
+                  const targetUid = incomingMsgBanner.senderId;
+                  setIncomingMsgBanner(null);
+                  void processPushWakeAction({ openChatUid: targetUid });
+                }}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              >
+                {incomingMsgBanner.avatarUrl ? (
+                  <img
+                    src={incomingMsgBanner.avatarUrl}
+                    alt={incomingMsgBanner.senderName}
+                    className="h-11 w-11 shrink-0 rounded-full object-cover ring-2 ring-[#0F5132]/20"
+                  />
+                ) : (
+                  <div
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                    style={{ backgroundColor: incomingMsgBanner.avatarBg || '#0F5132' }}
+                  >
+                    {incomingMsgBanner.initials}
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-bold text-slate-900">
+                      {incomingMsgBanner.senderName}
+                    </span>
+                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-[#0F5132]">
+                      Agora
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-slate-600">
+                    {incomingMsgBanner.preview}
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIncomingMsgBanner(null)}
+                aria-label="Fechar aviso"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Toast Notification */}
         {toastMessage && (
           <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:max-w-sm rounded-xl border border-emerald-200 bg-[#0F5132] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
@@ -1838,11 +2039,13 @@ export default function App() {
                         type: 'text',
                         text,
                       });
+                      playMessageSentSound();
                       if (authUser) {
                         void triggerRemoteMessagePush(authUser, {
                           recipientId: selectedPeer.uid,
                           senderName: profile.name,
                           previewText: text,
+                          messageType: 'text',
                         });
                       }
                     }}
@@ -1857,11 +2060,13 @@ export default function App() {
                         mediaUrl,
                         audioDuration,
                       });
+                      playMessageSentSound();
                       if (authUser) {
                         void triggerRemoteMessagePush(authUser, {
                           recipientId: selectedPeer.uid,
                           senderName: profile.name,
-                          previewText: `Mensagem de voz (${audioDuration})`,
+                          previewText: `Áudio (${audioDuration})`,
+                          messageType: 'audio',
                         });
                       }
                     }}
@@ -1875,11 +2080,13 @@ export default function App() {
                         text: caption || 'Foto',
                         mediaUrl,
                       });
+                      playMessageSentSound();
                       if (authUser) {
                         void triggerRemoteMessagePush(authUser, {
                           recipientId: selectedPeer.uid,
                           senderName: profile.name,
                           previewText: caption ? `Foto: ${caption}` : 'Enviou uma foto',
+                          messageType: 'image',
                         });
                       }
                     }}
@@ -1902,6 +2109,7 @@ export default function App() {
                         mediaUrl: msg.mediaUrl,
                         audioDuration: msg.audioDuration,
                       });
+                      playMessageSentSound();
                       if (authUser) {
                         void triggerRemoteMessagePush(authUser, {
                           recipientId: target.uid,
@@ -1912,6 +2120,7 @@ export default function App() {
                               : forwardType === 'audio'
                                 ? 'Encaminhou um áudio'
                                 : msg.text,
+                          messageType: forwardType,
                         });
                       }
                       showToast(`Encaminhado para ${target.name}!`);
@@ -2301,6 +2510,17 @@ export default function App() {
           onDeclineIncoming={() => void handleDeclineIncomingCall()}
           onEndCall={(durationLabel) => void handleEndCall(durationLabel)}
           onSwitchCamera={handleSwitchCamera}
+          onChangeVideoQuality={(mode: VideoQualityMode) => {
+            setActiveCall((prev) => (prev ? { ...prev, videoQuality: mode } : null));
+            void webrtcHandleRef.current?.setVideoQualityMode(mode);
+            showToast(
+              mode === 'economy'
+                ? 'Modo Leve 4G ativado (vídeo mais fluido).'
+                : mode === 'hd'
+                  ? 'Modo HD ativado (melhor em Wi-Fi forte).'
+                  : 'Qualidade Automática ativada.'
+            );
+          }}
         />
       )}
 

@@ -18,11 +18,17 @@ const RTC_SERVERS: RTCConfiguration = {
         'stun:stun.l.google.com:19302',
         'stun:stun1.l.google.com:19302',
         'stun:stun2.l.google.com:19302',
+        'stun:stun.cloudflare.com:3478',
       ],
     },
   ],
-  iceCandidatePoolSize: 10,
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
+  iceCandidatePoolSize: 6,
 };
+
+export type VideoQualityMode = 'auto' | 'economy' | 'hd';
+export type CallNetworkHealth = 'good' | 'fair' | 'poor' | 'reconnecting';
 
 export interface RealWebRTCSessionHandle {
   callId: string;
@@ -30,6 +36,7 @@ export interface RealWebRTCSessionHandle {
   localStream: MediaStream;
   remoteStream: MediaStream;
   switchCamera: () => Promise<MediaStream | null>;
+  setVideoQualityMode: (mode: VideoQualityMode) => Promise<void>;
   cleanup: () => void;
 }
 
@@ -119,11 +126,110 @@ export async function preauthorizeMediaPermissions(): Promise<{
   }
 }
 
+interface VideoEncodingProfile {
+  maxBitrate: number;
+  maxFramerate: number;
+  scaleResolutionDownBy: number;
+}
+
+const VIDEO_PROFILES: Record<'hd' | 'smooth' | 'balanced' | 'economy', VideoEncodingProfile> = {
+  hd: { maxBitrate: 1_100_000, maxFramerate: 30, scaleResolutionDownBy: 1.0 },
+  smooth: { maxBitrate: 550_000, maxFramerate: 24, scaleResolutionDownBy: 1.0 },
+  balanced: { maxBitrate: 340_000, maxFramerate: 20, scaleResolutionDownBy: 1.4 },
+  economy: { maxBitrate: 210_000, maxFramerate: 18, scaleResolutionDownBy: 1.9 },
+};
+
+function hintVideoMotion(stream: MediaStream): void {
+  stream.getVideoTracks().forEach((track) => {
+    try {
+      if ('contentHint' in track) {
+        track.contentHint = 'motion';
+      }
+    } catch {
+      // Ignore on unsupported browsers
+    }
+  });
+}
+
+/**
+ * Prioritizes hardware-accelerated H.264 first (native silicon on iPhone & Android)
+ * and lightweight VP8 second to prevent software VP9/AV1 CPU throttling & freezing.
+ */
+function preferHardwareVideoCodec(pc: RTCPeerConnection): void {
+  try {
+    const caps =
+      typeof RTCRtpSender !== 'undefined' && typeof RTCRtpSender.getCapabilities === 'function'
+        ? RTCRtpSender.getCapabilities('video')
+        : null;
+    if (!caps?.codecs?.length) return;
+
+    const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
+    const vp8 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/vp8');
+    const rest = caps.codecs.filter(
+      (c) =>
+        c.mimeType.toLowerCase() !== 'video/h264' && c.mimeType.toLowerCase() !== 'video/vp8'
+    );
+    const ordered = [...h264, ...vp8, ...rest];
+    if (ordered.length === 0) return;
+
+    pc.getTransceivers().forEach((transceiver) => {
+      if (
+        transceiver.sender.track?.kind === 'video' &&
+        typeof transceiver.setCodecPreferences === 'function'
+      ) {
+        try {
+          transceiver.setCodecPreferences(ordered);
+        } catch {
+          // Some browsers reject subset codec lists; keep default safely
+        }
+      }
+    });
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Applies smooth mobile video bitrate + maintain-framerate degradation preference,
+ * and locks high-priority voice bitrate so audio stays crisp even on weak 4G.
+ */
+async function applyMediaSenderTuning(
+  pc: RTCPeerConnection,
+  profile: VideoEncodingProfile
+): Promise<void> {
+  const senders = pc.getSenders();
+  for (const sender of senders) {
+    if (!sender.track) continue;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+
+      if (sender.track.kind === 'video') {
+        params.degradationPreference = 'maintain-framerate';
+        params.encodings[0].maxBitrate = profile.maxBitrate;
+        params.encodings[0].maxFramerate = profile.maxFramerate;
+        params.encodings[0].scaleResolutionDownBy = profile.scaleResolutionDownBy;
+        params.encodings[0].priority = 'medium';
+      } else if (sender.track.kind === 'audio') {
+        params.encodings[0].maxBitrate = 32_000;
+        params.encodings[0].priority = 'high';
+      }
+
+      await sender.setParameters(params);
+    } catch {
+      // Some mobile browsers ignore individual optional encoding fields
+    }
+  }
+}
+
 async function acquireCallMediaStream(callType: 'audio' | 'video'): Promise<MediaStream> {
   const audioConstraints: MediaTrackConstraints = {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+    channelCount: 1,
   };
   if (callType === 'audio') {
     return navigator.mediaDevices.getUserMedia({
@@ -132,21 +238,27 @@ async function acquireCallMediaStream(callType: 'audio' | 'video'): Promise<Medi
     });
   }
   try {
-    return await navigator.mediaDevices.getUserMedia({
+    // Mobile-optimized 480p @ 24fps (WhatsApp sweet spot: ~70% less upload bandwidth & CPU load vs 720p@30)
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: audioConstraints,
       video: {
         facingMode: 'user',
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+        width: { ideal: 640, max: 960 },
+        height: { ideal: 480, max: 540 },
+        frameRate: { ideal: 24, max: 24 },
       },
     });
+    hintVideoMotion(stream);
+    return stream;
   } catch (err) {
     // Only retry simplified constraints if the failure was OverconstrainedError (not permission denied)
     if (err instanceof DOMException && err.name === 'OverconstrainedError') {
-      return navigator.mediaDevices.getUserMedia({
+      const fallback = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: true,
       });
+      hintVideoMotion(fallback);
+      return fallback;
     }
     throw err;
   }
@@ -155,7 +267,8 @@ async function acquireCallMediaStream(callType: 'audio' | 'video'): Promise<Medi
 function createCameraSwitcher(
   pc: RTCPeerConnection,
   getCurrentStream: () => MediaStream,
-  setCurrentStream: (next: MediaStream) => void
+  setCurrentStream: (next: MediaStream) => void,
+  reapplyCurrentQuality: () => Promise<void>
 ): () => Promise<MediaStream | null> {
   let facingMode: 'user' | 'environment' = 'user';
 
@@ -186,17 +299,24 @@ function createCameraSwitcher(
 
     try {
       const videoConstraint: MediaTrackConstraints = alternateDeviceId
-        ? { deviceId: { exact: alternateDeviceId } }
+        ? {
+            deviceId: { exact: alternateDeviceId },
+            width: { ideal: 640, max: 960 },
+            height: { ideal: 480, max: 540 },
+            frameRate: { ideal: 24, max: 24 },
+          }
         : {
             facingMode: { ideal: nextFacing },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: 640, max: 960 },
+            height: { ideal: 480, max: 540 },
+            frameRate: { ideal: 24, max: 24 },
           };
 
       const fresh = await navigator.mediaDevices.getUserMedia({
         video: videoConstraint,
         audio: false,
       });
+      hintVideoMotion(fresh);
       const newVideoTrack = fresh.getVideoTracks()[0];
       if (!newVideoTrack) return null;
 
@@ -204,6 +324,7 @@ function createCameraSwitcher(
       const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
       if (videoSender) {
         await videoSender.replaceTrack(newVideoTrack);
+        void reapplyCurrentQuality();
       }
 
       const updatedStream = new MediaStream([
@@ -216,14 +337,21 @@ function createCameraSwitcher(
       // Fall back to previous camera if rear/front camera unavailable
       try {
         const fallback = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: facingMode } },
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 24 },
+          },
           audio: false,
         });
+        hintVideoMotion(fallback);
         const fallbackTrack = fallback.getVideoTracks()[0];
         if (fallbackTrack) {
           const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
           if (videoSender) {
             await videoSender.replaceTrack(fallbackTrack);
+            void reapplyCurrentQuality();
           }
           const restoredStream = new MediaStream([
             ...currentStream.getAudioTracks(),
@@ -237,6 +365,179 @@ function createCameraSwitcher(
       }
       return null;
     }
+  };
+}
+
+/**
+ * Monitors real-time WebRTC connection stats to smoothly adapt video bitrate/scale
+ * before freezing happens, and triggers automatic ICE restart recovery on signal drops.
+ */
+function attachAdaptiveQualityAndRecovery(params: {
+  pc: RTCPeerConnection;
+  callType: 'audio' | 'video';
+  isCaller: boolean;
+  onRequestIceRestart?: () => Promise<void>;
+  onNetworkHealthChange?: (health: CallNetworkHealth) => void;
+}): {
+  setMode: (mode: VideoQualityMode) => Promise<void>;
+  reapplyCurrent: () => Promise<void>;
+  stop: () => void;
+} {
+  let mode: VideoQualityMode = 'auto';
+  let autoTier: 'smooth' | 'balanced' | 'economy' = 'smooth';
+  let healthyStreak = 0;
+  let lastPacketsLost = 0;
+  let lastPacketsReceived = 0;
+  let lastHealth: CallNetworkHealth = 'good';
+  let iceRestartTimer: number | null = null;
+  let lastIceRestartMs = 0;
+  let stopped = false;
+
+  const emitHealth = (next: CallNetworkHealth) => {
+    if (next !== lastHealth) {
+      lastHealth = next;
+      params.onNetworkHealthChange?.(next);
+    }
+  };
+
+  const getActiveProfile = (): VideoEncodingProfile => {
+    if (mode === 'economy') return VIDEO_PROFILES.economy;
+    if (mode === 'hd') return VIDEO_PROFILES.hd;
+    return VIDEO_PROFILES[autoTier];
+  };
+
+  const reapplyCurrent = async () => {
+    if (stopped) return;
+    await applyMediaSenderTuning(params.pc, getActiveProfile());
+  };
+
+  const setMode = async (nextMode: VideoQualityMode) => {
+    mode = nextMode;
+    if (nextMode === 'auto') {
+      autoTier = 'smooth';
+      healthyStreak = 0;
+    }
+    await reapplyCurrent();
+  };
+
+  // Automatic ICE recovery when switching Wi-Fi <-> 4G or brief signal drops
+  const triggerIceRestartSafe = () => {
+    if (stopped || !params.isCaller || !params.onRequestIceRestart) return;
+    const now = Date.now();
+    if (now - lastIceRestartMs < 8000) return;
+    lastIceRestartMs = now;
+    void params.onRequestIceRestart().catch(() => {});
+  };
+
+  params.pc.oniceconnectionstatechange = () => {
+    if (stopped) return;
+    const state = params.pc.iceConnectionState;
+    if (iceRestartTimer) {
+      window.clearTimeout(iceRestartTimer);
+      iceRestartTimer = null;
+    }
+
+    if (state === 'connected' || state === 'completed') {
+      emitHealth('good');
+      void reapplyCurrent();
+    } else if (state === 'disconnected') {
+      emitHealth('reconnecting');
+      iceRestartTimer = window.setTimeout(() => {
+        if (!stopped && params.pc.iceConnectionState === 'disconnected') {
+          triggerIceRestartSafe();
+        }
+      }, 3500);
+    } else if (state === 'failed') {
+      emitHealth('reconnecting');
+      triggerIceRestartSafe();
+    }
+  };
+
+  // Periodic adaptive bitrate check (every 2.5s) for smooth anti-freeze video
+  const statsInterval = window.setInterval(() => {
+    if (stopped || params.pc.iceConnectionState !== 'connected') return;
+    void params.pc
+      .getStats()
+      .then((stats) => {
+        if (stopped) return;
+        let rttMs = 0;
+        let packetsLostNow = 0;
+        let packetsRecvNow = 0;
+        let limited = false;
+
+        stats.forEach((report) => {
+          if (
+            report.type === 'candidate-pair' &&
+            (report as RTCIceCandidatePairStats).state === 'succeeded' &&
+            typeof (report as RTCIceCandidatePairStats).currentRoundTripTime === 'number'
+          ) {
+            rttMs = Math.max(
+              rttMs,
+              ((report as RTCIceCandidatePairStats).currentRoundTripTime || 0) * 1000
+            );
+          }
+          if (report.type === 'outbound-rtp' && (report as { kind?: string }).kind === 'video') {
+            const reason = (report as { qualityLimitationReason?: string })
+              .qualityLimitationReason;
+            if (reason === 'bandwidth' || reason === 'cpu') {
+              limited = true;
+            }
+          }
+          if (report.type === 'inbound-rtp' && (report as { kind?: string }).kind === 'video') {
+            packetsLostNow += Number((report as { packetsLost?: number }).packetsLost || 0);
+            packetsRecvNow += Number((report as { packetsReceived?: number }).packetsReceived || 0);
+          }
+        });
+
+        const deltaLost = Math.max(0, packetsLostNow - lastPacketsLost);
+        const deltaRecv = Math.max(0, packetsRecvNow - lastPacketsReceived);
+        lastPacketsLost = packetsLostNow;
+        lastPacketsReceived = packetsRecvNow;
+        const lossRatio = deltaRecv + deltaLost > 0 ? deltaLost / (deltaRecv + deltaLost) : 0;
+
+        const isPoor = lossRatio > 0.05 || rttMs > 420;
+        const isFair = !isPoor && (lossRatio > 0.02 || rttMs > 240 || limited);
+
+        if (isPoor) {
+          emitHealth('poor');
+          healthyStreak = 0;
+          if (params.callType === 'video' && mode === 'auto' && autoTier !== 'economy') {
+            autoTier = autoTier === 'smooth' ? 'balanced' : 'economy';
+            void reapplyCurrent();
+          }
+        } else if (isFair) {
+          emitHealth('fair');
+          healthyStreak = 0;
+          if (params.callType === 'video' && mode === 'auto' && autoTier === 'smooth') {
+            autoTier = 'balanced';
+            void reapplyCurrent();
+          }
+        } else {
+          emitHealth('good');
+          healthyStreak += 1;
+          if (
+            params.callType === 'video' &&
+            mode === 'auto' &&
+            autoTier !== 'smooth' &&
+            healthyStreak >= 3
+          ) {
+            autoTier = autoTier === 'economy' ? 'balanced' : 'smooth';
+            healthyStreak = 0;
+            void reapplyCurrent();
+          }
+        }
+      })
+      .catch(() => {});
+  }, 2500);
+
+  return {
+    setMode,
+    reapplyCurrent,
+    stop: () => {
+      stopped = true;
+      window.clearInterval(statsInterval);
+      if (iceRestartTimer) window.clearTimeout(iceRestartTimer);
+    },
   };
 }
 
@@ -256,6 +557,7 @@ export async function startRealOutgoingCall(params: {
   callType: 'audio' | 'video';
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
+  onNetworkHealthChange?: (health: CallNetworkHealth) => void;
 }): Promise<RealWebRTCSessionHandle> {
   let activeLocalStream = await acquireCallMediaStream(params.callType);
 
@@ -266,19 +568,29 @@ export async function startRealOutgoingCall(params: {
     pc.addTrack(track, activeLocalStream);
   });
 
+  if (params.callType === 'video') {
+    preferHardwareVideoCodec(pc);
+  }
+  await applyMediaSenderTuning(pc, VIDEO_PROFILES.smooth);
+
   pc.ontrack = (event) => {
+    let added = false;
     if (event.streams && event.streams[0]) {
       event.streams[0].getTracks().forEach((track) => {
         if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
           remoteStream.addTrack(track);
+          added = true;
         }
       });
     } else if (event.track) {
       if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
         remoteStream.addTrack(event.track);
+        added = true;
       }
     }
-    params.onRemoteStream(new MediaStream(remoteStream.getTracks()));
+    if (added) {
+      params.onRemoteStream(remoteStream);
+    }
   };
 
   const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -347,8 +659,24 @@ export async function startRealOutgoingCall(params: {
     }).catch(() => {});
   }
 
-  let remoteDescApplied = false;
+  let lastAppliedAnswerSdp = '';
   const queuedRemoteCandidates: RTCIceCandidateInit[] = [];
+
+  const adaptive = attachAdaptiveQualityAndRecovery({
+    pc,
+    callType: params.callType,
+    isCaller: true,
+    onNetworkHealthChange: params.onNetworkHealthChange,
+    onRequestIceRestart: async () => {
+      if (pc.signalingState !== 'stable') return;
+      const restartOffer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(restartOffer);
+      await updateDoc(callDocRef, {
+        offerSdp: restartOffer.sdp || '',
+        updatedAt: serverTimestamp(),
+      });
+    },
+  });
 
   const unsubCall = onSnapshot(
     callDocRef,
@@ -358,14 +686,24 @@ export async function startRealOutgoingCall(params: {
       if (data.status) {
         params.onStatusChange(data.status);
       }
-      if (!remoteDescApplied && data.answerSdp) {
-        remoteDescApplied = true;
+      if (
+        typeof data.answerSdp === 'string' &&
+        data.answerSdp &&
+        data.answerSdp !== lastAppliedAnswerSdp &&
+        pc.signalingState === 'have-local-offer'
+      ) {
+        const isFirstAnswer = !lastAppliedAnswerSdp;
+        lastAppliedAnswerSdp = data.answerSdp;
         await pc.setRemoteDescription(
           new RTCSessionDescription({ type: 'answer', sdp: data.answerSdp })
         );
-        for (const c of queuedRemoteCandidates) {
-          await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+        if (isFirstAnswer) {
+          for (const c of queuedRemoteCandidates) {
+            await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+          }
+          queuedRemoteCandidates.length = 0;
         }
+        void adaptive.reapplyCurrent();
       }
     },
     (error) => {
@@ -388,7 +726,7 @@ export async function startRealOutgoingCall(params: {
             sdpMid: d.sdpMid,
             sdpMLineIndex: d.sdpMLineIndex,
           };
-          if (remoteDescApplied) {
+          if (lastAppliedAnswerSdp) {
             void pc.addIceCandidate(new RTCIceCandidate(candInit)).catch(() => {});
           } else {
             queuedRemoteCandidates.push(candInit);
@@ -406,10 +744,12 @@ export async function startRealOutgoingCall(params: {
     () => activeLocalStream,
     (next) => {
       activeLocalStream = next;
-    }
+    },
+    adaptive.reapplyCurrent
   );
 
   const cleanup = () => {
+    adaptive.stop();
     unsubCall();
     unsubCandidates();
     activeLocalStream.getTracks().forEach((t) => t.stop());
@@ -424,6 +764,7 @@ export async function startRealOutgoingCall(params: {
     },
     remoteStream,
     switchCamera,
+    setVideoQualityMode: adaptive.setMode,
     cleanup,
   };
 }
@@ -440,6 +781,7 @@ export async function answerRealIncomingCall(params: {
   offerSdp: string;
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
+  onNetworkHealthChange?: (health: CallNetworkHealth) => void;
 }): Promise<RealWebRTCSessionHandle> {
   let activeLocalStream = await acquireCallMediaStream(params.callType);
 
@@ -450,19 +792,29 @@ export async function answerRealIncomingCall(params: {
     pc.addTrack(track, activeLocalStream);
   });
 
+  if (params.callType === 'video') {
+    preferHardwareVideoCodec(pc);
+  }
+  await applyMediaSenderTuning(pc, VIDEO_PROFILES.smooth);
+
   pc.ontrack = (event) => {
+    let added = false;
     if (event.streams && event.streams[0]) {
       event.streams[0].getTracks().forEach((track) => {
         if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
           remoteStream.addTrack(track);
+          added = true;
         }
       });
     } else if (event.track) {
       if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
         remoteStream.addTrack(event.track);
+        added = true;
       }
     }
-    params.onRemoteStream(new MediaStream(remoteStream.getTracks()));
+    if (added) {
+      params.onRemoteStream(remoteStream);
+    }
   };
 
   const callDocRef = doc(params.db, 'calls', params.callId);
@@ -482,6 +834,8 @@ export async function answerRealIncomingCall(params: {
     }).catch(() => {});
   };
 
+  let lastAppliedOfferSdp = params.offerSdp;
+
   await pc.setRemoteDescription(
     new RTCSessionDescription({ type: 'offer', sdp: params.offerSdp })
   );
@@ -500,12 +854,44 @@ export async function answerRealIncomingCall(params: {
     handleFirestoreError(error, OperationType.UPDATE, `calls/${params.callId}`);
   }
 
+  const adaptive = attachAdaptiveQualityAndRecovery({
+    pc,
+    callType: params.callType,
+    isCaller: false,
+    onNetworkHealthChange: params.onNetworkHealthChange,
+  });
+  void adaptive.reapplyCurrent();
+
   const unsubCall = onSnapshot(
     callDocRef,
-    (snap) => {
+    async (snap) => {
       const data = snap.data();
       if (data?.status) {
         params.onStatusChange(data.status);
+      }
+      // Seamlessly accept caller's automatic ICE restart renegotiation offer if network changed
+      if (
+        data?.status === 'active' &&
+        typeof data.offerSdp === 'string' &&
+        data.offerSdp &&
+        data.offerSdp !== lastAppliedOfferSdp &&
+        pc.signalingState === 'stable'
+      ) {
+        lastAppliedOfferSdp = data.offerSdp;
+        try {
+          await pc.setRemoteDescription(
+            new RTCSessionDescription({ type: 'offer', sdp: data.offerSdp })
+          );
+          const restartAnswer = await pc.createAnswer();
+          await pc.setLocalDescription(restartAnswer);
+          await updateDoc(callDocRef, {
+            answerSdp: restartAnswer.sdp || '',
+            updatedAt: serverTimestamp(),
+          });
+          void adaptive.reapplyCurrent();
+        } catch {
+          // Ignore transient renegotiation collisions
+        }
       }
     },
     (error) => {
@@ -545,10 +931,12 @@ export async function answerRealIncomingCall(params: {
     () => activeLocalStream,
     (next) => {
       activeLocalStream = next;
-    }
+    },
+    adaptive.reapplyCurrent
   );
 
   const cleanup = () => {
+    adaptive.stop();
     unsubCall();
     unsubCandidates();
     activeLocalStream.getTracks().forEach((t) => t.stop());
@@ -563,6 +951,7 @@ export async function answerRealIncomingCall(params: {
     },
     remoteStream,
     switchCamera,
+    setVideoQualityMode: adaptive.setMode,
     cleanup,
   };
 }
@@ -589,6 +978,10 @@ let cachedRingtoneUrl: string | null = null;
 let primedRingtoneEl: HTMLAudioElement | null = null;
 let ringtoneElementPrimed = false;
 let isCurrentlyRinging = false;
+let cachedMsgChimeUrl: string | null = null;
+let primedMsgChimeEl: HTMLAudioElement | null = null;
+let msgChimeElementPrimed = false;
+let lastMsgChimeMs = 0;
 let audioCtxUnlocked = false;
 
 function getOrCreateAudioContext(): AudioContext | null {
@@ -684,9 +1077,86 @@ function getOrCreatePrimedAudioElement(): HTMLAudioElement | null {
 }
 
 /**
- * Unlocks BOTH Web Audio API and a persistent HTMLAudioElement on the user's first touch/click.
- * Reusing the exact same primed HTMLAudioElement allows iOS Safari and Android Chrome
- * to play the incoming call ringtone loudly even when the call arrives minutes later.
+ * Generates a crisp, unmistakable two-note WhatsApp-style message chime WAV Blob URL
+ * so mobile Safari/Chrome plays message alerts loudly via a primed HTMLAudioElement.
+ */
+function getMessageChimeWavUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  if (cachedMsgChimeUrl) return cachedMsgChimeUrl;
+  try {
+    const sampleRate = 22050;
+    const durationSec = 0.42;
+    const numSamples = Math.floor(sampleRate * durationSec);
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i += 1) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+
+    // Bright two-note marimba/pop chime: Note 1 (0.00-0.11s, A5), Note 2 (0.12-0.38s, D6)
+    for (let i = 0; i < numSamples; i += 1) {
+      const t = i / sampleRate;
+      let sample = 0;
+      if (t >= 0 && t < 0.115) {
+        const lt = t;
+        const env = Math.min(1, lt / 0.008) * Math.exp(-lt * 22);
+        sample +=
+          0.72 *
+          env *
+          (Math.sin(2 * Math.PI * 880 * lt) + 0.35 * Math.sin(2 * Math.PI * 1760 * lt));
+      }
+      if (t >= 0.115 && t < 0.41) {
+        const lt = t - 0.115;
+        const env = Math.min(1, lt / 0.008) * Math.exp(-lt * 13);
+        sample +=
+          0.78 *
+          env *
+          (Math.sin(2 * Math.PI * 1174.66 * lt) + 0.35 * Math.sin(2 * Math.PI * 2349.32 * lt));
+      }
+      const clamped = Math.max(-1, Math.min(1, sample));
+      view.setInt16(44 + i * 2, Math.round(clamped * 32767), true);
+    }
+
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    cachedMsgChimeUrl = URL.createObjectURL(blob);
+    return cachedMsgChimeUrl;
+  } catch {
+    return null;
+  }
+}
+
+function getOrCreatePrimedMessageChimeElement(): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (primedMsgChimeEl) return primedMsgChimeEl;
+  const wavUrl = getMessageChimeWavUrl();
+  if (!wavUrl) return null;
+  const el = new Audio(wavUrl);
+  el.loop = false;
+  el.preload = 'auto';
+  primedMsgChimeEl = el;
+  return el;
+}
+
+/**
+ * Unlocks Web Audio API AND persistent HTMLAudioElements (ringtone + message chime)
+ * on the user's first touch/click so iOS Safari and Android Chrome play both loudly.
  */
 export function unlockCallAudio(): void {
   try {
@@ -722,9 +1192,135 @@ export function unlockCallAudio(): void {
         });
       }
     }
+
+    const msgEl = getOrCreatePrimedMessageChimeElement();
+    if (msgEl && !msgChimeElementPrimed) {
+      msgEl.muted = true;
+      msgEl.volume = 0;
+      const mp = msgEl.play();
+      if (mp && typeof mp.then === 'function') {
+        mp.then(() => {
+          msgChimeElementPrimed = true;
+          msgEl.pause();
+          msgEl.currentTime = 0;
+          msgEl.muted = false;
+          msgEl.volume = 1.0;
+        }).catch(() => {
+          // Will retry on next user tap
+        });
+      }
+    }
   } catch {
     // Non-fatal
   }
+}
+
+/**
+ * Plays a crisp, loud WhatsApp-style double-note notification chime + short vibration
+ * when a new text, audio, or photo message arrives.
+ */
+export function playMessageNotificationSound(force = false): void {
+  if (typeof window === 'undefined') return;
+  const nowMs = Date.now();
+  if (!force && nowMs - lastMsgChimeMs < 350) return;
+  lastMsgChimeMs = nowMs;
+
+  // Short crisp haptic feedback on Android
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([120, 60, 120]);
+    }
+  } catch {
+    // Ignore on iOS / unsupported devices
+  }
+
+  // Primary path: primed HTMLAudioElement (most reliable on mobile Safari & Android Chrome)
+  const el = getOrCreatePrimedMessageChimeElement();
+  let playedHtml = false;
+  if (el) {
+    try {
+      el.muted = false;
+      el.volume = 1.0;
+      el.currentTime = 0;
+      const p = el.play();
+      if (p && typeof p.then === 'function') {
+        playedHtml = true;
+        p.catch(() => {
+          playMessageChimeWebAudioFallback();
+        });
+      }
+    } catch {
+      playedHtml = false;
+    }
+  }
+
+  if (!playedHtml) {
+    playMessageChimeWebAudioFallback();
+  }
+}
+
+function playMessageChimeWebAudioFallback(): void {
+  const ctx = getOrCreateAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+  try {
+    const now = ctx.currentTime;
+    const playNote = (offset: number, freq: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + offset);
+      gain.gain.setValueAtTime(0.001, now + offset);
+      gain.gain.linearRampToValueAtTime(0.32, now + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + dur + 0.02);
+    };
+    playNote(0, 880, 0.11);
+    playNote(0.115, 1174.66, 0.24);
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Plays a soft, subtle WhatsApp-style pop when the user sends a message.
+ */
+export function playMessageSentSound(): void {
+  const ctx = getOrCreateAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+  try {
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(780, now + 0.06);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.11, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.09);
+  } catch {
+    // Non-fatal
+  }
+}
+
+/**
+ * Plays the message notification chime immediately on tap so the user can test it.
+ */
+export function testMessageNotificationSound(): void {
+  unlockCallAudio();
+  playMessageNotificationSound(true);
 }
 
 export function installAudioUnlockListeners(): () => void {

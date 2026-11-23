@@ -9,7 +9,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import type { BackgroundPushStatus } from '../lib/pushService';
-import { testRingtoneSound } from '../lib/webrtcService';
+import { testMessageNotificationSound, testRingtoneSound } from '../lib/webrtcService';
 
 interface BackgroundCallPushCardProps {
   status: BackgroundPushStatus;
@@ -76,13 +76,13 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
 
             {isEnabled && (
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Tudo pronto neste aparelho. Quando alguém ligar para o seu Zapei com o app fechado ou tela bloqueada, o celular vibra e mostra os botões <strong>Atender</strong> e <strong>Recusar</strong>.
+                Tudo pronto neste aparelho. Quando chegar uma <strong>mensagem de texto, áudio, foto</strong> ou <strong>ligação</strong> mesmo com a tela bloqueada, o celular toca, vibra e mostra o aviso.
               </p>
             )}
 
             {status === 'prompt' && (
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Toque ao lado para permitir que este telefone toque e acorde a tela bloqueada sempre que receber uma ligação ou mensagem no Zapei.
+                Toque ao lado para o telefone tocar e vibrar igual ao WhatsApp sempre que chegar mensagem de texto, áudio ou ligação com a tela bloqueada.
               </p>
             )}
 
@@ -116,10 +116,19 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
           <button
             type="button"
             onClick={() => testRingtoneSound()}
-            className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+            className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
           >
             <Volume2 className="h-4 w-4 text-[#0F5132]" />
             Testar toque
+          </button>
+
+          <button
+            type="button"
+            onClick={() => testMessageNotificationSound()}
+            className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+          >
+            <Bell className="h-4 w-4 text-[#0D2B3E]" />
+            Som de msg
           </button>
 
           {(status === 'prompt' || isEnabled) && (

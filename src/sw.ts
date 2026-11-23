@@ -26,6 +26,8 @@ interface ZapeiPushPayload {
   senderId?: string;
   senderName?: string;
   body?: string;
+  messageType?: 'text' | 'audio' | 'image';
+  messageId?: string;
 }
 
 self.addEventListener('push', (event: PushEvent) => {
@@ -109,14 +111,31 @@ self.addEventListener('push', (event: PushEvent) => {
     return;
   }
 
-  // Real background chat message notification
+  // Real background chat message notification (text, audio, photo)
   const msgTitle = payload.senderName || 'Nova mensagem no Zapei';
-  const msgOptions: NotificationOptions & { vibrate?: number[] } = {
-    body: payload.body || 'Você recebeu uma nova mensagem.',
+  const rawBody = payload.body || 'Você recebeu uma nova mensagem.';
+  const formattedBody =
+    payload.messageType === 'audio' && !rawBody.startsWith('🎤')
+      ? `🎤 ${rawBody}`
+      : payload.messageType === 'image' && !rawBody.startsWith('📷')
+        ? `📷 ${rawBody}`
+        : rawBody;
+  const uniqueMsgKey = payload.messageId || String(Date.now());
+  const msgOptions: NotificationOptions & {
+    vibrate?: number[];
+    renotify?: boolean;
+    silent?: boolean;
+  } = {
+    body: formattedBody,
     icon: '/pwa-192x192.png',
     badge: '/pwa-192x192.png',
-    tag: payload.senderId ? `zapei-msg-${payload.senderId}` : 'zapei-msg',
-    vibrate: [180, 80, 180],
+    // Unique tag + renotify:true + silent:false ensures EVERY text/audio message chimes & vibrates on iOS & Android
+    tag: payload.senderId
+      ? `zapei-msg-${payload.senderId}-${uniqueMsgKey}`
+      : `zapei-msg-${uniqueMsgKey}`,
+    renotify: true,
+    silent: false,
+    vibrate: [200, 80, 200],
     data: {
       type: 'new_message',
       senderId: payload.senderId || '',
@@ -126,7 +145,39 @@ self.addEventListener('push', (event: PushEvent) => {
     },
   };
 
-  event.waitUntil(self.registration.showNotification(msgTitle, msgOptions));
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((windowClients) => {
+        const activeForegroundClient = windowClients.find(
+          (c) => c.visibilityState === 'visible' && 'focused' in c && (c as WindowClient).focused
+        );
+        if (activeForegroundClient) {
+          // App is already open & focused on screen: let in-app WhatsApp chime + banner handle it without double OS alert
+          activeForegroundClient.postMessage({
+            type: 'ZAPEI_INCOMING_MESSAGE_PING',
+            payload: {
+              senderId: payload.senderId || '',
+              senderName: msgTitle,
+              body: formattedBody,
+              messageType: payload.messageType || 'text',
+            },
+          });
+          return;
+        }
+        try {
+          const nav = self.navigator as Navigator & {
+            setAppBadge?: (count?: number) => Promise<void>;
+          };
+          if (typeof nav.setAppBadge === 'function') {
+            void nav.setAppBadge().catch(() => {});
+          }
+        } catch {
+          // Ignore badge API errors on unsupported browsers
+        }
+        return self.registration.showNotification(msgTitle, msgOptions);
+      })
+  );
 });
 
 self.addEventListener('notificationclick', (event: NotificationEvent) => {
