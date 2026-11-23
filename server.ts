@@ -217,10 +217,11 @@ async function startServer(): Promise<void> {
         ? { type: 'call_cancelled', callId }
         : { type: 'incoming_call', callId, callerId, callerName, callType };
 
+    const safeTopic = `call${callId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
     const result = await dispatchPushToUser(calleeId, payload, {
       ttl: 60,
       urgency: 'high',
-      topic: `call-${callId.slice(0, 24)}`,
+      topic: safeTopic,
     });
 
     res.json({ ok: true, ...result });

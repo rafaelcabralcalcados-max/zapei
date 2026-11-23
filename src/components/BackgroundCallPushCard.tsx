@@ -6,8 +6,10 @@ import {
   CheckCircle2,
   Loader2,
   Smartphone,
+  Volume2,
 } from 'lucide-react';
 import type { BackgroundPushStatus } from '../lib/pushService';
+import { testRingtoneSound } from '../lib/webrtcService';
 
 interface BackgroundCallPushCardProps {
   status: BackgroundPushStatus;
@@ -110,29 +112,40 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
           </div>
         </div>
 
-        {(status === 'prompt' || isEnabled) && (
+        <div className="flex flex-wrap shrink-0 items-center gap-2">
           <button
             type="button"
-            disabled={busy}
-            onClick={() => void onEnable()}
-            className={`inline-flex min-h-[42px] shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-xs font-bold transition disabled:opacity-60 ${
-              isEnabled
-                ? 'border border-emerald-300 bg-white text-[#0F5132] hover:bg-emerald-50'
-                : 'bg-[#0F5132] text-white hover:bg-[#146c43]'
-            }`}
+            onClick={() => testRingtoneSound()}
+            className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
           >
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Configurando...
-              </>
-            ) : isEnabled ? (
-              'Sincronizar aparelho'
-            ) : (
-              'Ativar toque em segundo plano'
-            )}
+            <Volume2 className="h-4 w-4 text-[#0F5132]" />
+            Testar toque
           </button>
-        )}
+
+          {(status === 'prompt' || isEnabled) && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void onEnable()}
+              className={`inline-flex min-h-[42px] shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-xs font-bold transition disabled:opacity-60 ${
+                isEnabled
+                  ? 'border border-emerald-300 bg-white text-[#0F5132] hover:bg-emerald-50'
+                  : 'bg-[#0F5132] text-white hover:bg-[#146c43]'
+              }`}
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Configurando...
+                </>
+              ) : isEnabled ? (
+                'Sincronizar aparelho'
+              ) : (
+                'Ativar toque em segundo plano'
+              )}
+            </button>
+          )}
+        </div>
       </div>
     </section>
   );

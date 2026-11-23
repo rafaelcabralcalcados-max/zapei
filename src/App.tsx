@@ -154,6 +154,8 @@ export default function App() {
   const [activeCall, setActiveCall] = useState<ActiveCallUIState | null>(null);
   const webrtcHandleRef = useRef<RealWebRTCSessionHandle | null>(null);
   const ignoredCallIdsRef = useRef<Set<string>>(new Set());
+  const seenCallIdsRef = useRef<Set<string>>(new Set());
+  const hasLoadedInitialCallsRef = useRef(false);
 
   // Real Closed-App / Locked-Screen Web Push State
   const [pushStatus, setPushStatus] = useState<BackgroundPushStatus>('prompt');
@@ -161,6 +163,7 @@ export default function App() {
   const [pushFeedback, setPushFeedback] = useState('');
   const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
+  const lastPushSyncMsRef = useRef<number>(0);
 
   // Unlock mobile browser audio on first touch/click so incoming calls always ring loudly
   useEffect(() => {
@@ -211,10 +214,26 @@ export default function App() {
     });
   }, [authUser]);
 
-  // 2b. Sync existing browser/PWA Web Push subscription with Zapei server on login
+  // 2b. Sync existing browser/PWA Web Push subscription with Zapei server on login & app resume
   useEffect(() => {
-    if (!authUser) return;
-    void syncExistingPushSubscription(authUser).then(setPushStatus);
+    if (!authUser) return undefined;
+    const runSync = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastPushSyncMsRef.current < 45000) return;
+      lastPushSyncMsRef.current = now;
+      void syncExistingPushSubscription(authUser).then(setPushStatus);
+    };
+    runSync(true);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') runSync(false);
+    };
+    const onFocus = () => runSync(false);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [authUser]);
 
   const handleEnableBackgroundPush = useCallback(async () => {
@@ -301,17 +320,35 @@ export default function App() {
       return;
     }
 
-    if (activeCall) return;
+    if (activeCall) {
+      for (const c of calls) seenCallIdsRef.current.add(c.id);
+      return;
+    }
 
     const now = Date.now();
-    const incoming = calls.find(
-      (c) =>
-        c.calleeId === profile.uid &&
-        c.status === 'ringing' &&
-        Boolean(c.offerSdp) &&
-        !ignoredCallIdsRef.current.has(c.id) &&
-        (c.createdAtMs === 0 || now - c.createdAtMs < 120000)
-    );
+    const isInitialLoad = !hasLoadedInitialCallsRef.current;
+    const incoming = calls.find((c) => {
+      if (
+        c.calleeId !== profile.uid ||
+        c.status !== 'ringing' ||
+        !c.offerSdp ||
+        ignoredCallIdsRef.current.has(c.id)
+      ) {
+        return false;
+      }
+      // Any call arriving LIVE after initial load is ALWAYS valid (immune to phone clock skew)
+      const isLiveNewCall = !isInitialLoad && !seenCallIdsRef.current.has(c.id);
+      if (isLiveNewCall) return true;
+      // On initial load, accept recent calls (generous 10-minute tolerance for clock skew)
+      return c.createdAtMs === 0 || Math.abs(now - c.createdAtMs) < 10 * 60 * 1000;
+    });
+
+    for (const c of calls) {
+      seenCallIdsRef.current.add(c.id);
+    }
+    if (calls.length > 0 || !isInitialLoad) {
+      hasLoadedInitialCallsRef.current = true;
+    }
 
     if (incoming) {
       const callerDir = directoryUsers.find((u) => u.uid === incoming.callerId);
@@ -478,6 +515,12 @@ export default function App() {
             callerName: profile.name,
             callType,
             event: 'ringing',
+          }).then((pushResult) => {
+            setActiveCall((prev) =>
+              prev && prev.callId === handle.callId
+                ? { ...prev, remotePushDelivered: pushResult.sent > 0 }
+                : prev
+            );
           });
         }
       } catch (err) {

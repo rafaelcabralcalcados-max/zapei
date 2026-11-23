@@ -30,6 +30,7 @@ export interface ActiveCallUIState {
   offerSdp?: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
+  remotePushDelivered?: boolean | null;
   errorMessage?: string;
 }
 
@@ -336,6 +337,16 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
           <p className="mt-1.5 font-mono text-sm text-emerald-200/90 tabular-nums">
             {statusText()}
           </p>
+          {call.direction === 'outgoing' && call.status === 'ringing' && call.remotePushDelivered === true && (
+            <p className="mt-3 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3.5 py-1 text-[11px] font-medium text-emerald-200">
+              Toque enviado ao aparelho de {call.peerName}
+            </p>
+          )}
+          {call.direction === 'outgoing' && call.status === 'ringing' && call.remotePushDelivered === false && (
+            <p className="mt-3 max-w-xs rounded-2xl border border-amber-300/35 bg-amber-500/15 px-3.5 py-2 text-[11px] leading-relaxed text-amber-100">
+              O aparelho de {call.peerName} ainda não ativou toque com tela bloqueada — só tocará se o Zapei estiver aberto na tela.
+            </p>
+          )}
           {ringtoneBlocked && call.direction === 'incoming' && call.status === 'ringing' && (
             <button
               type="button"

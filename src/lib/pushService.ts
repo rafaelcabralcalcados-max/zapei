@@ -221,10 +221,10 @@ export async function triggerRemoteCallPush(
     callType: 'audio' | 'video';
     event: 'ringing' | 'cancelled';
   }
-): Promise<void> {
+): Promise<{ ok: boolean; sent: number }> {
   try {
     const token = await authUser.getIdToken();
-    await fetch('/api/push/notify-call', {
+    const res = await fetch('/api/push/notify-call', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -232,8 +232,12 @@ export async function triggerRemoteCallPush(
       },
       body: JSON.stringify(params),
     });
+    if (!res.ok) return { ok: false, sent: 0 };
+    const data = (await res.json()) as { ok?: boolean; sent?: number };
+    return { ok: Boolean(data.ok), sent: Number(data.sent ?? 0) };
   } catch {
     // Non-blocking: Firestore signaling still delivers to foreground peers
+    return { ok: false, sent: 0 };
   }
 }
 

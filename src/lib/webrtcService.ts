@@ -477,7 +477,10 @@ export async function updateRealCallStatus(
 
 let sharedAudioCtx: AudioContext | null = null;
 let cachedRingtoneUrl: string | null = null;
-let audioUnlocked = false;
+let primedRingtoneEl: HTMLAudioElement | null = null;
+let ringtoneElementPrimed = false;
+let isCurrentlyRinging = false;
+let audioCtxUnlocked = false;
 
 function getOrCreateAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -493,8 +496,8 @@ function getOrCreateAudioContext(): AudioContext | null {
 }
 
 /**
- * Generates a real, crisp PCM WAV ringtone Blob URL so mobile Safari/Chrome
- * can play a loud classic phone chime via HTMLAudioElement as well as Web Audio.
+ * Generates a real, loud PCM WAV ringtone Blob URL so mobile Safari/Chrome
+ * plays an unmistakable classic phone ring via HTMLAudioElement.
  */
 function getRingtoneWavUrl(): string | null {
   if (typeof window === 'undefined') return null;
@@ -526,26 +529,26 @@ function getRingtoneWavUrl(): string | null {
     writeStr(36, 'data');
     view.setUint32(40, numSamples * 2, true);
 
-    // Classic two-burst melodic phone ring (0.00-0.42s, 0.52-0.96s, then silence until 2.0s)
+    // Loud two-burst melodic phone ring (0.00-0.44s, 0.52-0.98s, pause until 2.0s)
     for (let i = 0; i < numSamples; i += 1) {
       const t = i / sampleRate;
       let sample = 0;
-      const inFirst = t >= 0.0 && t < 0.42;
-      const inSecond = t >= 0.52 && t < 0.96;
+      const inFirst = t >= 0.0 && t < 0.44;
+      const inSecond = t >= 0.52 && t < 0.98;
       if (inFirst || inSecond) {
         const localT = inFirst ? t : t - 0.52;
-        const burstLen = inFirst ? 0.42 : 0.44;
-        const attack = Math.min(1, localT / 0.02);
-        const release = Math.min(1, Math.max(0, (burstLen - localT) / 0.06));
+        const burstLen = inFirst ? 0.44 : 0.46;
+        const attack = Math.min(1, localT / 0.015);
+        const release = Math.min(1, Math.max(0, (burstLen - localT) / 0.05));
         const env = attack * release;
         const f1 = inFirst ? 659.25 : 783.99; // E5 -> G5
         const f2 = inFirst ? 880.0 : 1046.5; // A5 -> C6
-        const trillo = 0.85 + 0.15 * Math.sin(2 * Math.PI * 18 * localT);
+        const trillo = 0.8 + 0.2 * Math.sin(2 * Math.PI * 20 * localT);
         sample =
-          0.45 *
+          0.55 *
           env *
           trillo *
-          (Math.sin(2 * Math.PI * f1 * t) + 0.7 * Math.sin(2 * Math.PI * f2 * t));
+          (Math.sin(2 * Math.PI * f1 * t) + 0.75 * Math.sin(2 * Math.PI * f2 * t));
       }
       const clamped = Math.max(-1, Math.min(1, sample));
       view.setInt16(44 + i * 2, Math.round(clamped * 32767), true);
@@ -559,9 +562,22 @@ function getRingtoneWavUrl(): string | null {
   }
 }
 
+function getOrCreatePrimedAudioElement(): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (primedRingtoneEl) return primedRingtoneEl;
+  const wavUrl = getRingtoneWavUrl();
+  if (!wavUrl) return null;
+  const el = new Audio(wavUrl);
+  el.loop = true;
+  el.preload = 'auto';
+  primedRingtoneEl = el;
+  return el;
+}
+
 /**
- * Unlocks browser audio playback on the user's very first touch/click in the app
- * so incoming calls ring loudly even when arriving asynchronously later.
+ * Unlocks BOTH Web Audio API and a persistent HTMLAudioElement on the user's first touch/click.
+ * Reusing the exact same primed HTMLAudioElement allows iOS Safari and Android Chrome
+ * to play the incoming call ringtone loudly even when the call arrives minutes later.
  */
 export function unlockCallAudio(): void {
   try {
@@ -569,15 +585,34 @@ export function unlockCallAudio(): void {
     if (ctx && ctx.state === 'suspended') {
       void ctx.resume().catch(() => {});
     }
-    if (ctx && !audioUnlocked) {
+    if (ctx && !audioCtxUnlocked) {
       const silentBuf = ctx.createBuffer(1, 1, 22050);
       const src = ctx.createBufferSource();
       src.buffer = silentBuf;
       src.connect(ctx.destination);
       src.start(0);
-      audioUnlocked = true;
+      audioCtxUnlocked = true;
     }
-    getRingtoneWavUrl();
+
+    const el = getOrCreatePrimedAudioElement();
+    if (el && !ringtoneElementPrimed && !isCurrentlyRinging) {
+      el.muted = true;
+      el.volume = 0;
+      const p = el.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          ringtoneElementPrimed = true;
+          if (!isCurrentlyRinging) {
+            el.pause();
+            el.currentTime = 0;
+            el.muted = false;
+            el.volume = 1.0;
+          }
+        }).catch(() => {
+          // Will retry on next user tap
+        });
+      }
+    }
   } catch {
     // Non-fatal
   }
@@ -596,16 +631,27 @@ export function installAudioUnlockListeners(): () => void {
 }
 
 /**
- * Plays a loud, clear incoming call ringtone (WAV Audio + Web Audio fallback + Android vibration).
- * Returns a stop function and whether audio autoplay was allowed.
+ * Plays a 2-second test ringtone on user tap so the user can confirm their phone speaker rings.
+ */
+export function testRingtoneSound(): void {
+  unlockCallAudio();
+  const stop = startRingtoneAudio();
+  window.setTimeout(() => {
+    stop();
+  }, 2100);
+}
+
+/**
+ * Plays a loud, clear incoming call ringtone (primed HTMLAudioElement + Web Audio fallback + Android vibration).
  */
 export function startRingtoneAudio(
   onBlockedChange?: (blocked: boolean) => void
 ): () => void {
   let stopped = false;
-  let audioEl: HTMLAudioElement | null = null;
   let webAudioInterval: number | null = null;
   let vibrateInterval: number | null = null;
+  let htmlAudioPlaying = false;
+  isCurrentlyRinging = true;
 
   // 1. Trigger continuous vibration on supported Android phones
   const doVibrate = () => {
@@ -621,18 +667,22 @@ export function startRingtoneAudio(
   doVibrate();
   vibrateInterval = window.setInterval(doVibrate, 2400);
 
-  // 2. Try playing our generated WAV ringtone at full volume via HTMLAudioElement
-  const wavUrl = getRingtoneWavUrl();
-  let htmlAudioPlaying = false;
-  if (wavUrl) {
+  // 2. Reuse the SAME primed HTMLAudioElement (critical for iOS Safari & Android Chrome!)
+  const el = getOrCreatePrimedAudioElement();
+  if (el) {
     try {
-      audioEl = new Audio(wavUrl);
-      audioEl.loop = true;
-      audioEl.volume = 1.0;
-      const playPromise = audioEl.play();
+      el.loop = true;
+      el.muted = false;
+      el.volume = 1.0;
+      el.currentTime = 0;
+      const playPromise = el.play();
       if (playPromise && typeof playPromise.then === 'function') {
         playPromise
           .then(() => {
+            if (stopped) {
+              el.pause();
+              return;
+            }
             htmlAudioPlaying = true;
             onBlockedChange?.(false);
           })
@@ -645,7 +695,7 @@ export function startRingtoneAudio(
     }
   }
 
-  // 3. Web Audio dual-tone ringtone fallback (fires if HTMLAudio was not started)
+  // 3. Web Audio dual-tone ringtone fallback (fires if HTMLAudio was blocked)
   const ctx = getOrCreateAudioContext();
   if (ctx) {
     if (ctx.state === 'suspended') {
@@ -670,7 +720,7 @@ export function startRingtoneAudio(
         osc1.frequency.setValueAtTime(freqA, now + startOffset);
         osc2.frequency.setValueAtTime(freqB, now + startOffset);
         gain.gain.setValueAtTime(0.001, now + startOffset);
-        gain.gain.linearRampToValueAtTime(0.32, now + startOffset + 0.03);
+        gain.gain.linearRampToValueAtTime(0.36, now + startOffset + 0.03);
         gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + 0.42);
         osc1.connect(gain);
         osc2.connect(gain);
@@ -684,18 +734,22 @@ export function startRingtoneAudio(
       playBurst(0.5, 783.99, 1046.5);
     };
 
-    window.setTimeout(pulseWebAudio, 120);
+    window.setTimeout(pulseWebAudio, 150);
     webAudioInterval = window.setInterval(pulseWebAudio, 2000);
   }
 
   return () => {
     stopped = true;
+    isCurrentlyRinging = false;
     if (webAudioInterval) window.clearInterval(webAudioInterval);
     if (vibrateInterval) window.clearInterval(vibrateInterval);
-    if (audioEl) {
-      audioEl.pause();
-      audioEl.currentTime = 0;
-      audioEl = null;
+    if (el) {
+      try {
+        el.pause();
+        el.currentTime = 0;
+      } catch {
+        // Ignore
+      }
     }
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -708,7 +762,7 @@ export function startRingtoneAudio(
 }
 
 /**
- * Plays a classic subtle Brazilian/ITU-T calling ringback tone ("tuuu... tuuu...")
+ * Plays a classic Brazilian/ITU-T calling ringback tone ("tuuu... tuuu...")
  * for the caller while waiting for the other phone to answer.
  */
 export function startRingbackToneAudio(): () => void {
@@ -729,8 +783,8 @@ export function startRingbackToneAudio(): () => void {
     osc.type = 'sine';
     osc.frequency.setValueAtTime(425, now);
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(0.14, now + 0.04);
-    gain.gain.setValueAtTime(0.14, now + 0.9);
+    gain.gain.linearRampToValueAtTime(0.16, now + 0.04);
+    gain.gain.setValueAtTime(0.16, now + 0.9);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
     osc.connect(gain);
     gain.connect(ctx.destination);
