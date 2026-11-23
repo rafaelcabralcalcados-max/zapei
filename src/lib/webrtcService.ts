@@ -29,7 +29,78 @@ export interface RealWebRTCSessionHandle {
   pc: RTCPeerConnection;
   localStream: MediaStream;
   remoteStream: MediaStream;
+  switchCamera: () => Promise<MediaStream | null>;
   cleanup: () => void;
+}
+
+function createCameraSwitcher(
+  pc: RTCPeerConnection,
+  getCurrentStream: () => MediaStream,
+  setCurrentStream: (next: MediaStream) => void
+): () => Promise<MediaStream | null> {
+  let facingMode: 'user' | 'environment' = 'user';
+
+  return async () => {
+    const currentStream = getCurrentStream();
+    const oldVideoTrack = currentStream.getVideoTracks()[0];
+    if (!oldVideoTrack) return null;
+
+    const nextFacing: 'user' | 'environment' =
+      facingMode === 'user' ? 'environment' : 'user';
+
+    // Stop old track first on mobile devices that only allow one active camera at a time
+    oldVideoTrack.stop();
+
+    try {
+      const fresh = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextFacing },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+      const newVideoTrack = fresh.getVideoTracks()[0];
+      if (!newVideoTrack) return null;
+
+      facingMode = nextFacing;
+      const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+      if (videoSender) {
+        await videoSender.replaceTrack(newVideoTrack);
+      }
+
+      const updatedStream = new MediaStream([
+        ...currentStream.getAudioTracks(),
+        newVideoTrack,
+      ]);
+      setCurrentStream(updatedStream);
+      return updatedStream;
+    } catch {
+      // Fall back to previous camera if rear/front camera unavailable
+      try {
+        const fallback = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facingMode } },
+          audio: false,
+        });
+        const fallbackTrack = fallback.getVideoTracks()[0];
+        if (fallbackTrack) {
+          const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (videoSender) {
+            await videoSender.replaceTrack(fallbackTrack);
+          }
+          const restoredStream = new MediaStream([
+            ...currentStream.getAudioTracks(),
+            fallbackTrack,
+          ]);
+          setCurrentStream(restoredStream);
+          return restoredStream;
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    }
+  };
 }
 
 /**
@@ -49,7 +120,7 @@ export async function startRealOutgoingCall(params: {
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
-  const localStream = await navigator.mediaDevices.getUserMedia({
+  let activeLocalStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
@@ -68,8 +139,8 @@ export async function startRealOutgoingCall(params: {
   const remoteStream = new MediaStream();
   const pc = new RTCPeerConnection(RTC_SERVERS);
 
-  localStream.getTracks().forEach((track) => {
-    pc.addTrack(track, localStream);
+  activeLocalStream.getTracks().forEach((track) => {
+    pc.addTrack(track, activeLocalStream);
   });
 
   pc.ontrack = (event) => {
@@ -136,7 +207,7 @@ export async function startRealOutgoingCall(params: {
     });
     callDocCreated = true;
   } catch (error) {
-    localStream.getTracks().forEach((t) => t.stop());
+    activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
     handleFirestoreError(error, OperationType.CREATE, `calls/${callId}`);
   }
@@ -207,14 +278,31 @@ export async function startRealOutgoingCall(params: {
     }
   );
 
+  const switchCamera = createCameraSwitcher(
+    pc,
+    () => activeLocalStream,
+    (next) => {
+      activeLocalStream = next;
+    }
+  );
+
   const cleanup = () => {
     unsubCall();
     unsubCandidates();
-    localStream.getTracks().forEach((t) => t.stop());
+    activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
   };
 
-  return { callId, pc, localStream, remoteStream, cleanup };
+  return {
+    callId,
+    pc,
+    get localStream() {
+      return activeLocalStream;
+    },
+    remoteStream,
+    switchCamera,
+    cleanup,
+  };
 }
 
 /**
@@ -230,7 +318,7 @@ export async function answerRealIncomingCall(params: {
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
-  const localStream = await navigator.mediaDevices.getUserMedia({
+  let activeLocalStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
@@ -249,8 +337,8 @@ export async function answerRealIncomingCall(params: {
   const remoteStream = new MediaStream();
   const pc = new RTCPeerConnection(RTC_SERVERS);
 
-  localStream.getTracks().forEach((track) => {
-    pc.addTrack(track, localStream);
+  activeLocalStream.getTracks().forEach((track) => {
+    pc.addTrack(track, activeLocalStream);
   });
 
   pc.ontrack = (event) => {
@@ -298,7 +386,7 @@ export async function answerRealIncomingCall(params: {
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
-    localStream.getTracks().forEach((t) => t.stop());
+    activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
     handleFirestoreError(error, OperationType.UPDATE, `calls/${params.callId}`);
   }
@@ -343,14 +431,31 @@ export async function answerRealIncomingCall(params: {
     }
   );
 
+  const switchCamera = createCameraSwitcher(
+    pc,
+    () => activeLocalStream,
+    (next) => {
+      activeLocalStream = next;
+    }
+  );
+
   const cleanup = () => {
     unsubCall();
     unsubCandidates();
-    localStream.getTracks().forEach((t) => t.stop());
+    activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
   };
 
-  return { callId: params.callId, pc, localStream, remoteStream, cleanup };
+  return {
+    callId: params.callId,
+    pc,
+    get localStream() {
+      return activeLocalStream;
+    },
+    remoteStream,
+    switchCamera,
+    cleanup,
+  };
 }
 
 export async function updateRealCallStatus(
@@ -370,39 +475,274 @@ export async function updateRealCallStatus(
   }
 }
 
-/**
- * Plays a real subtle acoustic ringtone via Web Audio API while an incoming call is ringing.
- */
-export function startRingtoneAudio(): () => void {
-  try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new AudioCtx();
-    let stopped = false;
+let sharedAudioCtx: AudioContext | null = null;
+let cachedRingtoneUrl: string | null = null;
+let audioUnlocked = false;
 
-    const pulse = () => {
-      if (stopped) return;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, ctx.currentTime);
-      osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.18);
-      gain.gain.setValueAtTime(0.06, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.52);
-    };
-
-    pulse();
-    const interval = window.setInterval(pulse, 1600);
-
-    return () => {
-      stopped = true;
-      window.clearInterval(interval);
-      void ctx.close().catch(() => {});
-    };
-  } catch {
-    return () => {};
+function getOrCreateAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  if (sharedAudioCtx && sharedAudioCtx.state !== 'closed') {
+    return sharedAudioCtx;
   }
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) return null;
+  sharedAudioCtx = new AudioCtx();
+  return sharedAudioCtx;
+}
+
+/**
+ * Generates a real, crisp PCM WAV ringtone Blob URL so mobile Safari/Chrome
+ * can play a loud classic phone chime via HTMLAudioElement as well as Web Audio.
+ */
+function getRingtoneWavUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  if (cachedRingtoneUrl) return cachedRingtoneUrl;
+  try {
+    const sampleRate = 22050;
+    const durationSec = 2.0;
+    const numSamples = Math.floor(sampleRate * durationSec);
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i += 1) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+
+    // Classic two-burst melodic phone ring (0.00-0.42s, 0.52-0.96s, then silence until 2.0s)
+    for (let i = 0; i < numSamples; i += 1) {
+      const t = i / sampleRate;
+      let sample = 0;
+      const inFirst = t >= 0.0 && t < 0.42;
+      const inSecond = t >= 0.52 && t < 0.96;
+      if (inFirst || inSecond) {
+        const localT = inFirst ? t : t - 0.52;
+        const burstLen = inFirst ? 0.42 : 0.44;
+        const attack = Math.min(1, localT / 0.02);
+        const release = Math.min(1, Math.max(0, (burstLen - localT) / 0.06));
+        const env = attack * release;
+        const f1 = inFirst ? 659.25 : 783.99; // E5 -> G5
+        const f2 = inFirst ? 880.0 : 1046.5; // A5 -> C6
+        const trillo = 0.85 + 0.15 * Math.sin(2 * Math.PI * 18 * localT);
+        sample =
+          0.45 *
+          env *
+          trillo *
+          (Math.sin(2 * Math.PI * f1 * t) + 0.7 * Math.sin(2 * Math.PI * f2 * t));
+      }
+      const clamped = Math.max(-1, Math.min(1, sample));
+      view.setInt16(44 + i * 2, Math.round(clamped * 32767), true);
+    }
+
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    cachedRingtoneUrl = URL.createObjectURL(blob);
+    return cachedRingtoneUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Unlocks browser audio playback on the user's very first touch/click in the app
+ * so incoming calls ring loudly even when arriving asynchronously later.
+ */
+export function unlockCallAudio(): void {
+  try {
+    const ctx = getOrCreateAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
+    if (ctx && !audioUnlocked) {
+      const silentBuf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = silentBuf;
+      src.connect(ctx.destination);
+      src.start(0);
+      audioUnlocked = true;
+    }
+    getRingtoneWavUrl();
+  } catch {
+    // Non-fatal
+  }
+}
+
+export function installAudioUnlockListeners(): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handler = () => {
+    unlockCallAudio();
+  };
+  const events: Array<keyof WindowEventMap> = ['pointerdown', 'touchstart', 'click', 'keydown'];
+  events.forEach((ev) => window.addEventListener(ev, handler, { passive: true }));
+  return () => {
+    events.forEach((ev) => window.removeEventListener(ev, handler));
+  };
+}
+
+/**
+ * Plays a loud, clear incoming call ringtone (WAV Audio + Web Audio fallback + Android vibration).
+ * Returns a stop function and whether audio autoplay was allowed.
+ */
+export function startRingtoneAudio(
+  onBlockedChange?: (blocked: boolean) => void
+): () => void {
+  let stopped = false;
+  let audioEl: HTMLAudioElement | null = null;
+  let webAudioInterval: number | null = null;
+  let vibrateInterval: number | null = null;
+
+  // 1. Trigger continuous vibration on supported Android phones
+  const doVibrate = () => {
+    if (stopped) return;
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([550, 220, 550, 220, 550]);
+      }
+    } catch {
+      // Ignore on iOS / unsupported devices
+    }
+  };
+  doVibrate();
+  vibrateInterval = window.setInterval(doVibrate, 2400);
+
+  // 2. Try playing our generated WAV ringtone at full volume via HTMLAudioElement
+  const wavUrl = getRingtoneWavUrl();
+  let htmlAudioPlaying = false;
+  if (wavUrl) {
+    try {
+      audioEl = new Audio(wavUrl);
+      audioEl.loop = true;
+      audioEl.volume = 1.0;
+      const playPromise = audioEl.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise
+          .then(() => {
+            htmlAudioPlaying = true;
+            onBlockedChange?.(false);
+          })
+          .catch(() => {
+            // Fall back to unlocked Web Audio context below
+          });
+      }
+    } catch {
+      // Fall back to Web Audio below
+    }
+  }
+
+  // 3. Web Audio dual-tone ringtone fallback (fires if HTMLAudio was not started)
+  const ctx = getOrCreateAudioContext();
+  if (ctx) {
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
+
+    const pulseWebAudio = () => {
+      if (stopped || htmlAudioPlaying) return;
+      if (ctx.state === 'suspended') {
+        onBlockedChange?.(true);
+        void ctx.resume().catch(() => {});
+        return;
+      }
+      onBlockedChange?.(false);
+      const now = ctx.currentTime;
+      const playBurst = (startOffset: number, freqA: number, freqB: number) => {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc1.type = 'sine';
+        osc2.type = 'triangle';
+        osc1.frequency.setValueAtTime(freqA, now + startOffset);
+        osc2.frequency.setValueAtTime(freqB, now + startOffset);
+        gain.gain.setValueAtTime(0.001, now + startOffset);
+        gain.gain.linearRampToValueAtTime(0.32, now + startOffset + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + 0.42);
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+        osc1.start(now + startOffset);
+        osc2.start(now + startOffset);
+        osc1.stop(now + startOffset + 0.44);
+        osc2.stop(now + startOffset + 0.44);
+      };
+      playBurst(0, 659.25, 880.0);
+      playBurst(0.5, 783.99, 1046.5);
+    };
+
+    window.setTimeout(pulseWebAudio, 120);
+    webAudioInterval = window.setInterval(pulseWebAudio, 2000);
+  }
+
+  return () => {
+    stopped = true;
+    if (webAudioInterval) window.clearInterval(webAudioInterval);
+    if (vibrateInterval) window.clearInterval(vibrateInterval);
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.currentTime = 0;
+      audioEl = null;
+    }
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(0);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+}
+
+/**
+ * Plays a classic subtle Brazilian/ITU-T calling ringback tone ("tuuu... tuuu...")
+ * for the caller while waiting for the other phone to answer.
+ */
+export function startRingbackToneAudio(): () => void {
+  let stopped = false;
+  let interval: number | null = null;
+  const ctx = getOrCreateAudioContext();
+  if (!ctx) return () => {};
+
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+
+  const pulse = () => {
+    if (stopped || ctx.state !== 'running') return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(425, now);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.14, now + 0.04);
+    gain.gain.setValueAtTime(0.14, now + 0.9);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 1.05);
+  };
+
+  pulse();
+  interval = window.setInterval(pulse, 3600);
+
+  return () => {
+    stopped = true;
+    if (interval) window.clearInterval(interval);
+  };
 }

@@ -5,12 +5,17 @@ import {
   MicOff,
   Phone,
   PhoneOff,
+  SwitchCamera,
   Video,
   VideoOff,
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { startRingtoneAudio } from '../lib/webrtcService';
+import {
+  startRingbackToneAudio,
+  startRingtoneAudio,
+  unlockCallAudio,
+} from '../lib/webrtcService';
 
 export interface ActiveCallUIState {
   callId: string;
@@ -33,6 +38,7 @@ interface ActiveCallModalProps {
   onAcceptIncoming: () => void;
   onDeclineIncoming: () => void;
   onEndCall: (durationLabel: string) => void;
+  onSwitchCamera?: () => Promise<void>;
 }
 
 export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
@@ -40,21 +46,31 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
   onAcceptIncoming,
   onDeclineIncoming,
   onEndCall,
+  onSwitchCamera,
 }) => {
   const [seconds, setSeconds] = useState(0);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
   const [remoteMuted, setRemoteMuted] = useState(false);
+  const [swappedView, setSwappedView] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [flippingCamera, setFlippingCamera] = useState(false);
+  const [ringtoneBlocked, setRingtoneBlocked] = useState(false);
 
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const mainVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Real acoustic ringtone while an incoming call is ringing
+  // Real acoustic ringtone (incoming) or calling ringback tone (outgoing)
   useEffect(() => {
+    setRingtoneBlocked(false);
     if (call.direction === 'incoming' && call.status === 'ringing') {
-      const stopRingtone = startRingtoneAudio();
+      const stopRingtone = startRingtoneAudio((blocked) => setRingtoneBlocked(blocked));
       return () => stopRingtone();
+    }
+    if (call.direction === 'outgoing' && call.status === 'ringing') {
+      const stopRingback = startRingbackToneAudio();
+      return () => stopRingback();
     }
     return undefined;
   }, [call.direction, call.status]);
@@ -71,26 +87,54 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
     return () => window.clearInterval(timer);
   }, [call.status]);
 
-  // Attach real local MediaStream to preview video element whenever it mounts/updates
-  useEffect(() => {
-    if (localVideoRef.current && call.localStream) {
-      localVideoRef.current.srcObject = call.localStream;
-      void localVideoRef.current.play().catch(() => {});
-    }
-  }, [call.localStream, call.status, call.callType, cameraOff]);
+  const isVideoCall = call.callType === 'video';
+  const isVideoActive = isVideoCall && call.status === 'active';
 
-  // Attach real remote MediaStream to audio & video elements whenever they mount/update
+  // Determine which stream goes to main full-screen video vs floating PiP
+  const mainStream = isVideoActive
+    ? swappedView
+      ? call.localStream
+      : call.remoteStream
+    : isVideoCall
+      ? call.localStream
+      : null;
+
+  const pipStream = isVideoActive
+    ? swappedView
+      ? call.remoteStream
+      : call.localStream
+    : null;
+
+  const mainIsLocal = isVideoActive ? swappedView : true;
+
+  // Attach audio stream always to hidden <audio> element (prevents double-audio echo)
   useEffect(() => {
     if (remoteAudioRef.current && call.remoteStream) {
       remoteAudioRef.current.srcObject = call.remoteStream;
       remoteAudioRef.current.muted = remoteMuted;
       void remoteAudioRef.current.play().catch(() => {});
     }
-    if (remoteVideoRef.current && call.remoteStream) {
-      remoteVideoRef.current.srcObject = call.remoteStream;
-      void remoteVideoRef.current.play().catch(() => {});
+  }, [call.remoteStream, call.status, remoteMuted]);
+
+  // Attach main full-screen video stream
+  useEffect(() => {
+    const el = mainVideoRef.current;
+    if (!el) return;
+    el.srcObject = mainStream;
+    if (mainStream) {
+      void el.play().catch(() => {});
     }
-  }, [call.remoteStream, call.status, call.callType, remoteMuted]);
+  }, [mainStream, call.status, cameraOff, swappedView]);
+
+  // Attach floating PiP video stream
+  useEffect(() => {
+    const el = pipVideoRef.current;
+    if (!el) return;
+    el.srcObject = pipStream;
+    if (pipStream) {
+      void el.play().catch(() => {});
+    }
+  }, [pipStream, call.status, cameraOff, swappedView]);
 
   const formattedTime = `${Math.floor(seconds / 60)
     .toString()
@@ -122,12 +166,20 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
     }
   };
 
+  const handleFlipCamera = async () => {
+    if (!onSwitchCamera || flippingCamera || cameraOff) return;
+    setFlippingCamera(true);
+    try {
+      await onSwitchCamera();
+    } finally {
+      setFlippingCamera(false);
+    }
+  };
+
   const statusText = () => {
     if (call.errorMessage) return 'Permissão necessária';
     if (call.direction === 'incoming' && call.status === 'ringing') {
-      return call.callType === 'video'
-        ? 'Chamada de vídeo recebida...'
-        : 'Ligação de voz recebida...';
+      return isVideoCall ? 'Chamada de vídeo recebida...' : 'Ligação de voz recebida...';
     }
     if (call.direction === 'outgoing' && call.status === 'ringing') {
       return 'Chamando...';
@@ -143,93 +195,180 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
     return 'Chamada encerrada';
   };
 
-  const isVideoActive = call.callType === 'video' && call.status === 'active';
+  const showMainVideo = isVideoCall && Boolean(mainStream) && (!mainIsLocal || !cameraOff);
+  const showPipVideo = isVideoActive && Boolean(pipStream) && (mainIsLocal || !cameraOff);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#071924]/95 backdrop-blur-md p-3 sm:p-4">
+    <div className="fixed inset-0 z-50 h-[100dvh] w-full overflow-hidden bg-[#06151E] text-white select-none">
       {/* Hidden real remote audio playback element */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <div className="relative flex w-full max-w-md max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-b from-[#0D2B3E] via-[#0B2231] to-[#081721] text-white shadow-2xl">
-        {/* Remote Video Full Background when video call is active */}
-        {isVideoActive && (
-          <div className="relative h-[50dvh] min-h-[200px] max-h-80 w-full shrink-0 bg-black">
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              muted
-              playsInline
-              className="h-full w-full object-cover"
+      {/* FULL-SCREEN VIDEO CANVAS (WhatsApp-style edge-to-edge) */}
+      {showMainVideo ? (
+        <div
+          className="absolute inset-0 h-full w-full bg-black"
+          onClick={() => {
+            if (isVideoActive) setControlsVisible((v) => !v);
+          }}
+        >
+          <video
+            ref={mainVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className="h-full w-full object-cover"
+          />
+          {/* Subtle top & bottom readability gradients */}
+          <div
+            className={`pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-black/70 via-black/30 to-transparent transition-opacity duration-200 ${
+              controlsVisible || !isVideoActive ? 'opacity-100' : 'opacity-0'
+            }`}
+          />
+          <div
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/80 via-black/35 to-transparent transition-opacity duration-200 ${
+              controlsVisible || !isVideoActive ? 'opacity-100' : 'opacity-0'
+            }`}
+          />
+        </div>
+      ) : (
+        /* Full-screen dark gradient for audio calls or camera-off state */
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0D2B3E] via-[#091D2B] to-[#051018]" />
+      )}
+
+      {/* TOP OVERLAY HEADER (Peer Info + Live Timer) */}
+      <header
+        className={`relative z-20 flex items-center justify-between gap-3 px-4 pt-safe pb-3 transition-opacity duration-200 ${
+          isVideoActive && !controlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+      >
+        <div className="flex min-w-0 items-center gap-3 rounded-2xl bg-black/35 px-3 py-2 backdrop-blur-md">
+          {call.peerAvatarUrl ? (
+            <img
+              src={call.peerAvatarUrl}
+              alt={call.peerName}
+              className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
             />
-            {call.localStream && !cameraOff && (
-              <video
-                ref={localVideoRef}
-                autoPlay
-                muted
-                playsInline
-                className="absolute bottom-3 right-3 h-24 w-16 sm:h-28 sm:w-20 rounded-xl border border-white/25 object-cover shadow-lg"
-              />
-            )}
-            <div className="absolute left-3 top-3 max-w-[75%] truncate rounded-lg bg-black/55 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm">
-              {call.peerName} · <span className="font-mono tabular-nums">{formattedTime}</span>
+          ) : (
+            <div
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/20"
+              style={{ backgroundColor: call.peerAvatarColor || '#0F5132' }}
+            >
+              {call.peerInitials}
+            </div>
+          )}
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-bold text-white sm:text-base">
+              {call.peerName}
+            </h2>
+            <div className="flex items-center gap-1.5 text-xs text-emerald-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-mono tabular-nums">{statusText()}</span>
             </div>
           </div>
+        </div>
+
+        {/* Quick Camera Flip button on top-right during video call */}
+        {isVideoCall && call.localStream && onSwitchCamera && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void handleFlipCamera();
+            }}
+            disabled={flippingCamera || cameraOff}
+            title="Virar câmera (frontal / traseira)"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition hover:bg-black/60 disabled:opacity-40"
+          >
+            <SwitchCamera className={`h-5 w-5 ${flippingCamera ? 'animate-spin' : ''}`} />
+          </button>
         )}
+      </header>
 
-        {/* Header & Avatar (for audio calls, ringing state, or local preview while calling) */}
-        {!isVideoActive && (
-          <div className="px-6 pt-8 pb-6 text-center">
-            <div className="flex items-center justify-center gap-2 text-xs font-medium tracking-wide text-emerald-300/90 uppercase">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              {call.callType === 'video' ? 'Chamada de vídeo' : 'Ligação de voz'}
-            </div>
+      {/* FLOATING SELF-PREVIEW PiP (Tap to swap full-screen & mini view like WhatsApp) */}
+      {showPipVideo && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setSwappedView((v) => !v);
+          }}
+          title="Toque para alternar as câmeras na tela"
+          className={`absolute right-3.5 z-30 h-36 w-24 sm:h-44 sm:w-28 overflow-hidden rounded-2xl border-2 border-white/40 bg-black shadow-2xl transition-all duration-200 ${
+            controlsVisible ? 'bottom-28 sm:bottom-32' : 'bottom-6'
+          }`}
+        >
+          <video
+            ref={pipVideoRef}
+            autoPlay
+            muted
+            playsInline
+            className="h-full w-full object-cover"
+          />
+        </button>
+      )}
 
-            {call.callType === 'video' && call.localStream && !cameraOff ? (
-              <div className="mx-auto mt-5 h-52 w-full overflow-hidden rounded-2xl border border-white/15 bg-black">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="h-full w-full object-cover"
-                />
-              </div>
-            ) : call.peerAvatarUrl ? (
+      {/* CENTER AVATAR & CALLING STATE (for Voice Calls, Incoming Ringing, or Camera Off) */}
+      {!showMainVideo && (
+        <div className="relative z-10 flex h-[calc(100%-15rem)] flex-col items-center justify-center px-6 text-center">
+          <div className="relative">
+            {(call.status === 'ringing' || call.status === 'connecting') && (
+              <span className="absolute -inset-4 rounded-full bg-emerald-400/20 animate-ping" />
+            )}
+            {call.peerAvatarUrl ? (
               <img
                 src={call.peerAvatarUrl}
                 alt={call.peerName}
-                className="mx-auto mt-6 h-24 w-24 rounded-full object-cover shadow-lg ring-4 ring-white/15"
+                className="relative h-32 w-32 sm:h-36 sm:w-36 rounded-full object-cover shadow-2xl ring-4 ring-white/20"
               />
             ) : (
               <div
-                className="mx-auto mt-6 flex h-24 w-24 items-center justify-center rounded-full text-2xl font-bold text-white shadow-lg ring-4 ring-white/10"
+                className="relative flex h-32 w-32 sm:h-36 sm:w-36 items-center justify-center rounded-full text-4xl font-bold text-white shadow-2xl ring-4 ring-white/15"
                 style={{ backgroundColor: call.peerAvatarColor || '#0F5132' }}
               >
                 {call.peerInitials}
               </div>
             )}
-
-            <h2 className="mt-4 text-xl font-bold tracking-tight text-white">
-              {call.peerName}
-            </h2>
-            <p className="mt-1 font-mono text-sm text-slate-300 tabular-nums">
-              {statusText()}
-            </p>
           </div>
-        )}
 
-        {/* Error Box (e.g., mic/camera permission denied) */}
-        {call.errorMessage && (
-          <div className="mx-6 mb-4 rounded-xl border border-amber-400/30 bg-amber-500/15 p-3.5 text-left text-xs text-amber-100">
-            <div className="flex items-start gap-2.5">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-              <p>{call.errorMessage}</p>
-            </div>
+          <h2 className="mt-6 text-2xl font-bold tracking-tight text-white">
+            {call.peerName}
+          </h2>
+          <p className="mt-1.5 font-mono text-sm text-emerald-200/90 tabular-nums">
+            {statusText()}
+          </p>
+          {ringtoneBlocked && call.direction === 'incoming' && call.status === 'ringing' && (
+            <button
+              type="button"
+              onClick={() => {
+                unlockCallAudio();
+                setRingtoneBlocked(false);
+              }}
+              className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-300/40 bg-emerald-500/20 px-4 py-2 text-xs font-semibold text-emerald-100 backdrop-blur-md hover:bg-emerald-500/30"
+            >
+              <Volume2 className="h-4 w-4" />
+              Toque para ativar som do toque
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Error Box (e.g., mic/camera permission denied) */}
+      {call.errorMessage && (
+        <div className="fixed inset-x-4 bottom-28 z-30 mx-auto max-w-md rounded-2xl border border-amber-400/40 bg-amber-950/85 p-4 text-left text-xs text-amber-100 backdrop-blur-md">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <p>{call.errorMessage}</p>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Action Controls */}
-        <div className="border-t border-white/10 bg-black/25 px-6 py-5">
+      {/* BOTTOM FLOATING ACTION DOCK (WhatsApp-style) */}
+      <footer
+        className={`fixed inset-x-0 bottom-0 z-30 px-4 pt-3 pb-safe transition-opacity duration-200 ${
+          isVideoActive && !controlsVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
+      >
+        <div className="mx-auto max-w-md rounded-3xl border border-white/15 bg-black/55 px-4 py-3.5 backdrop-blur-xl shadow-2xl">
           {call.direction === 'incoming' && call.status === 'ringing' && !call.errorMessage ? (
             <div className="flex items-center justify-around gap-4">
               <button
@@ -245,31 +384,25 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
                 onClick={onAcceptIncoming}
                 className="flex min-h-[56px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#0F5132] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#146c43]"
               >
-                {call.callType === 'video' ? (
-                  <Video className="h-5 w-5" />
-                ) : (
-                  <Phone className="h-5 w-5" />
-                )}
+                {isVideoCall ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}
                 Atender
               </button>
             </div>
           ) : (
-            <div className="flex items-center justify-center gap-4">
-              <button
-                type="button"
-                onClick={toggleMicrophone}
-                disabled={!call.localStream}
-                title={muted ? 'Ativar microfone' : 'Silenciar microfone'}
-                className={`flex h-12 w-12 items-center justify-center rounded-full border transition disabled:opacity-40 ${
-                  muted
-                    ? 'border-white bg-white text-slate-900'
-                    : 'border-white/15 bg-white/10 text-white hover:bg-white/20'
-                }`}
-              >
-                {muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-              </button>
+            <div className="flex items-center justify-around gap-2 sm:gap-3">
+              {isVideoCall && onSwitchCamera && (
+                <button
+                  type="button"
+                  onClick={() => void handleFlipCamera()}
+                  disabled={!call.localStream || flippingCamera || cameraOff}
+                  title="Virar câmera"
+                  className="flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white transition hover:bg-white/20 disabled:opacity-40"
+                >
+                  <SwitchCamera className="h-5 w-5" />
+                </button>
+              )}
 
-              {call.callType === 'video' && (
+              {isVideoCall && (
                 <button
                   type="button"
                   onClick={toggleCamera}
@@ -287,8 +420,22 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
 
               <button
                 type="button"
+                onClick={toggleMicrophone}
+                disabled={!call.localStream}
+                title={muted ? 'Ativar microfone' : 'Silenciar microfone'}
+                className={`flex h-12 w-12 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                  muted
+                    ? 'border-white bg-white text-slate-900'
+                    : 'border-white/15 bg-white/10 text-white hover:bg-white/20'
+                }`}
+              >
+                {muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+              </button>
+
+              <button
+                type="button"
                 onClick={toggleRemoteAudio}
-                title={remoteMuted ? 'Ativar som' : 'Silenciar áudio recebido'}
+                title={remoteMuted ? 'Ativar som' : 'Silenciar som'}
                 className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
                   remoteMuted
                     ? 'border-white bg-white text-slate-900'
@@ -309,7 +456,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
             </div>
           )}
         </div>
-      </div>
+      </footer>
     </div>
   );
 };

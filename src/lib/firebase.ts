@@ -545,36 +545,112 @@ export function subscribePublicDirectory(
   myUid: string,
   callback: (users: PublicDirectoryUser[]) => void
 ): () => void {
-  const q = query(
+  const qDir = query(
     collection(db, 'public_directory'),
     where('isDiscoverable', '==', true)
   );
-  return onSnapshot(
-    q,
-    (snap) => {
-      const list: PublicDirectoryUser[] = snap.docs
-        .map((docSnap) => {
-          const d = docSnap.data();
-          const displayName = String(d.displayName || '');
-          return {
-            uid: String(d.uid || docSnap.id),
-            displayName,
-            initials: String(d.initials || getInitials(displayName || 'ZP')),
-            statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
-            avatarColor: String(d.avatarColor || '#0F5132'),
-            avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
-            role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
-            hasStorefront: Boolean(d.hasStorefront),
-            storefrontName: String(d.storefrontName || ''),
-            deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
-          };
-        })
-        .filter((u) => u.uid !== myUid && u.displayName.length > 0)
-        .sort((a, b) => a.displayName.localeCompare(b.displayName, 'pt-BR'));
-      callback(list);
-    },
-    (error) => handleFirestoreError(error, OperationType.LIST, 'public_directory')
+  const qUsers = query(
+    collection(db, 'users'),
+    where('commercialMode', 'in', ['buyer', 'manufacturer', 'reseller'])
   );
+
+  let dirList: PublicDirectoryUser[] = [];
+  let userList: PublicDirectoryUser[] = [];
+
+  const mergeAndEmit = () => {
+    const merged = new Map<string, PublicDirectoryUser>();
+
+    for (const u of userList) {
+      if (u.uid === myUid || !u.displayName) continue;
+      merged.set(u.uid, u);
+    }
+
+    for (const d of dirList) {
+      if (d.uid === myUid || !d.displayName) continue;
+      const prev = merged.get(d.uid);
+      merged.set(d.uid, {
+        ...prev,
+        ...d,
+        avatarUrl: d.avatarUrl || prev?.avatarUrl,
+        storefrontName: d.storefrontName || prev?.storefrontName || '',
+        statusMessage: d.statusMessage || prev?.statusMessage || 'Disponível no Zapei',
+      });
+    }
+
+    const sorted = Array.from(merged.values()).sort((a, b) =>
+      a.displayName.localeCompare(b.displayName, 'pt-BR')
+    );
+    callback(sorted);
+  };
+
+  const unsubDir = onSnapshot(
+    qDir,
+    (snap) => {
+      dirList = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const displayName = String(d.displayName || '');
+        return {
+          uid: String(d.uid || docSnap.id),
+          displayName,
+          initials: String(d.initials || getInitials(displayName || 'ZP')),
+          statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
+          avatarColor: String(d.avatarColor || '#0F5132'),
+          avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
+          role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
+          hasStorefront: Boolean(d.hasStorefront),
+          storefrontName: String(d.storefrontName || ''),
+          deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
+        };
+      });
+      mergeAndEmit();
+    },
+    (error) => {
+      console.error('Directory listener error (public_directory):', error);
+    }
+  );
+
+  const unsubUsers = onSnapshot(
+    qUsers,
+    (snap) => {
+      userList = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const displayName = String(d.displayName || '');
+        const mode = String(d.commercialMode || 'buyer');
+        const role: 'normal' | 'reseller' | 'manufacturer' =
+          mode === 'manufacturer'
+            ? 'manufacturer'
+            : mode === 'reseller'
+              ? 'reseller'
+              : 'normal';
+        const storefrontName =
+          mode === 'manufacturer'
+            ? String(d.factoryName || d.storefrontName || displayName)
+            : String(d.storefrontName || '');
+        return {
+          uid: String(d.uid || docSnap.id),
+          displayName,
+          initials: String(d.initials || getInitials(displayName || 'ZP')),
+          statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
+          avatarColor: String(d.avatarColor || '#0F5132'),
+          avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
+          role,
+          hasStorefront:
+            Boolean(d.hasStorefront) && String(d.subscriptionStatus || '') !== 'expired',
+          storefrontName,
+          deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
+        };
+      });
+      mergeAndEmit();
+    },
+    (error) => {
+      console.error('Directory listener error (users):', error);
+    }
+  );
+
+  return () => {
+    unsubDir();
+    unsubUsers();
+  };
 }
 
 export interface PhoneLookupResult {
@@ -905,10 +981,16 @@ export async function sendRealChatMessage(params: {
   const userBName = userB === params.myUid ? params.myName : params.otherName;
   const chatId = `${userA}__${userB}`;
   const chatRef = doc(db, 'chats', chatId);
-  const existingChat = await getDoc(chatRef);
+  let chatExists = false;
+  try {
+    const existingChat = await getDoc(chatRef);
+    chatExists = existingChat.exists();
+  } catch {
+    chatExists = false;
+  }
 
   try {
-    if (existingChat.exists()) {
+    if (chatExists) {
       await updateDoc(chatRef, {
         userAName: userAName.slice(0, 80),
         userBName: userBName.slice(0, 80),

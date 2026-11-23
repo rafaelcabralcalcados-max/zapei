@@ -1,14 +1,23 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Camera,
   CheckCheck,
+  ChevronDown,
+  Copy,
+  Download,
+  Forward,
   Image as ImageIcon,
   Mic,
   Pause,
   Phone,
   Play,
   Receipt,
+  Reply,
+  Search,
   Send,
+  Share2,
+  Smile,
   Square,
   Store,
   Trash2,
@@ -32,17 +41,178 @@ export interface ActiveChatPeer {
   deliveryPolicyLabel?: string;
 }
 
+export interface ForwardTarget {
+  uid: string;
+  name: string;
+  initials: string;
+  avatarBg: string;
+  avatarUrl?: string;
+  subtitle?: string;
+}
+
 interface ChatThreadViewProps {
   myUid: string;
+  myName: string;
   peer: ActiveChatPeer;
   messages: ChatMessage[];
+  forwardTargets?: ForwardTarget[];
   onBack?: () => void;
   onSendText: (text: string) => Promise<void>;
   onSendAudio: (mediaUrl: string, durationLabel: string) => Promise<void>;
   onSendImage: (mediaUrl: string, caption: string) => Promise<void>;
+  onForwardMessage?: (target: ForwardTarget, msg: ChatMessage) => Promise<void>;
+  onNotify?: (message: string) => void;
   onStartCall: (type: 'audio' | 'video') => void;
   onOpenStorefront: () => void;
   onInspectOrder: (orderId?: string) => void;
+}
+
+const QUICK_EMOJIS = [
+  '😀', '😂', '😍', '🥰', '😘', '😊', '😉', '😎',
+  '🤔', '😢', '😭', '😡', '👍', '👎', '👏', '🙏',
+  '🔥', '❤️', '💚', '🎉', '🥳', '🙌', '👌', '💪',
+  '🤝', '📸', '📞', '✅', '❌', '💯', '✨', '🚀',
+];
+
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+function getExtensionFromMime(mime: string, fallback: string): string {
+  const lower = mime.toLowerCase();
+  if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
+  if (lower.includes('png')) return 'png';
+  if (lower.includes('webp')) return 'webp';
+  if (lower.includes('gif')) return 'gif';
+  if (lower.includes('mp4') || lower.includes('m4a')) return 'm4a';
+  if (lower.includes('webm')) return 'webm';
+  if (lower.includes('ogg')) return 'ogg';
+  if (lower.includes('mpeg') || lower.includes('mp3')) return 'mp3';
+  return fallback;
+}
+
+async function mediaUrlToBlobAndFile(
+  mediaUrl: string,
+  baseName: string,
+  fallbackExt: string
+): Promise<{ blob: Blob; file: File; filename: string }> {
+  let blob: Blob;
+  if (mediaUrl.startsWith('data:')) {
+    const commaIdx = mediaUrl.indexOf(',');
+    const header = mediaUrl.slice(0, commaIdx);
+    const dataPart = mediaUrl.slice(commaIdx + 1);
+    const mimeMatch = header.match(/data:([^;]+)/);
+    const mime = mimeMatch ? mimeMatch[1] : fallbackExt === 'jpg' ? 'image/jpeg' : 'audio/webm';
+    const binary = atob(dataPart);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    blob = new Blob([bytes], { type: mime });
+  } else {
+    const res = await fetch(mediaUrl);
+    blob = await res.blob();
+  }
+
+  const ext = getExtensionFromMime(blob.type || '', fallbackExt);
+  const safeBase = baseName
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 32) || 'zapei-midia';
+  const filename = `${safeBase}-${Date.now().toString().slice(-5)}.${ext}`;
+  const file = new File([blob], filename, {
+    type: blob.type || (fallbackExt === 'jpg' ? 'image/jpeg' : 'audio/webm'),
+  });
+  return { blob, file, filename };
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+}
+
+async function copyTextFallback(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Fallback below
+  }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+interface ParsedQuotedText {
+  quoteSender: string;
+  quoteSnippet: string;
+  body: string;
+}
+
+function parseQuotedMessage(text: string): ParsedQuotedText | null {
+  if (!text.startsWith('» ')) return null;
+  const firstBreak = text.indexOf('\n');
+  if (firstBreak === -1) return null;
+  const headerLine = text.slice(2, firstBreak).trim();
+  const body = text.slice(firstBreak + 1);
+  if (!body.trim()) return null;
+  const colonIdx = headerLine.indexOf(':');
+  if (colonIdx === -1) {
+    return { quoteSender: 'Mensagem', quoteSnippet: headerLine, body };
+  }
+  return {
+    quoteSender: headerLine.slice(0, colonIdx).trim() || 'Mensagem',
+    quoteSnippet: headerLine.slice(colonIdx + 1).trim(),
+    body,
+  };
+}
+
+function getReplySnippet(msg: ChatMessage): string {
+  if (msg.type === 'image') {
+    const cleanCaption = msg.text && msg.text !== 'Foto' ? ` — ${msg.text}` : '';
+    return `📷 Foto${cleanCaption}`.slice(0, 72);
+  }
+  if (msg.type === 'audio') {
+    return `🎤 Mensagem de voz (${msg.audioDuration || '0:00'})`;
+  }
+  if (msg.type === 'order_card') {
+    return `📦 Pedido ${msg.orderCode || ''}`.trim();
+  }
+  const parsed = parseQuotedMessage(msg.text);
+  const raw = parsed ? parsed.body : msg.text;
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 72);
+}
+
+function formatAudioSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const total = Math.floor(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 const RealAudioBubble: React.FC<{
@@ -53,10 +223,13 @@ const RealAudioBubble: React.FC<{
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [currentTimeLabel, setCurrentTimeLabel] = useState('');
+  const [speed, setSpeed] = useState<1 | 1.5 | 2>(1);
 
   const togglePlay = () => {
     const el = audioRef.current;
     if (!el) return;
+    el.playbackRate = speed;
     if (playing) {
       el.pause();
     } else {
@@ -64,8 +237,26 @@ const RealAudioBubble: React.FC<{
     }
   };
 
+  const cycleSpeed = () => {
+    const next: 1 | 1.5 | 2 = speed === 1 ? 1.5 : speed === 1.5 ? 2 : 1;
+    setSpeed(next);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = next;
+    }
+  };
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = audioRef.current;
+    if (!el || !el.duration || !Number.isFinite(el.duration)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    el.currentTime = ratio * el.duration;
+    setProgress(ratio * 100);
+    setCurrentTimeLabel(formatAudioSeconds(el.currentTime));
+  };
+
   return (
-    <div className="flex min-w-[210px] items-center gap-3 py-0.5">
+    <div className="flex min-w-[220px] items-center gap-2.5 py-0.5">
       {mediaUrl && (
         <audio
           ref={audioRef}
@@ -75,11 +266,13 @@ const RealAudioBubble: React.FC<{
           onEnded={() => {
             setPlaying(false);
             setProgress(0);
+            setCurrentTimeLabel('');
           }}
           onTimeUpdate={(e) => {
             const el = e.currentTarget;
             if (el.duration && Number.isFinite(el.duration)) {
               setProgress(Math.min(100, (el.currentTime / el.duration) * 100));
+              setCurrentTimeLabel(formatAudioSeconds(el.currentTime));
             }
           }}
           className="hidden"
@@ -94,23 +287,49 @@ const RealAudioBubble: React.FC<{
             ? 'bg-white/20 text-white hover:bg-white/30'
             : 'bg-[#0F5132] text-white hover:bg-[#146c43]'
         }`}
+        aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'}
       >
         {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
       </button>
-      <div className="flex-1">
+
+      <div className="min-w-0 flex-1">
         <div
-          className={`h-1.5 w-full overflow-hidden rounded-full ${
-            isMine ? 'bg-white/25' : 'bg-slate-200'
-          }`}
+          role="slider"
+          aria-label="Progresso do áudio"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress)}
+          tabIndex={0}
+          onClick={handleSeek}
+          className="cursor-pointer py-2"
         >
           <div
-            className={`h-full transition-all ${isMine ? 'bg-white' : 'bg-[#0F5132]'}`}
-            style={{ width: `${progress}%` }}
-          />
+            className={`h-1.5 w-full overflow-hidden rounded-full ${
+              isMine ? 'bg-white/25' : 'bg-slate-200'
+            }`}
+          >
+            <div
+              className={`h-full transition-all ${isMine ? 'bg-white' : 'bg-[#0F5132]'}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
         </div>
-        <div className="mt-1 flex items-center justify-between text-[11px] opacity-80">
-          <span>Mensagem de voz</span>
-          <span className="font-mono tabular-nums">{duration || '0:00'}</span>
+        <div className="flex items-center justify-between gap-2 text-[11px] opacity-85">
+          <span className="font-mono tabular-nums">
+            {playing && currentTimeLabel ? currentTimeLabel : duration || '0:00'}
+          </span>
+          <button
+            type="button"
+            onClick={cycleSpeed}
+            className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold transition ${
+              isMine
+                ? 'bg-white/20 text-white hover:bg-white/30'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+            title="Alterar velocidade do áudio"
+          >
+            {speed}x
+          </button>
         </div>
       </div>
     </div>
@@ -119,12 +338,16 @@ const RealAudioBubble: React.FC<{
 
 export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   myUid,
+  myName,
   peer,
   messages,
+  forwardTargets = [],
   onBack,
   onSendText,
   onSendAudio,
   onSendImage,
+  onForwardMessage,
+  onNotify,
   onStartCall,
   onOpenStorefront,
   onInspectOrder,
@@ -134,18 +357,48 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [mediaError, setMediaError] = useState('');
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+
+  // WhatsApp-style media & message interaction states
+  const [lightboxMsg, setLightboxMsg] = useState<ChatMessage | null>(null);
+  const [pendingPhoto, setPendingPhoto] = useState<{
+    dataUrl: string;
+    caption: string;
+  } | null>(null);
+  const [replyingTo, setReplyingTo] = useState<{
+    senderName: string;
+    snippet: string;
+  } | null>(null);
+  const [actionSheetMsg, setActionSheetMsg] = useState<ChatMessage | null>(null);
+  const [forwardMsg, setForwardMsg] = useState<ChatMessage | null>(null);
+  const [forwardSearch, setForwardSearch] = useState('');
+  const [forwardingUid, setForwardingUid] = useState<string | null>(null);
+  const [mediaBusy, setMediaBusy] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const recordTimerRef = useRef<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const composerInputRef = useRef<HTMLInputElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  const notify = (text: string) => {
+    if (onNotify) {
+      onNotify(text);
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, peer.uid]);
+
+  useEffect(() => {
+    setReplyingTo(null);
+    setShowEmojiPicker(false);
+    setActionSheetMsg(null);
+  }, [peer.uid]);
 
   useEffect(() => {
     return () => {
@@ -154,14 +407,161 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     };
   }, []);
 
+  const filteredForwardTargets = useMemo(() => {
+    const q = forwardSearch
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    if (!q) return forwardTargets;
+    return forwardTargets.filter((t) =>
+      `${t.name} ${t.subtitle || ''}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [forwardTargets, forwardSearch]);
+
+  // --- REAL MEDIA SAVE / SHARE / COPY / FORWARD HANDLERS ---
+
+  const handleSaveMedia = async (
+    mediaUrl: string | undefined,
+    kind: 'image' | 'audio'
+  ) => {
+    if (!mediaUrl || mediaBusy) return;
+    setMediaBusy(true);
+    try {
+      const { blob, filename } = await mediaUrlToBlobAndFile(
+        mediaUrl,
+        kind === 'image' ? 'zapei-foto' : 'zapei-audio',
+        kind === 'image' ? 'jpg' : 'webm'
+      );
+      triggerBlobDownload(blob, filename);
+      if (kind === 'image' && isIOSDevice()) {
+        notify('Foto baixada! No iPhone, use "Compartilhar → Salvar Imagem" para guardar direto no rolo da câmera.');
+      } else {
+        notify(kind === 'image' ? 'Foto salva no aparelho!' : 'Áudio salvo no aparelho!');
+      }
+    } catch {
+      notify('Não foi possível salvar o arquivo agora.');
+    } finally {
+      setMediaBusy(false);
+    }
+  };
+
+  const handleShareMedia = async (
+    mediaUrl: string | undefined,
+    kind: 'image' | 'audio',
+    caption?: string
+  ) => {
+    if (!mediaUrl || mediaBusy) return;
+    setMediaBusy(true);
+    try {
+      const { blob, file, filename } = await mediaUrlToBlobAndFile(
+        mediaUrl,
+        kind === 'image' ? 'zapei-foto' : 'zapei-audio',
+        kind === 'image' ? 'jpg' : 'webm'
+      );
+      const nav = navigator as Navigator & {
+        canShare?: (data?: ShareData) => boolean;
+      };
+      const shareData: ShareData = {
+        files: [file],
+        title: 'Zapei',
+        ...(caption && caption !== 'Foto' ? { text: caption } : {}),
+      };
+
+      if (typeof nav.share === 'function' && (!nav.canShare || nav.canShare(shareData))) {
+        await nav.share(shareData);
+        return;
+      }
+
+      // Desktop / unsupported browser fallback: save locally so user can share immediately
+      triggerBlobDownload(blob, filename);
+      notify(
+        kind === 'image'
+          ? 'Foto baixada para você compartilhar.'
+          : 'Áudio baixado para você compartilhar.'
+      );
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      notify('Não foi possível abrir o compartilhamento neste navegador.');
+    } finally {
+      setMediaBusy(false);
+    }
+  };
+
+  const handleShareText = async (text: string) => {
+    const clean = parseQuotedMessage(text)?.body || text;
+    if (!clean.trim()) return;
+    try {
+      if (typeof navigator.share === 'function') {
+        await navigator.share({ text: clean });
+        return;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+    }
+    const copied = await copyTextFallback(clean);
+    notify(copied ? 'Mensagem copiada para compartilhar!' : 'Não foi possível copiar.');
+  };
+
+  const handleCopyText = async (text: string) => {
+    const clean = parseQuotedMessage(text)?.body || text;
+    const copied = await copyTextFallback(clean);
+    notify(copied ? 'Mensagem copiada!' : 'Não foi possível copiar o texto.');
+  };
+
+  const handleStartReply = (msg: ChatMessage) => {
+    const senderName = msg.senderId === myUid ? 'Você' : peer.name;
+    setReplyingTo({
+      senderName,
+      snippet: getReplySnippet(msg),
+    });
+    setActionSheetMsg(null);
+    window.setTimeout(() => composerInputRef.current?.focus(), 60);
+  };
+
+  const handleOpenForward = (msg: ChatMessage) => {
+    setActionSheetMsg(null);
+    setLightboxMsg(null);
+    setForwardSearch('');
+    setForwardMsg(msg);
+  };
+
+  const handleConfirmForward = async (target: ForwardTarget) => {
+    if (!forwardMsg || !onForwardMessage || forwardingUid) return;
+    setForwardingUid(target.uid);
+    try {
+      await onForwardMessage(target, forwardMsg);
+      setForwardMsg(null);
+    } catch {
+      notify('Não foi possível encaminhar a mensagem.');
+    } finally {
+      setForwardingUid(null);
+    }
+  };
+
+  // --- SEND TEXT / AUDIO / PHOTO WITH CAPTION PREVIEW ---
+
   const handleSubmitText = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = draft.trim();
     if (!trimmed || sending) return;
+
+    const payload = replyingTo
+      ? `» ${replyingTo.senderName}: ${replyingTo.snippet}\n${trimmed}`
+      : trimmed;
+
     setDraft('');
+    setReplyingTo(null);
+    setShowEmojiPicker(false);
     setSending(true);
     try {
-      await onSendText(trimmed);
+      await onSendText(payload);
     } finally {
       setSending(false);
     }
@@ -169,6 +569,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const startRealRecording = async () => {
     setMediaError('');
+    setShowEmojiPicker(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -278,15 +679,14 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     e.target.value = '';
     if (!file) return;
     setMediaError('');
+    setShowEmojiPicker(false);
     setSending(true);
     try {
-      const dataUrl = await compressImageFileToDataUrl(file, 840, 0.74);
+      let dataUrl = await compressImageFileToDataUrl(file, 960, 0.78);
       if (dataUrl.length > 480000) {
-        const smaller = await compressImageFileToDataUrl(file, 600, 0.62);
-        await onSendImage(smaller, file.name);
-      } else {
-        await onSendImage(dataUrl, file.name);
+        dataUrl = await compressImageFileToDataUrl(file, 640, 0.65);
       }
+      setPendingPhoto({ dataUrl, caption: '' });
     } catch {
       setMediaError('Não foi possível processar a imagem selecionada.');
     } finally {
@@ -294,8 +694,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     }
   };
 
+  const handleConfirmSendPendingPhoto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingPhoto || sending) return;
+    const { dataUrl, caption } = pendingPhoto;
+    setPendingPhoto(null);
+    setSending(true);
+    try {
+      await onSendImage(dataUrl, caption.trim() || 'Foto');
+    } catch {
+      setMediaError('Erro ao enviar foto.');
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
-    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#F1F5F9]">
+    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#ECE5DD]/60">
       {/* Top Chat Header */}
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-2.5 pb-2.5 pt-safe sm:px-4 md:py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -330,7 +745,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <p className="truncate text-xs text-slate-500">
               {peer.hasStorefront
                 ? peer.storefrontName || 'Vitrine comercial ativa'
-                : peer.phone || 'Contato Zapei'}
+                : peer.phone || 'Online no Zapei'}
             </p>
           </div>
         </div>
@@ -367,57 +782,143 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       </header>
 
       {/* Messages Stream */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-3.5 sm:px-5 space-y-2.5">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
         {messages.length === 0 ? (
           <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm">
             <p className="text-sm font-semibold text-slate-800">
               Conversa iniciada com {peer.name}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Envie texto, áudio gravado pelo microfone, fotos reais ou inicie uma ligação de voz/vídeo.
+              Envie texto, áudio, fotos da câmera ou galeria, ou inicie uma ligação de voz ou vídeo em tela cheia.
             </p>
           </div>
         ) : (
           messages.map((msg) => {
             const isMine = msg.senderId === myUid;
+            const parsedQuote =
+              msg.type === 'text' ? parseQuotedMessage(msg.text) : null;
+            const hasRealCaption =
+              msg.type === 'image' &&
+              Boolean(msg.text) &&
+              msg.text.trim() !== 'Foto' &&
+              !/^[\w-]+\.(jpe?g|png|webp|heic|gif)$/i.test(msg.text.trim());
+
             return (
               <div
                 key={msg.id}
-                className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}
+                className={`group flex ${isMine ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[85%] min-w-0 overflow-hidden break-words rounded-2xl px-3.5 py-2.5 shadow-sm sm:max-w-[70%] ${
+                  className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl shadow-sm sm:max-w-[70%] ${
+                    msg.type === 'image' ? 'p-1.5' : 'px-3.5 py-2'
+                  } ${
                     isMine
                       ? 'rounded-br-sm bg-[#0F5132] text-white'
-                      : 'rounded-bl-sm border border-slate-200 bg-white text-slate-800'
+                      : 'rounded-bl-sm border border-slate-200/90 bg-white text-slate-800'
                   }`}
                 >
+                  {/* WhatsApp-style Message Options Trigger */}
+                  <button
+                    type="button"
+                    onClick={() => setActionSheetMsg(msg)}
+                    aria-label="Opções da mensagem"
+                    title="Opções da mensagem"
+                    className={`absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full transition ${
+                      msg.type === 'image'
+                        ? 'bg-black/50 text-white hover:bg-black/70'
+                        : isMine
+                          ? 'bg-[#0F5132]/85 text-emerald-100 hover:bg-white/20 hover:text-white'
+                          : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                    }`}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+
                   {msg.type === 'audio' ? (
-                    <RealAudioBubble
-                      mediaUrl={msg.mediaUrl}
-                      duration={msg.audioDuration}
-                      isMine={isMine}
-                    />
+                    <div className="pr-6">
+                      <RealAudioBubble
+                        mediaUrl={msg.mediaUrl}
+                        duration={msg.audioDuration}
+                        isMine={isMine}
+                      />
+                    </div>
                   ) : msg.type === 'image' ? (
                     <div className="space-y-1.5">
                       {msg.mediaUrl && (
                         <button
                           type="button"
-                          onClick={() => setPreviewImage(msg.mediaUrl || null)}
-                          className="block overflow-hidden rounded-xl"
+                          onClick={() => setLightboxMsg(msg)}
+                          className="block w-full overflow-hidden rounded-xl bg-black/10"
                         >
                           <img
                             src={msg.mediaUrl}
-                            alt={msg.text || 'Foto enviada'}
-                            className="max-h-64 w-full rounded-xl object-cover"
+                            alt={hasRealCaption ? msg.text : 'Foto enviada'}
+                            className="max-h-72 w-full rounded-xl object-cover"
                           />
                         </button>
                       )}
-                      {msg.text && <p className="text-xs opacity-90">{msg.text}</p>}
+                      {hasRealCaption && (
+                        <p className="px-1.5 text-sm leading-snug">{msg.text}</p>
+                      )}
+                      {/* Instant WhatsApp-style Save / Share / Forward buttons right on every photo */}
+                      {msg.mediaUrl && (
+                        <div
+                          className={`flex items-center gap-1 px-1 pt-0.5 ${
+                            isMine ? 'border-t border-white/15' : 'border-t border-slate-100'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void handleSaveMedia(msg.mediaUrl, 'image')}
+                            disabled={mediaBusy}
+                            className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Download className="h-3.5 w-3.5 shrink-0" />
+                            <span>Salvar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleShareMedia(
+                                msg.mediaUrl,
+                                'image',
+                                hasRealCaption ? msg.text : undefined
+                              )
+                            }
+                            disabled={mediaBusy}
+                            className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Share2 className="h-3.5 w-3.5 shrink-0" />
+                            <span>Compartilhar</span>
+                          </button>
+                          {onForwardMessage && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenForward(msg)}
+                              className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                                isMine
+                                  ? 'text-emerald-50 hover:bg-white/15'
+                                  : 'text-slate-700 hover:bg-slate-100'
+                              }`}
+                              title="Encaminhar foto"
+                            >
+                              <Forward className="h-3.5 w-3.5 shrink-0" />
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : msg.type === 'order_card' ? (
                     <div
-                      className={`rounded-xl border p-3 ${
+                      className={`mr-6 rounded-xl border p-3 ${
                         isMine
                           ? 'border-white/20 bg-white/10 text-white'
                           : 'border-slate-200 bg-slate-50 text-slate-900'
@@ -455,7 +956,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     </div>
                   ) : msg.type === 'billing_reminder' ? (
                     <div
-                      className={`rounded-xl border p-3 ${
+                      className={`mr-6 rounded-xl border p-3 ${
                         isMine
                           ? 'border-orange-300/40 bg-orange-500/20 text-white'
                           : 'border-orange-200 bg-orange-50 text-slate-900'
@@ -467,14 +968,40 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       </div>
                       <p className="mt-1.5 text-xs leading-relaxed">{msg.text}</p>
                     </div>
+                  ) : parsedQuote ? (
+                    <div className="pr-6">
+                      <div
+                        className={`mb-1.5 rounded-lg border-l-4 px-2.5 py-1.5 text-xs ${
+                          isMine
+                            ? 'border-emerald-300 bg-black/20 text-emerald-50'
+                            : 'border-[#0F5132] bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <p
+                          className={`font-bold ${
+                            isMine ? 'text-emerald-200' : 'text-[#0F5132]'
+                          }`}
+                        >
+                          {parsedQuote.quoteSender}
+                        </p>
+                        <p className="line-clamp-2 opacity-90">
+                          {parsedQuote.quoteSnippet}
+                        </p>
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                        {parsedQuote.body}
+                      </p>
+                    </div>
                   ) : (
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.text}</p>
+                    <p className="whitespace-pre-wrap pr-6 text-sm leading-relaxed">
+                      {msg.text}
+                    </p>
                   )}
 
                   <div
                     className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${
-                      isMine ? 'text-emerald-100/80' : 'text-slate-400'
-                    }`}
+                      msg.type === 'image' ? 'px-1.5 pb-0.5' : ''
+                    } ${isMine ? 'text-emerald-100/80' : 'text-slate-400'}`}
                   >
                     <span className="font-mono tabular-nums">{msg.timestamp}</span>
                     {isMine && <CheckCheck className="h-3.5 w-3.5" />}
@@ -489,7 +1016,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
       {/* Media Error Banner */}
       {mediaError && (
-        <div className="flex items-center justify-between bg-amber-50 px-4 py-2 text-xs text-amber-800 border-t border-amber-200">
+        <div className="flex items-center justify-between border-t border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
           <span>{mediaError}</span>
           <button
             type="button"
@@ -501,12 +1028,63 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       )}
 
+      {/* WhatsApp-style Reply Preview Bar */}
+      {replyingTo && (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="min-w-0 flex-1 border-l-4 border-[#0F5132] pl-2.5">
+            <p className="truncate text-xs font-bold text-[#0F5132]">
+              Respondendo a {replyingTo.senderName}
+            </p>
+            <p className="truncate text-xs text-slate-600">{replyingTo.snippet}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReplyingTo(null)}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+            aria-label="Cancelar resposta"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Quick Emoji Picker Drawer */}
+      {showEmojiPicker && (
+        <div className="shrink-0 border-t border-slate-200 bg-white px-3 py-2.5">
+          <div className="grid grid-cols-8 gap-1 sm:grid-cols-16">
+            {QUICK_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => {
+                  setDraft((prev) => prev + emoji);
+                  composerInputRef.current?.focus();
+                }}
+                className="flex h-9 items-center justify-center rounded-lg text-xl transition hover:bg-slate-100 active:scale-95"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Composer */}
-      <footer className="shrink-0 border-t border-slate-200 bg-white px-2.5 pt-2.5 pb-safe sm:px-4">
+      <footer className="shrink-0 border-t border-slate-200 bg-white px-2 pt-2 pb-safe sm:px-4">
+        {/* Gallery photo picker */}
         <input
-          ref={fileInputRef}
+          ref={galleryInputRef}
           type="file"
           accept="image/*"
+          onChange={handleImagePicked}
+          className="hidden"
+        />
+        {/* Direct mobile camera capture */}
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
           onChange={handleImagePicked}
           className="hidden"
         />
@@ -514,7 +1092,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         {recording ? (
           <div className="flex items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-600 animate-pulse" />
+              <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" />
               <span className="truncate text-xs font-semibold text-red-700">
                 Gravando...
               </span>
@@ -527,7 +1105,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={cancelRecording}
-                className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
                 title="Cancelar gravação"
               >
                 <Trash2 className="h-4 w-4" />
@@ -543,30 +1121,60 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-2">
+          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2">
             <button
               type="button"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => setShowEmojiPicker((v) => !v)}
+              title="Emojis"
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition sm:h-11 sm:w-11 ${
+                showEmojiPicker
+                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+              aria-label="Abrir emojis"
+            >
+              <Smile className="h-5 w-5" />
+            </button>
+
+            <input
+              ref={composerInputRef}
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onFocus={() => setShowEmojiPicker(false)}
+              placeholder="Mensagem"
+              className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none sm:h-11"
+            />
+
+            <button
+              type="button"
+              onClick={() => galleryInputRef.current?.click()}
               disabled={sending}
-              title="Enviar foto do aparelho"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132]"
+              title="Enviar foto da galeria"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+              aria-label="Galeria de fotos"
             >
               <ImageIcon className="h-5 w-5" />
             </button>
 
-            <input
-              type="text"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Digite uma mensagem..."
-              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none"
-            />
+            {!draft.trim() && (
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                disabled={sending}
+                title="Tirar foto com a câmera"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+                aria-label="Câmera"
+              >
+                <Camera className="h-5 w-5" />
+              </button>
+            )}
 
             {draft.trim() ? (
               <button
                 type="submit"
                 disabled={sending}
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Enviar mensagem"
               >
                 <Send className="h-5 w-5" />
@@ -576,7 +1184,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 type="button"
                 onClick={() => void startRealRecording()}
                 title="Gravar mensagem de voz"
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#0D2B3E] text-white transition hover:bg-[#143d57]"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] sm:h-11 sm:w-11"
                 aria-label="Gravar áudio"
               >
                 <Mic className="h-5 w-5" />
@@ -586,24 +1194,413 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         )}
       </footer>
 
-      {/* Image Lightbox */}
-      {previewImage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
-          onClick={() => setPreviewImage(null)}
-        >
-          <button
-            type="button"
-            onClick={() => setPreviewImage(null)}
-            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/25"
+      {/* WhatsApp-style Photo Caption Preview Modal (before sending) */}
+      {pendingPhoto && (
+        <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
+          <div className="flex shrink-0 items-center justify-between px-4 pb-3 pt-safe">
+            <button
+              type="button"
+              onClick={() => setPendingPhoto(null)}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              aria-label="Cancelar envio de foto"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="text-center">
+              <p className="text-sm font-bold">Enviar foto</p>
+              <p className="text-[11px] text-white/70">Para {peer.name}</p>
+            </div>
+            <div className="h-10 w-10" />
+          </div>
+
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+            <img
+              src={pendingPhoto.dataUrl}
+              alt="Prévia da foto"
+              className="max-h-full max-w-full rounded-xl object-contain"
+            />
+          </div>
+
+          <form
+            onSubmit={handleConfirmSendPendingPhoto}
+            className="flex shrink-0 items-center gap-2 border-t border-white/10 bg-black/90 px-3 pt-3 pb-safe sm:px-5"
           >
-            <X className="h-6 w-6" />
-          </button>
-          <img
-            src={previewImage}
-            alt="Visualização"
-            className="max-h-[85vh] max-w-full rounded-2xl object-contain"
-          />
+            <input
+              type="text"
+              value={pendingPhoto.caption}
+              onChange={(e) =>
+                setPendingPhoto((prev) =>
+                  prev ? { ...prev, caption: e.target.value } : null
+                )
+              }
+              placeholder="Adicione uma legenda..."
+              className="h-11 min-w-0 flex-1 rounded-full border border-white/20 bg-white/10 px-4 text-sm text-white placeholder:text-white/55 focus:border-emerald-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={sending}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0F5132] text-white shadow-lg transition hover:bg-[#146c43] active:scale-95"
+              aria-label="Confirmar envio da foto"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* Full-Screen WhatsApp-Style Photo Viewer (Save + Share + Forward) */}
+      {lightboxMsg && lightboxMsg.mediaUrl && (
+        <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
+          {/* Viewer Top Bar */}
+          <div className="flex shrink-0 items-center justify-between gap-2 bg-gradient-to-b from-black/85 to-transparent px-3 pb-3 pt-safe sm:px-5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setLightboxMsg(null)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+                aria-label="Fechar foto"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-bold">
+                  {lightboxMsg.senderId === myUid ? myName || 'Você' : peer.name}
+                </p>
+                <p className="text-[11px] text-white/70">{lightboxMsg.timestamp}</p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleSaveMedia(lightboxMsg.mediaUrl, 'image')}
+                disabled={mediaBusy}
+                title="Salvar foto"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              >
+                <Download className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void handleShareMedia(
+                    lightboxMsg.mediaUrl,
+                    'image',
+                    lightboxMsg.text && lightboxMsg.text !== 'Foto'
+                      ? lightboxMsg.text
+                      : undefined
+                  )
+                }
+                disabled={mediaBusy}
+                title="Compartilhar foto"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              >
+                <Share2 className="h-5 w-5" />
+              </button>
+              {onForwardMessage && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenForward(lightboxMsg)}
+                  title="Encaminhar foto"
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+                >
+                  <Forward className="h-5 w-5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Center Photo Canvas */}
+          <div className="flex min-h-0 flex-1 items-center justify-center p-2 sm:p-6">
+            <img
+              src={lightboxMsg.mediaUrl}
+              alt={lightboxMsg.text || 'Visualização da foto'}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+
+          {/* Bottom Caption + Clear Thumb-Friendly Action Bar */}
+          <div className="shrink-0 bg-gradient-to-t from-black/95 via-black/80 to-transparent px-4 pt-3 pb-safe">
+            {lightboxMsg.text &&
+              lightboxMsg.text.trim() !== 'Foto' &&
+              !/^[\w-]+\.(jpe?g|png|webp|heic|gif)$/i.test(lightboxMsg.text.trim()) && (
+                <p className="mb-3 text-center text-sm text-white/95">
+                  {lightboxMsg.text}
+                </p>
+              )}
+            <div className="mx-auto grid max-w-md grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveMedia(lightboxMsg.mediaUrl, 'image')}
+                disabled={mediaBusy}
+                className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/25 active:scale-95"
+              >
+                <Download className="h-4 w-4 shrink-0" />
+                <span>Salvar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void handleShareMedia(
+                    lightboxMsg.mediaUrl,
+                    'image',
+                    lightboxMsg.text && lightboxMsg.text !== 'Foto'
+                      ? lightboxMsg.text
+                      : undefined
+                  )
+                }
+                disabled={mediaBusy}
+                className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#146c43] active:scale-95"
+              >
+                <Share2 className="h-4 w-4 shrink-0" />
+                <span>Compartilhar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onForwardMessage
+                    ? handleOpenForward(lightboxMsg)
+                    : setLightboxMsg(null)
+                }
+                className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/25 active:scale-95"
+              >
+                <Forward className="h-4 w-4 shrink-0" />
+                <span>Encaminhar</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp-Style Message Action Sheet (Responder, Encaminhar, Salvar, Compartilhar, Copiar) */}
+      {actionSheetMsg && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center"
+          onClick={() => setActionSheetMsg(null)}
+        >
+          <div
+            className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl pb-safe sm:pb-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-900">Opções da mensagem</p>
+                <p className="truncate text-[11px] text-slate-500">
+                  {getReplySnippet(actionSheetMsg)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActionSheetMsg(null)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              <button
+                type="button"
+                onClick={() => handleStartReply(actionSheetMsg)}
+                className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+              >
+                <Reply className="h-4 w-4 text-[#0F5132]" />
+                <span>Responder</span>
+              </button>
+
+              {onForwardMessage &&
+                (actionSheetMsg.type === 'text' ||
+                  actionSheetMsg.type === 'image' ||
+                  actionSheetMsg.type === 'audio') && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenForward(actionSheetMsg)}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Forward className="h-4 w-4 text-[#0D2B3E]" />
+                    <span>Encaminhar para contato</span>
+                  </button>
+                )}
+
+              {actionSheetMsg.type === 'image' && actionSheetMsg.mediaUrl && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = actionSheetMsg.mediaUrl;
+                      setActionSheetMsg(null);
+                      void handleSaveMedia(url, 'image');
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <span>Salvar foto no aparelho</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = actionSheetMsg.mediaUrl;
+                      const cap = actionSheetMsg.text;
+                      setActionSheetMsg(null);
+                      void handleShareMedia(url, 'image', cap);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <span>Compartilhar foto</span>
+                  </button>
+                </>
+              )}
+
+              {actionSheetMsg.type === 'audio' && actionSheetMsg.mediaUrl && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = actionSheetMsg.mediaUrl;
+                      setActionSheetMsg(null);
+                      void handleSaveMedia(url, 'audio');
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <span>Salvar áudio</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = actionSheetMsg.mediaUrl;
+                      setActionSheetMsg(null);
+                      void handleShareMedia(url, 'audio');
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <span>Compartilhar áudio</span>
+                  </button>
+                </>
+              )}
+
+              {actionSheetMsg.type === 'text' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const txt = actionSheetMsg.text;
+                      setActionSheetMsg(null);
+                      void handleCopyText(txt);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Copy className="h-4 w-4 text-slate-600" />
+                    <span>Copiar mensagem</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const txt = actionSheetMsg.text;
+                      setActionSheetMsg(null);
+                      void handleShareText(txt);
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <span>Compartilhar texto</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp-Style Forward Picker Modal */}
+      {forwardMsg && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4"
+          onClick={() => setForwardMsg(null)}
+        >
+          <div
+            className="flex max-h-[82dvh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3.5">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Encaminhar para...</h3>
+                <p className="text-xs text-slate-500">{getReplySnippet(forwardMsg)}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setForwardMsg(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="shrink-0 border-b border-slate-100 px-4 py-2.5">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  inputMode="search"
+                  autoComplete="off"
+                  value={forwardSearch}
+                  onChange={(e) => setForwardSearch(e.target.value)}
+                  placeholder="Buscar pessoa no Zapei..."
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm focus:border-[#0F5132] focus:bg-white focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto pb-safe">
+              {filteredForwardTargets.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500">
+                  Nenhum contato encontrado no Zapei.
+                </div>
+              ) : (
+                filteredForwardTargets.map((target) => (
+                  <button
+                    key={target.uid}
+                    type="button"
+                    disabled={Boolean(forwardingUid)}
+                    onClick={() => void handleConfirmForward(target)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-emerald-50/50 disabled:opacity-50"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      {target.avatarUrl ? (
+                        <img
+                          src={target.avatarUrl}
+                          alt={target.name}
+                          className="h-10 w-10 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                          style={{ backgroundColor: target.avatarBg || '#0F5132' }}
+                        >
+                          {target.initials}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">
+                          {target.name}
+                        </p>
+                        {target.subtitle && (
+                          <p className="truncate text-xs text-slate-500">
+                            {target.subtitle}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-xs font-semibold text-white">
+                      {forwardingUid === target.uid ? 'Enviando...' : 'Enviar'}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

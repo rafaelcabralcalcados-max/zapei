@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BellRing,
   Briefcase,
   Factory,
   Loader2,
@@ -49,6 +50,7 @@ import {
 } from './lib/firebase';
 import {
   answerRealIncomingCall,
+  installAudioUnlockListeners,
   startRealOutgoingCall,
   updateRealCallStatus,
   type RealWebRTCSessionHandle,
@@ -85,10 +87,15 @@ import type {
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
 import { CallsView } from './components/CallsView';
-import { ChatThreadView, type ActiveChatPeer } from './components/ChatThreadView';
+import {
+  ChatThreadView,
+  type ActiveChatPeer,
+  type ForwardTarget,
+} from './components/ChatThreadView';
 import { ContactsView } from './components/ContactsView';
 import { ManufacturerPanel } from './components/ManufacturerPanel';
 import { PhoneOnboardingModal } from './components/PhoneOnboardingModal';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import {
   PublicStorefrontView,
   type PublicStorefrontOwner,
@@ -152,7 +159,13 @@ export default function App() {
   const [pushStatus, setPushStatus] = useState<BackgroundPushStatus>('prompt');
   const [pushBusy, setPushBusy] = useState(false);
   const [pushFeedback, setPushFeedback] = useState('');
+  const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
+
+  // Unlock mobile browser audio on first touch/click so incoming calls always ring loudly
+  useEffect(() => {
+    return installAudioUnlockListeners();
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -316,6 +329,37 @@ export default function App() {
         localStream: null,
         remoteStream: null,
       });
+
+      // If the browser tab is open in the background, also fire an OS notification with vibration
+      if (
+        typeof document !== 'undefined' &&
+        document.hidden &&
+        typeof Notification !== 'undefined' &&
+        Notification.permission === 'granted' &&
+        'serviceWorker' in navigator
+      ) {
+        void navigator.serviceWorker.ready
+          .then((reg) =>
+            reg.showNotification(
+              incoming.callType === 'video'
+                ? `Chamada de vídeo · ${incoming.callerName}`
+                : `Ligação de voz · ${incoming.callerName}`,
+              {
+                body: 'Zapei está chamando · Toque para atender agora',
+                icon: '/pwa-192x192.png',
+                badge: '/pwa-192x192.png',
+                tag: `zapei-call-${incoming.id}`,
+                requireInteraction: true,
+                data: {
+                  type: 'incoming_call',
+                  callId: incoming.id,
+                  url: `/?incomingCall=${encodeURIComponent(incoming.id)}`,
+                },
+              }
+            )
+          )
+          .catch(() => {});
+      }
     }
   }, [calls, profile, activeCall, directoryUsers]);
 
@@ -548,6 +592,17 @@ export default function App() {
     },
     [activeCall, authUser, profile]
   );
+
+  const handleSwitchCamera = useCallback(async () => {
+    const handle = webrtcHandleRef.current;
+    if (!handle) return;
+    const updatedStream = await handle.switchCamera();
+    if (updatedStream) {
+      setActiveCall((prev) => (prev ? { ...prev, localStream: updatedStream } : null));
+    } else {
+      showToast('Não foi possível alternar a câmera neste aparelho.');
+    }
+  }, [showToast]);
 
   // --- CHAT & STOREFRONT NAVIGATION HANDLERS ---
 
@@ -1210,6 +1265,37 @@ export default function App() {
     chatPhoneMatch,
   ]);
 
+  const forwardTargets = useMemo<ForwardTarget[]>(() => {
+    const seen = new Set<string>();
+    const list: ForwardTarget[] = [];
+    for (const c of zapeiContacts) {
+      if (!c.matchedUid || c.matchedUid === profile?.uid || seen.has(c.matchedUid)) continue;
+      seen.add(c.matchedUid);
+      const dir = directoryByUid.get(c.matchedUid);
+      list.push({
+        uid: c.matchedUid,
+        name: c.name,
+        initials: c.initials,
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarUrl: dir?.avatarUrl,
+        subtitle: c.phone || dir?.statusMessage || 'No Zapei',
+      });
+    }
+    for (const u of directoryUsers) {
+      if (u.uid === profile?.uid || seen.has(u.uid)) continue;
+      seen.add(u.uid);
+      list.push({
+        uid: u.uid,
+        name: u.displayName,
+        initials: u.initials,
+        avatarBg: u.avatarColor || '#0F5132',
+        avatarUrl: u.avatarUrl,
+        subtitle: u.storefrontName || u.statusMessage || 'No Zapei',
+      });
+    }
+    return list;
+  }, [zapeiContacts, directoryUsers, directoryByUid, profile?.uid]);
+
   const allSubOrders = useMemo(
     () => orders.flatMap((o) => o.subOrders),
     [orders]
@@ -1357,9 +1443,9 @@ export default function App() {
               </div>
               <span className="truncate text-base font-extrabold tracking-tight">Zapei</span>
             </div>
-            <span className="shrink-0 font-mono text-[11px] text-emerald-200 tabular-nums">
-              {profile.phone}
-            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <PWAInstallButton compact />
+            </div>
           </header>
         )}
 
@@ -1394,7 +1480,8 @@ export default function App() {
                   <div className="relative mt-2.5">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
-                      type="search"
+                      type="text"
+                      inputMode="search"
                       name="zapei_chat_search"
                       autoComplete="off"
                       autoCorrect="off"
@@ -1420,6 +1507,49 @@ export default function App() {
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto pb-safe-nav md:pb-2">
+                  {/* Compact 1-tap Ringing / Install Reminder (auto-hides once active) */}
+                  {!pushBannerDismissed &&
+                    (pushStatus === 'prompt' || pushStatus === 'ios_needs_install') && (
+                      <div className="mx-3 mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/80 px-3 py-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <BellRing className="h-4 w-4 shrink-0 text-[#0F5132]" />
+                          <p className="text-[11px] leading-snug text-slate-700">
+                            {pushStatus === 'ios_needs_install'
+                              ? 'No iPhone, adicione à Tela de Início para receber toque de chamadas.'
+                              : 'Ative o toque para o celular chamar mesmo fora do Zapei.'}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {pushStatus === 'prompt' ? (
+                            <button
+                              type="button"
+                              disabled={pushBusy}
+                              onClick={() => void handleEnableBackgroundPush()}
+                              className="rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-[#146c43] disabled:opacity-50"
+                            >
+                              {pushBusy ? 'Ativando...' : 'Ativar'}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('settings')}
+                              className="rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-[#146c43]"
+                            >
+                              Ver passo
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setPushBannerDismissed(true)}
+                            aria-label="Fechar aviso"
+                            className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-emerald-100 hover:text-slate-700"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                   {/* Matching / Existing Conversations */}
                   {filteredChats.length > 0 && (
                     <div className="divide-y divide-slate-100">
@@ -1601,8 +1731,11 @@ export default function App() {
                 {selectedPeer ? (
                   <ChatThreadView
                     myUid={profile.uid}
+                    myName={profile.name}
                     peer={selectedPeer}
                     messages={activeMessages}
+                    forwardTargets={forwardTargets}
+                    onNotify={showToast}
                     onBack={() => setSelectedPeer(null)}
                     onSendText={async (text) => {
                       await sendRealChatMessage({
@@ -1657,6 +1790,39 @@ export default function App() {
                           previewText: caption ? `Foto: ${caption}` : 'Enviou uma foto',
                         });
                       }
+                    }}
+                    onForwardMessage={async (target, msg) => {
+                      const forwardType =
+                        msg.type === 'image' || msg.type === 'audio' ? msg.type : 'text';
+                      await sendRealChatMessage({
+                        myUid: profile.uid,
+                        myName: profile.name,
+                        otherUid: target.uid,
+                        otherName: target.name,
+                        type: forwardType,
+                        text:
+                          msg.text ||
+                          (forwardType === 'image'
+                            ? 'Foto'
+                            : forwardType === 'audio'
+                              ? `Mensagem de voz (${msg.audioDuration || '0:00'})`
+                              : ''),
+                        mediaUrl: msg.mediaUrl,
+                        audioDuration: msg.audioDuration,
+                      });
+                      if (authUser) {
+                        void triggerRemoteMessagePush(authUser, {
+                          recipientId: target.uid,
+                          senderName: profile.name,
+                          previewText:
+                            forwardType === 'image'
+                              ? 'Encaminhou uma foto'
+                              : forwardType === 'audio'
+                                ? 'Encaminhou um áudio'
+                                : msg.text,
+                        });
+                      }
+                      showToast(`Encaminhado para ${target.name}!`);
                     }}
                     onStartCall={(type) => void handleStartCall(selectedPeer, type)}
                     onOpenStorefront={() => void openStorefrontByUid(selectedPeer.uid)}
@@ -2042,6 +2208,7 @@ export default function App() {
           onAcceptIncoming={() => void handleAcceptIncomingCall()}
           onDeclineIncoming={() => void handleDeclineIncomingCall()}
           onEndCall={(durationLabel) => void handleEndCall(durationLabel)}
+          onSwitchCamera={handleSwitchCamera}
         />
       )}
 

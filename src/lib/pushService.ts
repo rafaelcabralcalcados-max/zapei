@@ -73,6 +73,54 @@ async function postSubscriptionToServer(
   return res.ok;
 }
 
+function uint8ArrayToBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window
+    .btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function subscriptionMatchesVapidKey(
+  sub: PushSubscription,
+  serverPublicKey: string
+): boolean {
+  try {
+    const rawKey = sub.options?.applicationServerKey;
+    if (!rawKey) return false;
+    const currentKeyB64 = uint8ArrayToBase64Url(new Uint8Array(rawKey));
+    return currentKeyB64 === serverPublicKey.replace(/=+$/g, '').trim();
+  } catch {
+    return false;
+  }
+}
+
+async function ensureFreshSubscriptionForServerKey(
+  reg: ServiceWorkerRegistration,
+  publicKey: string
+): Promise<PushSubscription> {
+  const existing = await reg.pushManager.getSubscription();
+  if (existing) {
+    if (subscriptionMatchesVapidKey(existing, publicKey)) {
+      return existing;
+    }
+    // Server VAPID key changed (e.g. after redeploy): silently replace stale subscription
+    try {
+      await existing.unsubscribe();
+    } catch {
+      // ignore
+    }
+  }
+  return reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+}
+
 /**
  * Requests real browser/OS notification permission, subscribes to W3C Web Push (VAPID),
  * and registers the PushSubscription on the Zapei server for closed-app / locked-screen wake-up.
@@ -116,14 +164,7 @@ export async function enableRealBackgroundCallPush(
   const { publicKey } = (await keyRes.json()) as { publicKey: string };
 
   const reg = await navigator.serviceWorker.ready;
-  let subscription = await reg.pushManager.getSubscription();
-
-  if (!subscription) {
-    subscription = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey),
-    });
-  }
+  const subscription = await ensureFreshSubscriptionForServerKey(reg, publicKey);
 
   const ok = await postSubscriptionToServer(authUser, subscription);
   if (!ok) {
@@ -138,23 +179,34 @@ export async function enableRealBackgroundCallPush(
 }
 
 /**
- * Silently refreshes an already-granted browser PushSubscription with the server on app boot.
+ * Silently refreshes an already-granted browser PushSubscription with the server on app boot,
+ * automatically healing VAPID key changes after server restarts/redeploys.
  */
 export async function syncExistingPushSubscription(
   authUser: User
 ): Promise<BackgroundPushStatus> {
   const status = await getBackgroundPushStatus();
-  if (status !== 'enabled') return status;
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription();
-    if (sub) {
-      await postSubscriptionToServer(authUser, sub);
-    }
-  } catch {
-    // Non-fatal background sync
+  if (
+    typeof window === 'undefined' ||
+    !('Notification' in window) ||
+    Notification.permission !== 'granted'
+  ) {
+    return status;
   }
-  return status;
+  if (isIOSDevice() && !isStandalonePWA()) {
+    return 'ios_needs_install';
+  }
+  try {
+    const keyRes = await fetch('/api/push/vapid-public-key');
+    if (!keyRes.ok) return status;
+    const { publicKey } = (await keyRes.json()) as { publicKey: string };
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await ensureFreshSubscriptionForServerKey(reg, publicKey);
+    const ok = await postSubscriptionToServer(authUser, sub);
+    return ok ? 'enabled' : status;
+  } catch {
+    return status;
+  }
 }
 
 /**

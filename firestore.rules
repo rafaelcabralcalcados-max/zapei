@@ -14,8 +14,8 @@ service cloud.firestore {
 
     function isVerified() {
       return isSignedIn() && (
-        request.auth.token.email_verified == true ||
-        request.auth.token.phone_number != null
+        ('email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
+        ('phone_number' in request.auth.token && request.auth.token.phone_number != null)
       );
     }
 
@@ -355,10 +355,12 @@ service cloud.firestore {
 
     // --- Collection Rules ---
 
-    // 1. Users (Public storefront / messenger profile; NO PII)
+    // 1. Users (Public storefront / messenger profile; NO PII — all PII is strictly in /private/info)
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && (userId == request.auth.uid || existing().hasStorefront == true);
-      allow list: if isSignedIn() && (existing().uid == request.auth.uid || existing().hasStorefront == true);
+      allow get: if isSignedIn() && isValidId(userId)
+        && (userId == request.auth.uid || existing().commercialMode in ['buyer', 'manufacturer', 'reseller']);
+      allow list: if isSignedIn()
+        && (existing().uid == request.auth.uid || existing().commercialMode in ['buyer', 'manufacturer', 'reseller']);
       allow create: if isVerified() && isValidId(userId) && userId == request.auth.uid
         && isValidUserPublic(incoming())
         && incoming().createdAt == request.time
@@ -608,7 +610,11 @@ service cloud.firestore {
     // 8. Real 1-to-1 Messenger Chats & Messages (Master Gate)
     match /chats/{chatId} {
       allow get: if isSignedIn() && isValidId(chatId)
-        && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
+        && (
+          resource == null
+            ? (chatId.matches('^' + request.auth.uid + '__.*') || chatId.matches('.*__' + request.auth.uid + '$'))
+            : (existing().userA == request.auth.uid || existing().userB == request.auth.uid)
+        );
       allow list: if isSignedIn()
         && (existing().userA == request.auth.uid || existing().userB == request.auth.uid);
       allow create: if isVerified() && isValidId(chatId)
