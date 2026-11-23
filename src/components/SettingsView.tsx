@@ -12,6 +12,7 @@ import {
 import type { BackgroundPushStatus } from '../lib/pushService';
 import type { CommercialMode, UserProfile } from '../types/zapei';
 import { BackgroundCallPushCard } from './BackgroundCallPushCard';
+import { MediaPermissionsCard } from './MediaPermissionsCard';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface SettingsViewProps {
@@ -229,6 +230,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         feedback={pushFeedback}
         onEnable={onEnableBackgroundPush}
       />
+
+      {/* Camera & Microphone One-Time Pre-Authorization Card */}
+      <MediaPermissionsCard />
 
       {/* PWA Install & Security Info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

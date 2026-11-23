@@ -51,6 +51,7 @@ import {
 import {
   answerRealIncomingCall,
   installAudioUnlockListeners,
+  queryMediaPermissionSnapshot,
   startRealOutgoingCall,
   updateRealCallStatus,
   type RealWebRTCSessionHandle,
@@ -762,6 +763,13 @@ export default function App() {
           const callerAvatarColor = String(d.callerAvatarColor || '#0F5132');
           const offerSdp = String(d.offerSdp);
 
+          let canAutoAnswer = false;
+          if (params.callAction === 'answer') {
+            const perms = await queryMediaPermissionSnapshot();
+            canAutoAnswer =
+              perms.mic === 'granted' && (callType === 'audio' || perms.cam === 'granted');
+          }
+
           setActiveCall({
             callId: params.callId,
             direction: 'incoming',
@@ -770,13 +778,13 @@ export default function App() {
             peerName: callerName,
             peerInitials: callerInitials,
             peerAvatarColor: callerAvatarColor,
-            status: params.callAction === 'answer' ? 'connecting' : 'ringing',
+            status: canAutoAnswer ? 'connecting' : 'ringing',
             offerSdp,
             localStream: null,
             remoteStream: null,
           });
 
-          if (params.callAction === 'answer') {
+          if (canAutoAnswer) {
             try {
               const handle = await answerRealIncomingCall({
                 db,

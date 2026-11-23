@@ -33,6 +33,125 @@ export interface RealWebRTCSessionHandle {
   cleanup: () => void;
 }
 
+export type SingleMediaPermState = 'granted' | 'prompt' | 'denied' | 'unknown';
+
+export interface MediaPermissionSnapshot {
+  mic: SingleMediaPermState;
+  cam: SingleMediaPermState;
+}
+
+export async function queryMediaPermissionSnapshot(): Promise<MediaPermissionSnapshot> {
+  if (
+    typeof navigator === 'undefined' ||
+    !('permissions' in navigator) ||
+    typeof navigator.permissions.query !== 'function'
+  ) {
+    return { mic: 'unknown', cam: 'unknown' };
+  }
+
+  const queryOne = async (name: 'microphone' | 'camera'): Promise<SingleMediaPermState> => {
+    try {
+      const status = await navigator.permissions.query({
+        name: name as PermissionName,
+      });
+      if (status.state === 'granted' || status.state === 'prompt' || status.state === 'denied') {
+        return status.state;
+      }
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  };
+
+  const [mic, cam] = await Promise.all([queryOne('microphone'), queryOne('camera')]);
+  return { mic, cam };
+}
+
+/**
+ * Requests microphone + camera permission together once so browsers that persist
+ * site grants remember both audio and video calls without prompting separately.
+ */
+export async function preauthorizeMediaPermissions(): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getUserMedia !== 'function'
+  ) {
+    return {
+      ok: false,
+      message: 'Este navegador não suporta acesso à câmera e microfone.',
+    };
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: { facingMode: 'user' },
+    });
+    stream.getTracks().forEach((t) => t.stop());
+    return {
+      ok: true,
+      message:
+        'Câmera e microfone autorizados! Se o celular ainda perguntar no iPhone, mude Câmera e Microfone de "Perguntar" para "Permitir" nos Ajustes do Safari.',
+    };
+  } catch (err) {
+    // Fallback to audio-only if device has no camera
+    try {
+      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStream.getTracks().forEach((t) => t.stop());
+      return {
+        ok: true,
+        message: 'Microfone autorizado com sucesso!',
+      };
+    } catch {
+      const denied =
+        err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      return {
+        ok: false,
+        message: denied
+          ? 'Permissão negada. Libere Câmera e Microfone nas permissões do site/navegador.'
+          : 'Não foi possível acessar a câmera ou microfone neste aparelho.',
+      };
+    }
+  }
+}
+
+async function acquireCallMediaStream(callType: 'audio' | 'video'): Promise<MediaStream> {
+  const audioConstraints: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+  if (callType === 'audio') {
+    return navigator.mediaDevices.getUserMedia({
+      audio: audioConstraints,
+      video: false,
+    });
+  }
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: audioConstraints,
+      video: {
+        facingMode: 'user',
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+  } catch (err) {
+    // Only retry simplified constraints if the failure was OverconstrainedError (not permission denied)
+    if (err instanceof DOMException && err.name === 'OverconstrainedError') {
+      return navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      });
+    }
+    throw err;
+  }
+}
+
 function createCameraSwitcher(
   pc: RTCPeerConnection,
   getCurrentStream: () => MediaStream,
@@ -45,19 +164,37 @@ function createCameraSwitcher(
     const oldVideoTrack = currentStream.getVideoTracks()[0];
     if (!oldVideoTrack) return null;
 
+    const currentDeviceId = oldVideoTrack.getSettings?.().deviceId;
     const nextFacing: 'user' | 'environment' =
       facingMode === 'user' ? 'environment' : 'user';
+
+    // Try picking the exact alternate camera deviceId first to avoid re-prompting where possible
+    let alternateDeviceId: string | undefined;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((d) => d.kind === 'videoinput' && d.deviceId);
+      if (cameras.length >= 2 && currentDeviceId) {
+        const other = cameras.find((d) => d.deviceId !== currentDeviceId);
+        if (other) alternateDeviceId = other.deviceId;
+      }
+    } catch {
+      // Fall back to facingMode
+    }
 
     // Stop old track first on mobile devices that only allow one active camera at a time
     oldVideoTrack.stop();
 
     try {
+      const videoConstraint: MediaTrackConstraints = alternateDeviceId
+        ? { deviceId: { exact: alternateDeviceId } }
+        : {
+            facingMode: { ideal: nextFacing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          };
+
       const fresh = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: nextFacing },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: videoConstraint,
         audio: false,
       });
       const newVideoTrack = fresh.getVideoTracks()[0];
@@ -120,21 +257,7 @@ export async function startRealOutgoingCall(params: {
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
-  let activeLocalStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-    video:
-      params.callType === 'video'
-        ? {
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          }
-        : false,
-  });
+  let activeLocalStream = await acquireCallMediaStream(params.callType);
 
   const remoteStream = new MediaStream();
   const pc = new RTCPeerConnection(RTC_SERVERS);
@@ -318,21 +441,7 @@ export async function answerRealIncomingCall(params: {
   onRemoteStream: (stream: MediaStream) => void;
   onStatusChange: (status: 'ringing' | 'active' | 'ended' | 'declined' | 'missed') => void;
 }): Promise<RealWebRTCSessionHandle> {
-  let activeLocalStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-    video:
-      params.callType === 'video'
-        ? {
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          }
-        : false,
-  });
+  let activeLocalStream = await acquireCallMediaStream(params.callType);
 
   const remoteStream = new MediaStream();
   const pc = new RTCPeerConnection(RTC_SERVERS);

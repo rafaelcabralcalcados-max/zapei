@@ -10,6 +10,7 @@ import type { PublicDirectoryUser } from '../lib/firebase';
 import type { BackgroundPushStatus } from '../lib/pushService';
 import type { CallSessionRecord, Contact } from '../types/zapei';
 import { BackgroundCallPushCard } from './BackgroundCallPushCard';
+import { MediaPermissionsCard } from './MediaPermissionsCard';
 
 interface CallsViewProps {
   myUid: string;
@@ -98,6 +99,9 @@ export const CallsView: React.FC<CallsViewProps> = ({
         feedback={pushFeedback}
         onEnable={onEnableBackgroundPush}
       />
+
+      {/* Camera & Microphone One-Time Pre-Authorization Card */}
+      <MediaPermissionsCard />
 
       {/* Quick Real Call Strip */}
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
