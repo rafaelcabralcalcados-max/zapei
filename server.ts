@@ -197,9 +197,23 @@ async function startServer(): Promise<void> {
     res.json({ ok: true });
   });
 
-  // 4. High-priority incoming call / cancellation Web Push wake-up
+  // Active incoming call ring-cadence timers (pulses Web Push every 3.5s like a real ringing phone)
+  const activeCallRingLoops = new Map<
+    string,
+    { timer: NodeJS.Timeout; callerId: string; calleeId: string }
+  >();
+
+  const stopCallRingLoop = (callId: string) => {
+    const existing = activeCallRingLoops.get(callId);
+    if (existing) {
+      clearInterval(existing.timer);
+      activeCallRingLoops.delete(callId);
+    }
+  };
+
+  // 4. High-priority incoming call (repeated ring cadence) / cancellation Web Push
   app.post('/api/push/notify-call', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    const callerId = req.verifiedUid!;
+    const actorUid = req.verifiedUid!;
     const calleeId = typeof req.body?.calleeId === 'string' ? req.body.calleeId.slice(0, 128) : '';
     const callId = typeof req.body?.callId === 'string' ? req.body.callId.slice(0, 128) : '';
     const callerName =
@@ -207,24 +221,80 @@ async function startServer(): Promise<void> {
     const callType = req.body?.callType === 'video' ? 'video' : 'audio';
     const event = req.body?.event === 'cancelled' ? 'cancelled' : 'ringing';
 
-    if (!calleeId || !callId || calleeId === callerId) {
+    if (!callId) {
       res.status(400).json({ error: 'Parâmetros de chamada inválidos.' });
       return;
     }
 
-    const payload =
-      event === 'cancelled'
-        ? { type: 'call_cancelled', callId }
-        : { type: 'incoming_call', callId, callerId, callerName, callType };
+    if (event === 'cancelled') {
+      const activeLoop = activeCallRingLoops.get(callId);
+      const targetUid = activeLoop?.calleeId || calleeId;
+      // Only caller or callee may stop an active ring loop
+      if (activeLoop && activeLoop.callerId !== actorUid && activeLoop.calleeId !== actorUid) {
+        res.status(403).json({ error: 'Sem permissão para encerrar este toque.' });
+        return;
+      }
+      stopCallRingLoop(callId);
+      if (targetUid) {
+        const result = await dispatchPushToUser(
+          targetUid,
+          { type: 'call_cancelled', callId },
+          { ttl: 30, urgency: 'high' }
+        );
+        res.json({ ok: true, ...result });
+        return;
+      }
+      res.json({ ok: true, sent: 0, removed: 0 });
+      return;
+    }
 
-    const safeTopic = `call${callId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`;
-    const result = await dispatchPushToUser(calleeId, payload, {
-      ttl: 60,
-      urgency: 'high',
-      topic: safeTopic,
-    });
+    if (!calleeId || calleeId === actorUid) {
+      res.status(400).json({ error: 'Parâmetros de chamada inválidos.' });
+      return;
+    }
 
-    res.json({ ok: true, ...result });
+    // Stop any previous loop for the same callId
+    stopCallRingLoop(callId);
+
+    const sendRingPulse = async (ringIndex: number) =>
+      dispatchPushToUser(
+        calleeId,
+        {
+          type: 'incoming_call',
+          callId,
+          callerId: actorUid,
+          callerName,
+          callType,
+          ringIndex,
+        },
+        {
+          ttl: 30,
+          urgency: 'high',
+        }
+      );
+
+    // Pulse #1 immediately
+    const firstResult = await sendRingPulse(1);
+
+    // Repeat ringing pulses every 3.5 seconds (up to 7 total pulses ~24s) so the locked phone rings repeatedly
+    if (firstResult.sent > 0) {
+      let pulseCount = 1;
+      const timer = setInterval(() => {
+        pulseCount += 1;
+        if (pulseCount > 7) {
+          stopCallRingLoop(callId);
+          return;
+        }
+        void sendRingPulse(pulseCount).then((r) => {
+          if (r.sent === 0) {
+            stopCallRingLoop(callId);
+          }
+        });
+      }, 3500);
+      activeCallRingLoops.set(callId, { timer, callerId: actorUid, calleeId });
+    }
+
+    res.json({ ok: true, ...firstResult });
   });
 
   // 5. Real background chat message push alert

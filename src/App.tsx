@@ -547,6 +547,16 @@ export default function App() {
     if (!profile || !activeCall || !activeCall.offerSdp) return;
     setActiveCall((prev) => (prev ? { ...prev, status: 'connecting' } : null));
 
+    if (authUser && activeCall.callId !== 'pending') {
+      void triggerRemoteCallPush(authUser, {
+        calleeId: profile.uid,
+        callId: activeCall.callId,
+        callerName: activeCall.peerName,
+        callType: activeCall.callType,
+        event: 'cancelled',
+      });
+    }
+
     try {
       const handle = await answerRealIncomingCall({
         db,
@@ -590,17 +600,28 @@ export default function App() {
           : null
       );
     }
-  }, [profile, activeCall, showToast]);
+  }, [authUser, profile, activeCall, showToast]);
 
   const handleDeclineIncomingCall = useCallback(async () => {
     if (!activeCall) return;
     ignoredCallIdsRef.current.add(activeCall.callId);
     const id = activeCall.callId;
+    const callType = activeCall.callType;
+    const peerName = activeCall.peerName;
     setActiveCall(null);
     if (id !== 'pending') {
       await updateRealCallStatus(db, id, 'declined', '00:00');
+      if (authUser && profile) {
+        void triggerRemoteCallPush(authUser, {
+          calleeId: profile.uid,
+          callId: id,
+          callerName: peerName,
+          callType,
+          event: 'cancelled',
+        });
+      }
     }
-  }, [activeCall]);
+  }, [activeCall, authUser, profile]);
 
   const handleEndCall = useCallback(
     async (durationLabel: string) => {
@@ -698,6 +719,15 @@ export default function App() {
           ignoredCallIdsRef.current.add(params.callId);
           setActiveCall(null);
           await updateRealCallStatus(db, params.callId, 'declined', '00:00');
+          if (authUser) {
+            void triggerRemoteCallPush(authUser, {
+              calleeId: profile.uid,
+              callId: params.callId,
+              callerName: 'Contato',
+              callType: 'audio',
+              event: 'cancelled',
+            });
+          }
           showToast('Chamada recusada.');
           return;
         }
@@ -712,6 +742,17 @@ export default function App() {
           if (d.calleeId !== profile.uid || d.status !== 'ringing' || !d.offerSdp) {
             showToast('Esta chamada já foi encerrada.');
             return;
+          }
+
+          // Stop repeated lock-screen push pulses as soon as user opened/tapped the call
+          if (authUser) {
+            void triggerRemoteCallPush(authUser, {
+              calleeId: profile.uid,
+              callId: params.callId,
+              callerName: String(d.callerName || 'Contato'),
+              callType: d.callType === 'video' ? 'video' : 'audio',
+              event: 'cancelled',
+            });
           }
 
           const callType: 'audio' | 'video' = d.callType === 'video' ? 'video' : 'audio';
@@ -816,7 +857,7 @@ export default function App() {
         }
       }
     },
-    [profile, contacts, openChatWithPeer, showToast]
+    [authUser, profile, contacts, openChatWithPeer, showToast]
   );
 
   // Check URL query parameters when app is cold-launched from a closed-app push notification

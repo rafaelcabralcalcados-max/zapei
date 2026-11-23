@@ -22,6 +22,7 @@ interface ZapeiPushPayload {
   callerId?: string;
   callerName?: string;
   callType?: 'audio' | 'video';
+  ringIndex?: number;
   senderId?: string;
   senderName?: string;
   body?: string;
@@ -43,47 +44,68 @@ self.addEventListener('push', (event: PushEvent) => {
 
   if (payload.type === 'call_cancelled' && payload.callId) {
     event.waitUntil(
-      self.registration
-        .getNotifications({ tag: `zapei-call-${payload.callId}` })
-        .then((notifications) => {
-          notifications.forEach((n) => n.close());
-        })
+      self.registration.getNotifications().then((notifications) => {
+        notifications.forEach((n) => {
+          const d = (n.data || {}) as { callId?: string };
+          if (d.callId === payload.callId || n.tag.startsWith(`zapei-call-${payload.callId}`)) {
+            n.close();
+          }
+        });
+      })
     );
     return;
   }
 
   if (payload.type === 'incoming_call' && payload.callId) {
     const isVideo = payload.callType === 'video';
+    const ringIndex = Number(payload.ringIndex || 1);
+    const caller = payload.callerName || 'Zapei';
     const title = isVideo
-      ? `Chamada de vídeo · ${payload.callerName || 'Zapei'}`
-      : `Ligação de voz · ${payload.callerName || 'Zapei'}`;
+      ? `📹 CHAMADA DE VÍDEO · ${caller}`
+      : `📞 LIGAÇÃO · ${caller}`;
 
     const options: NotificationOptions & {
       vibrate?: number[];
       renotify?: boolean;
+      silent?: boolean;
       actions?: Array<{ action: string; title: string }>;
     } = {
-      body: 'Zapei está chamando · Toque para atender agora',
+      body: `🔔 TOCANDO AGORA — Toque para ATENDER ou RECUSAR`,
       icon: '/pwa-192x192.png',
       badge: '/pwa-192x192.png',
-      tag: `zapei-call-${payload.callId}`,
+      // Unique tag per ring pulse after closing the previous one guarantees iOS & Android re-play sound + vibration
+      tag: `zapei-call-${payload.callId}-${ringIndex}`,
       renotify: true,
+      silent: false,
       requireInteraction: true,
-      vibrate: [600, 250, 600, 250, 600, 250, 600, 250, 600],
+      vibrate: [900, 250, 900, 250, 900],
       data: {
         type: 'incoming_call',
         callId: payload.callId,
         callType: payload.callType || 'audio',
-        callerName: payload.callerName || 'Contato',
+        callerName: caller,
         url: `/?incomingCall=${encodeURIComponent(payload.callId)}`,
       },
       actions: [
-        { action: 'answer', title: 'Atender' },
-        { action: 'decline', title: 'Recusar' },
+        { action: 'answer', title: '✅ Atender' },
+        { action: 'decline', title: '❌ Recusar' },
       ],
     };
 
-    event.waitUntil(self.registration.showNotification(title, options));
+    event.waitUntil(
+      self.registration
+        .getNotifications()
+        .then((existing) => {
+          existing.forEach((n) => {
+            const d = (n.data || {}) as { callId?: string };
+            if (d.callId === payload.callId) {
+              n.close();
+            }
+          });
+        })
+        .catch(() => {})
+        .then(() => self.registration.showNotification(title, options))
+    );
     return;
   }
 
