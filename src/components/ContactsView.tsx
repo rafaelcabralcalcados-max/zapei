@@ -99,7 +99,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
 
   const searchDigits = search.replace(/\D/g, '');
   const trimmedSearchUpper = search.trim().toUpperCase();
-  const looksLikeVirtualLineQuery = /^ZAP-\d{4}-\d{4}$/.test(trimmedSearchUpper);
+  const looksLikeVirtualLineQuery = /^(CFI|ZAP)-\d{4}-\d{4}$/.test(trimmedSearchUpper);
   const looksLikePhoneQuery =
     looksLikeVirtualLineQuery ||
     (searchDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(search.trim()));
@@ -190,10 +190,10 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       }
       const res = await onImportBatchContacts(picked);
       setStatusFeedback(
-        `${res.total} contato(s) selecionado(s) · ${res.matched} encontrado(s) no Zapei.`
+        `${res.total} contato(s) selecionado(s) · ${res.matched} encontrado(s) no ChatFi.`
       );
     } catch {
-      setStatusFeedback('Use a busca por nome abaixo para encontrar quem já está no Zapei.');
+      setStatusFeedback('Use a busca por nome abaixo para encontrar quem já está no ChatFi.');
     } finally {
       setBusy(false);
     }
@@ -205,7 +205,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     try {
       const matched = await onResyncContacts();
       setStatusFeedback(
-        `Lista atualizada: ${matched} contato(s) ativo(s) no Zapei.`
+        `Lista atualizada: ${matched} contato(s) ativo(s) no ChatFi.`
       );
     } finally {
       setBusy(false);
@@ -221,8 +221,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       const res = await onSaveContact(newName.trim(), newPhone.trim());
       setStatusFeedback(
         res.matched
-          ? `${newName.trim()} salvo e encontrado no Zapei (${res.matchedName})!`
-          : `${newName.trim()} salvo. Ainda não possui conta no Zapei — você pode enviar um convite abaixo.`
+          ? `${newName.trim()} salvo e encontrado no ChatFi (${res.matchedName})!`
+          : `${newName.trim()} salvo. Ainda não possui conta no ChatFi — você pode enviar um convite abaixo.`
       );
       setNewName('');
       setNewPhone('');
@@ -250,7 +250,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Contatos</h1>
             <p className="text-xs text-slate-500">
-              Digite o nome da pessoa para encontrar quem já está no Zapei com foto, conversar ou ligar.
+              Digite o nome, telefone ou Linha Virtual (CFI-...) para encontrar quem já está no ChatFi.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -259,7 +259,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 type="button"
                 onClick={() => void handleNativeDeviceSync()}
                 disabled={busy}
-                className="flex min-h-[42px] items-center gap-1.5 rounded-xl bg-[#0F5132] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#146c43] disabled:opacity-50"
+                className="flex min-h-[42px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 <Smartphone className="h-4 w-4" />
                 Agenda do celular
@@ -288,7 +288,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         </div>
 
         {statusFeedback && (
-          <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-medium text-[#0F5132]">
+          <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-medium text-[#0E7A34]">
             {statusFeedback}
           </div>
         )}
@@ -311,28 +311,28 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="Ex: Beatriz"
-                className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
               />
             </div>
             <div>
               <label className="block text-[11px] font-semibold text-slate-600">
-                Telefone com DDD
+                Telefone com DDD ou Linha Virtual
               </label>
               <input
-                type="tel"
+                type="text"
                 required
                 autoComplete="off"
                 value={newPhone}
                 onChange={(e) => setNewPhone(e.target.value)}
-                placeholder="(37) 99999-9999"
-                className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                placeholder="(37) 99999-9999 ou CFI-1234-5678"
+                className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
               />
             </div>
             <div className="flex items-end gap-2">
               <button
                 type="submit"
                 disabled={busy}
-                className="h-10 flex-1 rounded-lg bg-[#0F5132] px-4 text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+                className="h-10 flex-1 rounded-lg bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 Salvar
               </button>
@@ -359,11 +359,11 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             spellCheck={false}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar pessoa pelo nome, vitrine ou número..."
-            className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0F5132] focus:bg-white focus:outline-none"
+            placeholder="Buscar pessoa pelo nome, vitrine, telefone ou CFI-..."
+            className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0E7A34] focus:bg-white focus:outline-none"
           />
           {liveLookupBusy ? (
-            <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0F5132]" />
+            <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0E7A34]" />
           ) : search ? (
             <button
               type="button"
@@ -376,7 +376,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           ) : null}
         </div>
 
-        {/* Instant Live Lookup Result Card (when typing a phone number) */}
+        {/* Instant Live Lookup Result Card (when typing a phone number or virtual line) */}
         {looksLikePhoneQuery && !liveLookupBusy && liveLookupResult && (
           <div className="mt-3 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-3">
@@ -389,7 +389,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               ) : (
                 <div
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                  style={{ backgroundColor: liveLookupResult.avatarColor || '#0F5132' }}
+                  style={{ backgroundColor: liveLookupResult.avatarColor || '#0E7A34' }}
                 >
                   {liveLookupResult.initials}
                 </div>
@@ -399,8 +399,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   <span className="truncate text-sm font-bold text-slate-900">
                     {liveLookupResult.displayName}
                   </span>
-                  <span className="rounded-md bg-[#0F5132] px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                    No Zapei
+                  <span className="rounded-md bg-[#0E7A34] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    No ChatFi
                   </span>
                 </div>
                 <p className="font-mono text-xs text-slate-600 tabular-nums">
@@ -413,7 +413,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               <button
                 type="button"
                 onClick={() => void onOpenDirectFoundChat(liveLookupResult, search)}
-                className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#0F5132] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#146c43]"
+                className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 Conversar
@@ -422,7 +422,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 type="button"
                 onClick={() => void onStartDirectFoundCall(liveLookupResult, search, 'audio')}
                 title="Ligação de voz"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-[#0F5132] hover:bg-emerald-50"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-200 bg-white text-[#0E7A34] hover:bg-emerald-50"
               >
                 <Phone className="h-4 w-4" />
               </button>
@@ -459,7 +459,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         {looksLikePhoneQuery && !liveLookupBusy && !liveLookupResult && liveLookupCheckedPhone && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600">
             <span>
-              <strong className="font-mono text-slate-800">{liveLookupCheckedPhone}</strong> ainda não entrou no Zapei.
+              <strong className="font-mono text-slate-800">{liveLookupCheckedPhone}</strong> ainda não entrou no ChatFi.
             </span>
             <button
               type="button"
@@ -467,7 +467,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                 await shareRealZapeiInvite(liveLookupCheckedPhone, search);
                 setStatusFeedback(`Convite preparado para ${liveLookupCheckedPhone}.`);
               }}
-              className="inline-flex items-center gap-1 font-semibold text-[#0F5132] hover:underline"
+              className="inline-flex items-center gap-1 font-semibold text-[#0E7A34] hover:underline"
             >
               <Send className="h-3.5 w-3.5" />
               Enviar convite
@@ -476,12 +476,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         )}
       </div>
 
-      {/* Saved Contacts Already on Zapei (shown first when user has saved contacts) */}
+      {/* Saved Contacts Already on ChatFi */}
       {onZapeiContacts.length > 0 && (
         <section className="mt-5">
           <div className="mb-2.5 flex items-center justify-between px-1">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Seus Contatos no Zapei ({onZapeiContacts.length})
+              Seus Contatos no ChatFi ({onZapeiContacts.length})
             </h2>
           </div>
 
@@ -508,7 +508,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     ) : (
                       <div
                         className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                        style={{ backgroundColor: contact.avatarBg || '#0F5132' }}
+                        style={{ backgroundColor: contact.avatarBg || '#0E7A34' }}
                       >
                         {contact.initials}
                       </div>
@@ -519,7 +519,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           {contact.name}
                         </span>
                         {contact.hasStorefront && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0F5132]">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0E7A34]">
                             <Store className="h-3 w-3" />
                             Vitrine Ativa
                           </span>
@@ -538,7 +538,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                       <button
                         type="button"
                         onClick={() => onOpenStorefront(contact)}
-                        className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0F5132] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#146c43]"
+                        className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
                       >
                         <Store className="h-3.5 w-3.5" />
                         Ver Vitrine
@@ -556,7 +556,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                       type="button"
                       onClick={() => onStartCall(contact, 'audio', photoUrl)}
                       title="Ligação de voz"
-                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0F5132]"
+                      className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0E7A34]"
                     >
                       <Phone className="h-4 w-4" />
                     </button>
@@ -584,12 +584,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         </section>
       )}
 
-      {/* Live Directory: Pessoas no Zapei (Instant Name Search with Photos) */}
+      {/* Live Directory: Pessoas no ChatFi (Instant Name Search with Photos) */}
       {filteredDirectory.length > 0 && (
         <section className="mt-5">
           <div className="mb-2.5 flex items-center justify-between px-1">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Pessoas no Zapei ({filteredDirectory.length})
+              Pessoas no ChatFi ({filteredDirectory.length})
             </h2>
           </div>
 
@@ -613,7 +613,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   ) : (
                     <div
                       className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                      style={{ backgroundColor: person.avatarColor || '#0F5132' }}
+                      style={{ backgroundColor: person.avatarColor || '#0E7A34' }}
                     >
                       {person.initials}
                     </div>
@@ -629,7 +629,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         </span>
                       )}
                       {person.hasStorefront && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0F5132]">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0E7A34]">
                           <Store className="h-3 w-3" />
                           Vitrine Ativa
                         </span>
@@ -638,7 +638,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     <p className="truncate text-xs text-slate-500">
                       {person.hasStorefront && person.storefrontName
                         ? person.storefrontName
-                        : person.statusMessage || 'Disponível no Zapei'}
+                        : person.statusMessage || 'Disponível no ChatFi'}
                     </p>
                   </div>
                 </button>
@@ -648,7 +648,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onOpenDirectoryStorefront(person)}
-                      className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0F5132] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#146c43]"
+                      className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
                     >
                       <Store className="h-3.5 w-3.5" />
                       Ver Vitrine
@@ -666,7 +666,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     type="button"
                     onClick={() => onStartDirectoryCall(person, 'audio')}
                     title="Ligação de voz"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0F5132]"
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0E7A34]"
                   >
                     <Phone className="h-4 w-4" />
                   </button>
@@ -685,12 +685,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         </section>
       )}
 
-      {/* Invite to Zapei Section (only when user has saved contacts not yet registered) */}
+      {/* Invite to ChatFi Section (only when user has saved contacts not yet registered) */}
       {inviteContacts.length > 0 && (
         <section className="mt-5">
           <div className="mb-2.5 flex items-center justify-between px-1">
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Convidar para o Zapei ({inviteContacts.length})
+              Convidar para o ChatFi ({inviteContacts.length})
             </h2>
           </div>
 
@@ -720,7 +720,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     onClick={() => void handleInvite(contact)}
                     className={`flex min-h-[38px] items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                       contact.invited
-                        ? 'border border-emerald-200 bg-emerald-50 text-[#0F5132]'
+                        ? 'border border-emerald-200 bg-emerald-50 text-[#0E7A34]'
                         : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
@@ -759,11 +759,11 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             <Smartphone className="mx-auto h-10 w-10 text-slate-400" />
             <h2 className="mt-3 text-base font-bold text-slate-900">
               {normalizedQuery
-                ? `Nenhuma pessoa chamada "${search.trim()}" no Zapei ainda`
-                : 'Nenhuma outra pessoa no Zapei ainda'}
+                ? `Nenhuma pessoa chamada "${search.trim()}" no ChatFi ainda`
+                : 'Nenhuma outra pessoa no ChatFi ainda'}
             </h2>
             <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-              Assim que a pessoa abrir o Zapei no celular dela com a versão atualizada, o nome e a foto dela aparecem automaticamente aqui para você conversar ou ligar na hora.
+              Assim que a pessoa abrir o ChatFi no celular dela com a versão atualizada, o nome e a foto dela aparecem automaticamente aqui para você conversar ou ligar na hora.
             </p>
           </div>
         )}

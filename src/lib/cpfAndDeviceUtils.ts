@@ -72,14 +72,29 @@ export async function hashCpfSha256(raw: string): Promise<string> {
 }
 
 /**
- * Generates an exclusive Zapei Virtual Line in the format ZAP-XXXX-XXXX.
+ * Returns true if the string begins with a ChatFi (CFI-) or legacy (ZAP-) virtual line prefix.
+ */
+export function isVirtualLinePrefix(raw: string): boolean {
+  const upper = raw.trim().toUpperCase();
+  return upper.startsWith('CFI-') || upper.startsWith('ZAP-');
+}
+
+/**
+ * Validates whether a string matches the full virtual line format (CFI-XXXX-XXXX or legacy ZAP-XXXX-XXXX).
+ */
+export function isVirtualLineFormat(raw: string): boolean {
+  return /^(CFI|ZAP)-\d{4}-\d{4}$/i.test(raw.trim());
+}
+
+/**
+ * Generates an exclusive ChatFi Virtual Line in the format CFI-XXXX-XXXX.
  */
 export function generateVirtualLine(): string {
   const bytes = new Uint32Array(2);
   crypto.getRandomValues(bytes);
   const part1 = String(1000 + (bytes[0] % 9000));
   const part2 = String(1000 + (bytes[1] % 9000));
-  return `ZAP-${part1}-${part2}`;
+  return `CFI-${part1}-${part2}`;
 }
 
 /**
@@ -195,12 +210,12 @@ export function encodeDeviceAuthQrPayload(params: {
   requestToken: string;
   code6: string;
 }): string {
-  return `ZAPEI_AUTH|v1|${params.requestId}|${params.requestToken}|${params.code6}`;
+  return `CHATFI_AUTH|v1|${params.requestId}|${params.requestToken}|${params.code6}`;
 }
 
 export function parseDeviceAuthQrPayload(raw: string): ParsedDeviceAuthQrPayload | null {
   const trimmed = raw.trim();
-  if (!trimmed.startsWith('ZAPEI_AUTH|v1|')) return null;
+  if (!trimmed.startsWith('CHATFI_AUTH|v1|') && !trimmed.startsWith('ZAPEI_AUTH|v1|')) return null;
   const parts = trimmed.split('|');
   if (parts.length !== 5) return null;
   const [, , requestId, requestToken, code6] = parts;

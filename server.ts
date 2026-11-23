@@ -52,7 +52,7 @@ function loadOrCreateVapidKeys(): VapidKeys {
 }
 
 const vapidKeys = loadOrCreateVapidKeys();
-const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:contato@zapei.app';
+const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:contato@chatfi.app';
 webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
 
 // --- Persistent Per-User Push Subscription Store ---
@@ -306,7 +306,7 @@ async function startServer(): Promise<void> {
       const recipientId =
         typeof req.body?.recipientId === 'string' ? req.body.recipientId.slice(0, 128) : '';
       const senderName =
-        typeof req.body?.senderName === 'string' ? req.body.senderName.slice(0, 80) : 'Zapei';
+        typeof req.body?.senderName === 'string' ? req.body.senderName.slice(0, 80) : 'ChatFi';
       const previewText =
         typeof req.body?.previewText === 'string'
           ? req.body.previewText.slice(0, 180)
@@ -372,7 +372,7 @@ async function startServer(): Promise<void> {
 
   const port = Number(process.env.PORT) || 3000;
   httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`Zapei server listening on http://0.0.0.0:${port}`);
+    console.log(`ChatFi server listening on http://0.0.0.0:${port}`);
   });
 }
 

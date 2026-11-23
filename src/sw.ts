@@ -8,8 +8,10 @@ declare let self: ServiceWorkerGlobalScope & {
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST || []);
 
-self.addEventListener('install', () => {
-  void self.skipWaiting();
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    void self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -141,7 +143,7 @@ self.addEventListener('push', (event: PushEvent) => {
   } catch {
     payload = {
       type: 'new_message',
-      senderName: 'Zapei',
+      senderName: 'ChatFi',
       body: event.data.text(),
     };
   }
@@ -163,7 +165,7 @@ self.addEventListener('push', (event: PushEvent) => {
   if (payload.type === 'incoming_call' && payload.callId) {
     const isVideo = payload.callType === 'video';
     const ringIndex = Number(payload.ringIndex || 1);
-    const caller = payload.callerName || 'Zapei';
+    const caller = payload.callerName || 'ChatFi';
     const title = isVideo
       ? `📹 CHAMADA DE VÍDEO · ${caller}`
       : `📞 LIGAÇÃO · ${caller}`;
@@ -214,7 +216,7 @@ self.addEventListener('push', (event: PushEvent) => {
   }
 
   // Real background chat message notification (text, audio, photo)
-  const msgTitle = payload.senderName || 'Nova mensagem no Zapei';
+  const msgTitle = payload.senderName || 'Nova mensagem no ChatFi';
   const rawBody = payload.body || 'Você recebeu uma nova mensagem.';
   const formattedBody =
     payload.messageType === 'audio' && !rawBody.startsWith('🎤')

@@ -62,7 +62,7 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white">
+          <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white">
             <ShieldCheck className="h-5 w-5" />
           </div>
 
@@ -72,14 +72,14 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
                 Privacidade, Termos e Permissões
               </h2>
               {consent && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0F5132]">
+                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0E7A34]">
                   <CheckCircle2 className="h-3 w-3" />
                   Aceito em {consent.acceptedAtLabel}
                 </span>
               )}
             </div>
             <p className="mt-1 text-xs leading-relaxed text-slate-600">
-              Consulte a Política de Responsabilidade e Privacidade (LGPD) e gerencie o acesso do Zapei aos recursos de comunicação deste aparelho.
+              Consulte a Política de Responsabilidade e Privacidade (LGPD) e gerencie o acesso do ChatFi aos recursos de comunicação deste aparelho.
             </p>
           </div>
         </div>
@@ -99,7 +99,7 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
               type="button"
               disabled={busy}
               onClick={() => void handleAuthorize()}
-              className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] px-4 text-xs font-bold text-white transition hover:bg-[#146c43] disabled:opacity-60"
+              className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-4 text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
             >
               {busy ? (
                 <>
@@ -118,12 +118,12 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5">
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
-            <Mic className="h-4 w-4 text-[#0F5132]" />
+            <Mic className="h-4 w-4 text-[#0E7A34]" />
             Microfone
           </div>
           <span
             className={`text-[11px] font-bold ${
-              micOk ? 'text-[#0F5132]' : 'text-slate-500'
+              micOk ? 'text-[#0E7A34]' : 'text-slate-500'
             }`}
           >
             {micOk ? 'Autorizado' : 'Sob demanda'}
@@ -132,12 +132,12 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
 
         <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5">
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
-            <Camera className="h-4 w-4 text-[#0F5132]" />
+            <Camera className="h-4 w-4 text-[#0E7A34]" />
             Câmera
           </div>
           <span
             className={`text-[11px] font-bold ${
-              camOk ? 'text-[#0F5132]' : 'text-slate-500'
+              camOk ? 'text-[#0E7A34]' : 'text-slate-500'
             }`}
           >
             {camOk ? 'Autorizada' : 'Sob demanda'}
@@ -146,12 +146,12 @@ export const PrivacyAndPermissionsCard: React.FC<PrivacyAndPermissionsCardProps>
 
         <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5">
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
-            <Bell className="h-4 w-4 text-[#0F5132]" />
+            <Bell className="h-4 w-4 text-[#0E7A34]" />
             Notificações
           </div>
           <span
             className={`text-[11px] font-bold ${
-              notifOk ? 'text-[#0F5132]' : 'text-slate-500'
+              notifOk ? 'text-[#0E7A34]' : 'text-slate-500'
             }`}
           >
             {notifOk ? 'Ativas' : 'Desativadas'}

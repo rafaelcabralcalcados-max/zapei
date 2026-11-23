@@ -309,12 +309,12 @@ export async function shareRealZapeiInvite(
   contactPhone: string
 ): Promise<'shared' | 'copied'> {
   const appUrl = window.location.origin;
-  const text = `Oi ${contactName}! Estou usando o Zapei para conversas, chamadas de áudio/vídeo e vitrines. Baixe ou acesse aqui: ${appUrl}`;
+  const text = `Oi ${contactName}! Estou usando o ChatFi para conversas, chamadas de áudio/vídeo e vitrines. Baixe ou acesse aqui: ${appUrl}`;
 
   if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
     try {
       await navigator.share({
-        title: 'Convite para o Zapei',
+        title: 'Convite para o ChatFi',
         text,
         url: appUrl,
       });

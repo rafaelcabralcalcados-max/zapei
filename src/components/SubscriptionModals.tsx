@@ -49,7 +49,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
         className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl"
       >
         <div className="flex items-start justify-between gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-[#0F5132]">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-[#0E7A34]">
             {isFactory ? <Factory className="h-6 w-6" /> : <Store className="h-6 w-6" />}
           </div>
           <button
@@ -93,12 +93,12 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
             value={businessName}
             onChange={(e) => setBusinessName(e.target.value)}
             placeholder={isFactory ? 'Ex: Calçados Silva' : 'Ex: Loja Ana Moda'}
-            className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:outline-none focus:ring-2 focus:ring-[#0F5132]/15"
+            className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
           />
         </div>
 
         <div className="mt-4 flex items-start gap-2 rounded-xl bg-slate-50 px-3.5 py-3 text-xs text-slate-600">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
           <span>
             {isFactory
               ? 'Seu painel já abre pronto para postar produtos com foto, preço e grade.'
@@ -117,7 +117,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
           <button
             type="submit"
             disabled={busy || businessName.trim().length < 2}
-            className="h-12 flex-1 rounded-xl bg-[#0F5132] text-xs font-bold text-white hover:bg-[#146c43] disabled:opacity-50"
+            className="h-12 flex-1 rounded-xl bg-[#0E7A34] text-xs font-bold text-white hover:bg-[#0B5D27] disabled:opacity-50"
           >
             {busy ? 'Abrindo painel...' : 'Ativar e abrir painel'}
           </button>
@@ -156,7 +156,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
       <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900">
-            Assinatura Comercial Zapei
+            Assinatura Comercial ChatFi
           </h2>
           <button
             type="button"
@@ -173,7 +173,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
             <span
               className={`rounded-md px-2 py-0.5 text-xs font-bold ${
                 profile.subscriptionStatus === 'active'
-                  ? 'bg-emerald-100 text-[#0F5132]'
+                  ? 'bg-emerald-100 text-[#0E7A34]'
                   : profile.subscriptionStatus === 'trial'
                     ? 'bg-blue-100 text-[#0D2B3E]'
                     : 'bg-orange-100 text-orange-800'
@@ -207,7 +207,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
               onClick={() => setMethod('pix')}
               className={`flex h-12 items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition ${
                 method === 'pix'
-                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34]'
                   : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
               }`}
             >
@@ -219,7 +219,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
               onClick={() => setMethod('card')}
               className={`flex h-12 items-center justify-center gap-2 rounded-xl border text-xs font-semibold transition ${
                 method === 'card'
-                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34]'
                   : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
               }`}
             >
@@ -229,7 +229,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
           </div>
         </div>
 
-        <div className="mt-4 flex items-start gap-2 rounded-xl bg-emerald-50/70 p-3 text-xs text-[#0F5132]">
+        <div className="mt-4 flex items-start gap-2 rounded-xl bg-emerald-50/70 p-3 text-xs text-[#0E7A34]">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             Ao confirmar, sua assinatura comercial ficará ativa imediatamente em sua conta.
@@ -248,7 +248,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
             type="button"
             onClick={() => void handleRenew()}
             disabled={busy}
-            className="h-11 flex-1 rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+            className="h-11 flex-1 rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
           >
             {busy ? 'Processando...' : 'Ativar Plano R$ 59,90'}
           </button>

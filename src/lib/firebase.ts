@@ -22,6 +22,7 @@ import {
   getDoc,
   getDocFromServer,
   getDocs,
+  getDocsFromServer,
   getFirestore,
   initializeFirestore,
   onSnapshot,
@@ -69,6 +70,7 @@ import {
   generateVirtualLine,
   hashCpfSha256,
   isValidCpf,
+  isVirtualLinePrefix,
   maskEmailForDisplay,
   type LocalDeviceInfo,
 } from './cpfAndDeviceUtils';
@@ -306,7 +308,7 @@ export const DEFAULT_CATEGORY_MARGINS: Record<ProductCategory, CategoryMargin> =
 
 export async function computeContactLookupHash(rawIdentifier: string): Promise<string> {
   const trimmed = rawIdentifier.trim().toUpperCase();
-  if (trimmed.startsWith('ZAP-')) {
+  if (isVirtualLinePrefix(trimmed)) {
     const data = new TextEncoder().encode(`zapei-vline-v1:${trimmed}`);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     return Array.from(new Uint8Array(hashBuffer))
@@ -364,7 +366,7 @@ export async function registerOrUpdateUserProfile(params: {
     (existingPrivData?.cpfHash ? String(existingPrivData.cpfHash) : '');
 
   const rawIdentifier = params.phone.trim() || resolvedVirtualLine;
-  const isVirtualLineValue = rawIdentifier.toUpperCase().startsWith('ZAP-');
+  const isVirtualLineValue = isVirtualLinePrefix(rawIdentifier);
   const cleanPhone = isVirtualLineValue
     ? rawIdentifier.toUpperCase()
     : formatPhoneDisplay(rawIdentifier);
@@ -386,8 +388,8 @@ export async function registerOrUpdateUserProfile(params: {
     uid: params.uid,
     displayName: params.displayName.slice(0, 80),
     initials,
-    statusMessage: (params.statusMessage ?? 'Disponível no Zapei').slice(0, 160),
-    avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+    statusMessage: (params.statusMessage ?? 'Disponível no ChatFi').slice(0, 160),
+    avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
     avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
     commercialMode: mode,
     manufacturerActivated: Boolean(params.manufacturerActivated),
@@ -460,7 +462,7 @@ export async function registerOrUpdateUserProfile(params: {
         ownerId: params.uid,
         displayName: params.displayName.slice(0, 80),
         initials,
-        avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+        avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
         avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
         role: indexRole,
         hasStorefront,
@@ -485,7 +487,7 @@ export async function registerOrUpdateUserProfile(params: {
           ownerId: params.uid,
           displayName: params.displayName.slice(0, 80),
           initials,
-          avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+          avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
           avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
           role: indexRole,
           hasStorefront,
@@ -507,8 +509,8 @@ export async function registerOrUpdateUserProfile(params: {
     displayName: params.displayName.slice(0, 80),
     displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
     initials,
-    statusMessage: (params.statusMessage ?? 'Disponível no Zapei').slice(0, 160),
-    avatarColor: (params.avatarColor ?? '#0F5132').slice(0, 20),
+    statusMessage: (params.statusMessage ?? 'Disponível no ChatFi').slice(0, 160),
+    avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
     avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
     role: indexRole,
     hasStorefront,
@@ -570,8 +572,8 @@ export function subscribeUserProfile(
       virtualLine,
       authMethod,
       email: String(privateData.email ?? email),
-      statusMessage: String(publicData.statusMessage ?? 'Disponível no Zapei'),
-      avatarBg: String(publicData.avatarColor ?? '#0F5132'),
+      statusMessage: String(publicData.statusMessage ?? 'Disponível no ChatFi'),
+      avatarBg: String(publicData.avatarColor ?? '#0E7A34'),
       avatarUrl: publicData.avatarUrl ? String(publicData.avatarUrl) : undefined,
       commercialMode: (publicData.commercialMode as CommercialMode) ?? 'buyer',
       manufacturerActivated: Boolean(publicData.manufacturerActivated),
@@ -657,8 +659,8 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     displayName: profile.name.slice(0, 80),
     displayNameLower: profile.name.trim().toLowerCase().slice(0, 80),
     initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
-    statusMessage: (profile.statusMessage || 'Disponível no Zapei').slice(0, 160),
-    avatarColor: (profile.avatarBg || '#0F5132').slice(0, 20),
+    statusMessage: (profile.statusMessage || 'Disponível no ChatFi').slice(0, 160),
+    avatarColor: (profile.avatarBg || '#0E7A34').slice(0, 20),
     avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
     role,
     hasStorefront: Boolean(profile.hasStorefront),
@@ -710,7 +712,7 @@ export function subscribePublicDirectory(
         ...d,
         avatarUrl: d.avatarUrl || prev?.avatarUrl,
         storefrontName: d.storefrontName || prev?.storefrontName || '',
-        statusMessage: d.statusMessage || prev?.statusMessage || 'Disponível no Zapei',
+        statusMessage: d.statusMessage || prev?.statusMessage || 'Disponível no ChatFi',
         virtualLine: d.virtualLine || prev?.virtualLine,
       });
     }
@@ -730,9 +732,9 @@ export function subscribePublicDirectory(
         return {
           uid: String(d.uid || docSnap.id),
           displayName,
-          initials: String(d.initials || getInitials(displayName || 'ZP')),
-          statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
-          avatarColor: String(d.avatarColor || '#0F5132'),
+          initials: String(d.initials || getInitials(displayName || 'CF')),
+          statusMessage: String(d.statusMessage || 'Disponível no ChatFi'),
+          avatarColor: String(d.avatarColor || '#0E7A34'),
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
           role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
           hasStorefront: Boolean(d.hasStorefront),
@@ -768,9 +770,9 @@ export function subscribePublicDirectory(
         return {
           uid: String(d.uid || docSnap.id),
           displayName,
-          initials: String(d.initials || getInitials(displayName || 'ZP')),
-          statusMessage: String(d.statusMessage || 'Disponível no Zapei'),
-          avatarColor: String(d.avatarColor || '#0F5132'),
+          initials: String(d.initials || getInitials(displayName || 'CF')),
+          statusMessage: String(d.statusMessage || 'Disponível no ChatFi'),
+          avatarColor: String(d.avatarColor || '#0E7A34'),
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
           role,
           hasStorefront:
@@ -818,7 +820,7 @@ export async function lookupRegisteredUserByPhone(
       uid: String(d.ownerId),
       displayName: String(d.displayName),
       initials: String(d.initials || getInitials(String(d.displayName))),
-      avatarColor: String(d.avatarColor || '#0F5132'),
+      avatarColor: String(d.avatarColor || '#0E7A34'),
       avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
       role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
       hasStorefront: Boolean(d.hasStorefront),
@@ -840,8 +842,9 @@ export async function saveRealContactToPhonebook(params: {
   name: string;
   phone: string;
 }): Promise<{ matched: boolean; matchedName?: string }> {
-  const cleanPhone = formatPhoneDisplay(params.phone);
-  const phoneHash = await hashPhoneNumber(params.phone);
+  const isVline = isVirtualLinePrefix(params.phone);
+  const cleanPhone = isVline ? params.phone.trim().toUpperCase() : formatPhoneDisplay(params.phone);
+  const phoneHash = await computeContactLookupHash(params.phone);
   if (!phoneHash) return { matched: false };
 
   const match = await lookupRegisteredUserByPhone(params.phone);
@@ -935,8 +938,8 @@ export function subscribeUserContacts(
           name: String(d.name || ''),
           phone: String(d.phone || ''),
           phoneHash: String(d.phoneHash || ''),
-          initials: getInitials(String(d.name || 'ZP')),
-          avatarBg: String(d.avatarColor || (onZapei ? '#0F5132' : '#64748B')),
+          initials: getInitials(String(d.name || 'CF')),
+          avatarBg: String(d.avatarColor || (onZapei ? '#0E7A34' : '#64748B')),
           onZapei,
           matchedUid: matchedUid || undefined,
           role: (d.matchedRole as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
@@ -1256,11 +1259,11 @@ export function subscribeUserCalls(
       id: docSnap.id,
       callerId: String(d.callerId),
       callerName: String(d.callerName || ''),
-      callerInitials: String(d.callerInitials || getInitials(String(d.callerName || 'ZP'))),
-      callerAvatarColor: String(d.callerAvatarColor || '#0F5132'),
+      callerInitials: String(d.callerInitials || getInitials(String(d.callerName || 'CF'))),
+      callerAvatarColor: String(d.callerAvatarColor || '#0E7A34'),
       calleeId: String(d.calleeId),
       calleeName: String(d.calleeName || ''),
-      calleeInitials: String(d.calleeInitials || getInitials(String(d.calleeName || 'ZP'))),
+      calleeInitials: String(d.calleeInitials || getInitials(String(d.calleeName || 'CF'))),
       calleeAvatarColor: String(d.calleeAvatarColor || '#0D2B3E'),
       callType: (d.callType as 'audio' | 'video') ?? 'audio',
       status: (d.status as CallSessionRecord['status']) ?? 'ended',
@@ -1960,7 +1963,7 @@ export async function registerAccountWithCpf(params: {
   if (existingSnap.exists()) {
     throw new CpfAuthError(
       'cpf-already-exists',
-      'Este CPF já possui uma conta e Linha Virtual ativa no Zapei.'
+      'Este CPF já possui uma conta e Linha Virtual ativa no ChatFi.'
     );
   }
 
@@ -2001,7 +2004,7 @@ export async function registerAccountWithCpf(params: {
       if (txSnap.exists()) {
         throw new CpfAuthError(
           'cpf-already-exists',
-          'Este CPF já possui uma conta e Linha Virtual ativa no Zapei.'
+          'Este CPF já possui uma conta e Linha Virtual ativa no ChatFi.'
         );
       }
       tx.set(cpfRef, {
@@ -2036,7 +2039,7 @@ export async function registerAccountWithCpf(params: {
     virtualLine,
     authMethod: 'cpf',
     cpfHash,
-    statusMessage: params.statusMessage || 'Disponível no Zapei',
+    statusMessage: params.statusMessage || 'Disponível no ChatFi',
     avatarUrl: params.avatarUrl || '',
   });
 
@@ -2115,7 +2118,7 @@ export async function sendCpfPasswordReset(
   if (!snap.exists()) {
     throw new CpfAuthError(
       'cpf-not-found',
-      'Nenhuma conta encontrada com este CPF no Zapei.'
+      'Nenhuma conta encontrada com este CPF no ChatFi.'
     );
   }
   const recoveryEmail = String(snap.data().recoveryEmail || '').trim().toLowerCase();
@@ -2172,6 +2175,25 @@ export async function createDeviceAuthRequest(
   };
 }
 
+export async function ensureCurrentDeviceRegisteredSilently(
+  uid: string,
+  deviceInfo: LocalDeviceInfo
+): Promise<void> {
+  try {
+    await setDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
+      ownerId: uid,
+      deviceId: deviceInfo.deviceId,
+      deviceName: deviceInfo.deviceName.slice(0, 100),
+      platform: deviceInfo.platform.slice(0, 60),
+      primary: true,
+      createdAt: serverTimestamp(),
+      lastActiveAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-fatal background sync for legacy accounts
+  }
+}
+
 export async function registerOrCheckCurrentDevice(
   uid: string,
   deviceInfo: LocalDeviceInfo
@@ -2181,20 +2203,18 @@ export async function registerOrCheckCurrentDevice(
 > {
   const devicesCol = collection(db, 'users', uid, 'devices');
   const qDevices = query(devicesCol, where('ownerId', '==', uid));
-  const snap = await getDocs(qDevices);
+  let snap;
+  try {
+    snap = await getDocsFromServer(qDevices);
+  } catch {
+    snap = await getDocs(qDevices);
+  }
 
   const existingDocs = snap.docs;
   const selfDoc = existingDocs.find((d) => d.id === deviceInfo.deviceId);
 
   if (selfDoc) {
     const isPrimary = Boolean(selfDoc.data().primary);
-    void updateDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
-      deviceName: deviceInfo.deviceName.slice(0, 100),
-      platform: deviceInfo.platform.slice(0, 60),
-      lastActiveAt: serverTimestamp(),
-    }).catch(() => {
-      // Offline or transient update failure should not lock out an already-authorized device
-    });
     return { authorized: true, isPrimary };
   }
 
@@ -2220,7 +2240,48 @@ export async function registerOrCheckCurrentDevice(
     return { authorized: true, isPrimary: true };
   }
 
-  // Another device is already active -> require real-time QR Code or 6-digit approval!
+  // Another device is already active -> reuse an unexpired pending request from this same device if available
+  try {
+    const qPending = query(collection(db, 'auth_requests'), where('uid', '==', uid));
+    const reqSnap = await getDocs(qPending);
+    const now = Date.now();
+    const reusable = reqSnap.docs
+      .map((docSnap) => {
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          uid: String(d.uid),
+          requestToken: String(d.requestToken || ''),
+          code6: String(d.code6 || ''),
+          deviceId: String(d.deviceId || ''),
+          deviceName: String(d.deviceName || deviceInfo.deviceName),
+          platform: String(d.platform || deviceInfo.platform),
+          status: (d.status as DeviceAuthRequest['status']) ?? 'pending',
+          approvedByDeviceId: d.approvedByDeviceId ? String(d.approvedByDeviceId) : undefined,
+          expiresAtMs: Number(d.expiresAtMs || 0),
+          createdAtMs: timestampToMs(d.createdAt as Timestamp | undefined),
+        };
+      })
+      .filter(
+        (r) =>
+          r.status === 'pending' &&
+          r.deviceId === deviceInfo.deviceId &&
+          r.expiresAtMs > now + 30_000
+      )
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)[0];
+
+    if (reusable) {
+      return {
+        authorized: false,
+        request: reusable,
+        activeDeviceCount: existingDocs.length,
+      };
+    }
+  } catch {
+    // Fall through and create a fresh request
+  }
+
+  // Another device is already active -> require real-time QR Code or 6-digit password approval!
   const request = await createDeviceAuthRequest(uid, deviceInfo);
   return {
     authorized: false,
@@ -2231,7 +2292,7 @@ export async function registerOrCheckCurrentDevice(
 
 export function subscribeUserDevices(
   uid: string,
-  callback: (devices: ConnectedDevice[]) => void
+  callback: (devices: ConnectedDevice[], meta: { fromCache: boolean }) => void
 ): () => void {
   const qDevices = query(
     collection(db, 'users', uid, 'devices'),
@@ -2263,7 +2324,7 @@ export function subscribeUserDevices(
         (a, b) =>
           Number(b.primary) - Number(a.primary) || b.lastActiveAtMs - a.lastActiveAtMs
       );
-      callback(list);
+      callback(list, { fromCache: snap.metadata.fromCache });
     },
     (error) => {
       console.error('Connected devices listener error:', error);
@@ -2315,7 +2376,7 @@ export function subscribePendingAuthRequestsForUser(
     qReqs,
     (snap) => {
       const now = Date.now();
-      const pending: DeviceAuthRequest[] = snap.docs
+      const sortedPending: DeviceAuthRequest[] = snap.docs
         .map((docSnap) => {
           const d = docSnap.data();
           return {
@@ -2341,6 +2402,15 @@ export function subscribePendingAuthRequestsForUser(
             (req.expiresAtMs === 0 || req.expiresAtMs > now)
         )
         .sort((a, b) => b.createdAtMs - a.createdAtMs);
+
+      // Deduplicate by requesting deviceId so the already-connected device only sees 1 clean prompt per new device
+      const seenDevices = new Set<string>();
+      const pending: DeviceAuthRequest[] = [];
+      for (const req of sortedPending) {
+        if (seenDevices.has(req.deviceId)) continue;
+        seenDevices.add(req.deviceId);
+        pending.push(req);
+      }
       callback(pending);
     },
     (error) => {

@@ -332,7 +332,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             onClick={onOpenBilling}
             className={`inline-flex min-h-[40px] items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
               profile.subscriptionStatus === 'active'
-                ? 'border-emerald-200 bg-emerald-50 text-[#0F5132]'
+                ? 'border-emerald-200 bg-emerald-50 text-[#0E7A34]'
                 : profile.subscriptionStatus === 'trial'
                   ? 'border-slate-200 bg-slate-50 text-[#0D2B3E]'
                   : 'border-orange-300 bg-orange-50 text-orange-800'
@@ -386,7 +386,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 onClick={() => setActiveTab(tab.id as FactoryTab)}
                 className={`flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
                   active
-                    ? 'bg-[#0F5132] text-white'
+                    ? 'bg-[#0E7A34] text-white'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
@@ -399,7 +399,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       </div>
 
       {feedback && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-[#0F5132]">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-[#0E7A34]">
           {feedback}
         </div>
       )}
@@ -432,7 +432,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               <button
                 type="button"
                 onClick={() => productPhotoInputRef.current?.click()}
-                className="mt-1.5 flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-4 text-center transition hover:border-[#0F5132] hover:bg-emerald-50/40"
+                className="mt-1.5 flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-4 text-center transition hover:border-[#0E7A34] hover:bg-emerald-50/40"
               >
                 {prodImageUrl ? (
                   <div className="w-full space-y-2">
@@ -441,7 +441,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       alt="Prévia do produto"
                       className="mx-auto h-40 w-full rounded-lg object-cover"
                     />
-                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#0F5132]">
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#0E7A34]">
                       <Camera className="h-3.5 w-3.5" />
                       Trocar foto ({prodImageName})
                     </span>
@@ -471,7 +471,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   value={prodName}
                   onChange={(e) => setProdName(e.target.value)}
                   placeholder="Ex: Sandália Couro Tratorada"
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0F5132] focus:outline-none"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
 
@@ -482,7 +482,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 <select
                   value={prodCategory}
                   onChange={(e) => setProdCategory(e.target.value as ProductCategory)}
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0F5132] focus:outline-none"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
                 >
                   {CATEGORIES.map((cat) => (
                     <option key={cat} value={cat}>
@@ -501,7 +501,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   value={prodSku}
                   onChange={(e) => setProdSku(e.target.value)}
                   placeholder="Ex: REF-402"
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0F5132] focus:outline-none"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
 
@@ -517,7 +517,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   value={prodPrice}
                   onChange={(e) => setProdPrice(e.target.value)}
                   placeholder="480.00"
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0F5132] focus:outline-none"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
 
@@ -531,7 +531,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   required
                   value={prodStock}
                   onChange={(e) => setProdStock(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0F5132] focus:outline-none"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
             </div>
@@ -547,7 +547,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 value={prodGradeRaw}
                 onChange={(e) => setProdGradeRaw(e.target.value)}
                 placeholder="34:1, 35:2, 36:3, 37:3, 38:2, 39:1"
-                className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0F5132] focus:outline-none"
+                className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
               />
 
               {/* Favorite grades chips */}
@@ -557,7 +557,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     key={fav.id}
                     type="button"
                     onClick={() => setProdGradeRaw(fav.raw)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-[#0F5132] hover:text-[#0F5132]"
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-[#0E7A34] hover:text-[#0E7A34]"
                   >
                     {fav.label}
                   </button>
@@ -571,7 +571,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   value={favLabel}
                   onChange={(e) => setFavLabel(e.target.value)}
                   placeholder="Nome para salvar esta grade favorita..."
-                  className="h-9 flex-1 rounded-lg border border-slate-200 px-2.5 text-xs focus:border-[#0F5132] focus:outline-none"
+                  className="h-9 flex-1 rounded-lg border border-slate-200 px-2.5 text-xs focus:border-[#0E7A34] focus:outline-none"
                 />
                 <button
                   type="button"
@@ -602,7 +602,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             <button
               type="submit"
               disabled={submitting}
-              className="h-11 w-full rounded-xl bg-[#0F5132] text-sm font-semibold text-white transition hover:bg-[#146c43] disabled:opacity-50"
+              className="h-11 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
             >
               {submitting ? 'Publicando...' : 'Cadastrar Produto no Catálogo'}
             </button>
@@ -646,7 +646,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                             {product.name}
                           </h3>
                         </div>
-                        <span className="font-mono text-sm font-bold text-[#0F5132] tabular-nums">
+                        <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
                           {formatBRL(product.factoryPrice)} / cx
                         </span>
                       </div>
@@ -746,7 +746,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         Recebido em {sub.updatedAt} · Marque cada item como Disponível ou Esgotado
                       </p>
                     </div>
-                    <span className="font-mono text-sm font-bold text-[#0F5132] tabular-nums">
+                    <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
                       Custo Fábrica: {formatBRL(sub.factoryCost)}
                     </span>
                   </div>
@@ -789,7 +789,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                               }
                               className={`flex min-h-[38px] items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                                 current === 'available'
-                                  ? 'bg-[#0F5132] text-white'
+                                  ? 'bg-[#0E7A34] text-white'
                                   : 'border border-slate-200 bg-white text-slate-600'
                               }`}
                             >
@@ -831,7 +831,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         `Conferência do subpedido ${sub.subOrderCode} confirmada com baixa automática de estoque.`
                       );
                     }}
-                    className="h-11 w-full rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43]"
+                    className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
                   >
                     Confirmar Conferência e Baixar Estoque
                   </button>
@@ -874,7 +874,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                           : 'Aguardando revendedor informar transportadora/distribuidora'}
                     </p>
                   </div>
-                  <span className="font-mono text-sm font-bold text-[#0F5132] tabular-nums">
+                  <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
                     {formatBRL(sub.factoryCost)}
                   </span>
                 </div>
@@ -886,7 +886,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 )}
 
                 {sub.status === 'dispatched' ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-[#0F5132] space-y-2">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-[#0E7A34] space-y-2">
                     <p className="font-semibold">
                       Despacho concluído · {sub.receiptNote || 'Comprovante anexado'}
                     </p>
@@ -911,10 +911,10 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                           }))
                         }
                         placeholder="Observação / Nº do conhecimento ou canhoto"
-                        className="h-10 rounded-xl border border-slate-200 px-3 text-xs focus:border-[#0F5132] focus:outline-none"
+                        className="h-10 rounded-xl border border-slate-200 px-3 text-xs focus:border-[#0E7A34] focus:outline-none"
                       />
 
-                      <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-700 hover:border-[#0F5132]">
+                      <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-700 hover:border-[#0E7A34]">
                         <Camera className="h-4 w-4" />
                         <span>
                           {receiptImages[sub.id]
@@ -968,7 +968,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               <span className="text-xs font-semibold text-slate-500">
                 Recebido / Quitado
               </span>
-              <p className="mt-1 font-mono text-2xl font-bold text-[#0F5132] tabular-nums">
+              <p className="mt-1 font-mono text-2xl font-bold text-[#0E7A34] tabular-nums">
                 {formatBRL(totalReceived)}
               </p>
             </div>
@@ -1056,7 +1056,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               required
               value={factoryName}
               onChange={(e) => setFactoryName(e.target.value)}
-              className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0F5132] focus:outline-none"
+              className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
             />
           </div>
 
@@ -1098,7 +1098,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               type="checkbox"
               checked={allowPickup}
               onChange={(e) => setAllowPickup(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-[#0F5132]"
+              className="h-4 w-4 rounded border-slate-300 text-[#0E7A34]"
             />
             Aceitar retirada no balcão da fábrica
           </label>
@@ -1106,7 +1106,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           <button
             type="submit"
             disabled={submitting}
-            className="h-11 w-full rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+            className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
           >
             Salvar Política de Entrega
           </button>

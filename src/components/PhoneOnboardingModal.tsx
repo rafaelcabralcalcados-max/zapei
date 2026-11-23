@@ -14,7 +14,6 @@ import {
   Loader2,
   Lock,
   Mail,
-  MessageCircle,
   Phone,
   RefreshCw,
   ShieldCheck,
@@ -37,11 +36,13 @@ import {
   cleanCpfDigits,
   formatCpfMask,
   isValidCpf,
+  isVirtualLinePrefix,
 } from '../lib/cpfAndDeviceUtils';
 import {
   compressImageFileToDataUrl,
   formatPhoneDisplay,
 } from '../lib/phoneUtils';
+import { ChatFiLogo } from './ChatFiLogo';
 
 interface CountryOption {
   code: string;
@@ -211,7 +212,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   authUser,
   initialName = '',
   initialPhone = '',
-  initialStatus = 'Disponível no Zapei',
+  initialStatus = 'Disponível no ChatFi',
   initialAvatarUrl = '',
   onSaveProfile,
   onClose,
@@ -428,7 +429,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       return;
     }
     const rawEditPhone = editPhone || initialPhone;
-    const isVirtualLineEdit = rawEditPhone.trim().toUpperCase().startsWith('ZAP-');
+    const isVirtualLineEdit = isVirtualLinePrefix(rawEditPhone);
     const verifiedPhone =
       mode === 'edit'
         ? isVirtualLineEdit
@@ -443,7 +444,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       await onSaveProfile(
         name.trim(),
         verifiedPhone,
-        statusMessage.trim() || 'Disponível no Zapei',
+        statusMessage.trim() || 'Disponível no ChatFi',
         avatarUrl || undefined
       );
       onClose?.();
@@ -567,7 +568,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               <button
                 type="button"
                 onClick={() => photoInputRef.current?.click()}
-                className="group relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-slate-400 ring-2 ring-[#0F5132]/20 transition hover:ring-[#0F5132]"
+                className="group relative flex h-24 w-24 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-slate-400 ring-2 ring-[#0E7A34]/20 transition hover:ring-[#0E7A34]"
               >
                 {avatarUrl ? (
                   <img
@@ -585,7 +586,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               <button
                 type="button"
                 onClick={() => photoInputRef.current?.click()}
-                className="mt-2 text-xs font-semibold text-[#0F5132] hover:underline"
+                className="mt-2 text-xs font-semibold text-[#0E7A34] hover:underline"
               >
                 {avatarUrl ? 'Alterar foto de perfil' : 'Adicionar foto de perfil'}
               </button>
@@ -600,7 +601,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="mt-1 h-11 w-full border-b-2 border-slate-200 bg-transparent px-1 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                className="mt-1 h-11 w-full border-b-2 border-slate-200 bg-transparent px-1 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
               />
             </div>
 
@@ -612,15 +613,15 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                 type="text"
                 value={statusMessage}
                 onChange={(e) => setStatusMessage(e.target.value)}
-                placeholder="Disponível no Zapei"
-                className="mt-1 h-11 w-full border-b-2 border-slate-200 bg-transparent px-1 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                placeholder="Disponível no ChatFi"
+                className="mt-1 h-11 w-full border-b-2 border-slate-200 bg-transparent px-1 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
               />
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-600">
-                {(editPhone || initialPhone).trim().toUpperCase().startsWith('ZAP-')
-                  ? 'Linha Virtual Zapei'
+                {isVirtualLinePrefix(editPhone || initialPhone)
+                  ? 'Linha Virtual ChatFi'
                   : 'Número verificado'}
               </label>
               <p className="mt-1 font-mono text-sm font-semibold text-slate-700 tabular-nums">
@@ -647,7 +648,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               <button
                 type="submit"
                 disabled={busy}
-                className="h-11 flex-1 rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+                className="h-11 flex-1 rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 {busy ? 'Salvando...' : 'Salvar'}
               </button>
@@ -673,13 +674,11 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
       {/* Invisible Firebase Phone Auth reCAPTCHA Mount Point */}
       <div id="zapei-recaptcha-container" />
 
-      {/* Authentic WhatsApp Web Top Emerald Ribbon (Desktop) */}
-      <div className="hidden md:block h-52 w-full bg-[#0F5132]">
+      {/* Official ChatFi Top Emerald Ribbon (Desktop) */}
+      <div className="hidden md:block h-52 w-full bg-[#0B5D27]">
         <div className="mx-auto flex max-w-5xl items-center gap-3 px-6 pt-7 text-white">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#0F5132] shadow-sm">
-            <MessageCircle className="h-6 w-6 fill-current" />
-          </div>
-          <span className="text-base font-bold tracking-wide uppercase">ZAPEI</span>
+          <ChatFiLogo className="h-11 w-11 rounded-xl shadow-md ring-2 ring-white/20" />
+          <span className="text-lg font-extrabold tracking-wide">ChatFi</span>
         </div>
       </div>
 
@@ -691,12 +690,12 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
             <div>
               <h2 className="text-2xl font-bold tracking-tight text-slate-900">
                 {step === 'cpf'
-                  ? 'Entre no Zapei com seu CPF e Linha Virtual'
-                  : 'Entre no Zapei com Telefone ou CPF'}
+                  ? 'Entre no ChatFi com seu CPF e Linha Virtual'
+                  : 'Entre no ChatFi com Telefone ou CPF'}
               </h2>
               <p className="mt-2.5 text-sm leading-relaxed text-slate-600">
                 {step === 'cpf'
-                  ? 'Crie sua Linha Virtual exclusiva (ZAP-XXXX-XXXX) protegida por criptografia LGPD (1 conta por CPF) e converse livremente com qualquer pessoa no Zapei.'
+                  ? 'Crie sua Linha Virtual exclusiva (CFI-XXXX-XXXX) protegida por criptografia LGPD (1 conta por CPF) e converse livremente com qualquer pessoa no ChatFi.'
                   : 'Use seu número de celular com verificação por SMS ou entre com CPF e Linha Virtual exclusiva. Todos os usuários se encontram e conversam entre si.'}
               </p>
 
@@ -706,7 +705,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       {
                         num: '1',
                         title: '1 Linha Virtual exclusiva por CPF',
-                        desc: 'Seu CPF é protegido via hash SHA-256 (LGPD) e gera uma Linha Virtual ZAP-XXXX-XXXX.',
+                        desc: 'Seu CPF é protegido via hash SHA-256 (LGPD) e gera uma Linha Virtual CFI-XXXX-XXXX.',
                         done: false,
                         active: true,
                       },
@@ -729,7 +728,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         <span
                           className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition ${
                             item.active
-                              ? 'bg-[#0F5132] text-white'
+                              ? 'bg-[#0E7A34] text-white'
                               : 'bg-slate-200 text-slate-600'
                           }`}
                         >
@@ -768,7 +767,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         <span
                           className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition ${
                             item.done
-                              ? 'bg-[#0F5132] text-white'
+                              ? 'bg-[#0E7A34] text-white'
                               : item.active
                                 ? 'bg-[#0D2B3E] text-white'
                                 : 'bg-slate-200 text-slate-600'
@@ -786,31 +785,29 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
             </div>
 
             <div className="mt-8 flex items-center gap-2 border-t border-slate-200 pt-5 text-xs text-slate-500">
-              <Lock className="h-4 w-4 shrink-0 text-[#0F5132]" />
+              <Lock className="h-4 w-4 shrink-0 text-[#0E7A34]" />
               <span>Mensagens, chamadas de voz/vídeo e compras são gratuitas para sempre.</span>
             </div>
           </div>
 
-          {/* Right Column (Full Screen on Mobile) — Authentic WhatsApp Screens */}
+          {/* Right Column (Full Screen on Mobile) */}
           <div className="flex flex-1 flex-col justify-between px-4 sm:px-8 pt-safe pb-safe md:py-10 min-h-[100dvh] md:min-h-[540px]">
-            {/* STEP 1: WELCOME (Identical to WhatsApp Welcome Screen) */}
+            {/* STEP 1: WELCOME */}
             {step === 'welcome' && (
               <>
                 <div className="flex flex-1 flex-col items-center justify-center text-center">
-                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-emerald-50 text-[#0F5132] ring-8 ring-emerald-50/60">
-                    <MessageCircle className="h-12 w-12 fill-current" />
-                  </div>
+                  <ChatFiLogo className="h-24 w-24 rounded-3xl shadow-lg ring-8 ring-emerald-50" />
 
-                  <h1 className="mt-8 text-2xl font-bold tracking-tight text-slate-900">
-                    Boas-vindas ao Zapei
+                  <h1 className="mt-7 text-2xl font-bold tracking-tight text-slate-900">
+                    Boas-vindas ao ChatFi
                   </h1>
                   <p className="mt-3 max-w-sm text-sm leading-relaxed text-slate-500">
                     Leia nossa{' '}
-                    <span className="font-medium text-[#0F5132]">
+                    <span className="font-medium text-[#0E7A34]">
                       Política de Privacidade
                     </span>
                     . Toque em &ldquo;Concordar e continuar&rdquo; para aceitar os{' '}
-                    <span className="font-medium text-[#0F5132]">
+                    <span className="font-medium text-[#0E7A34]">
                       Termos de Serviço
                     </span>
                     .
@@ -824,7 +821,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       setErrorInfo(null);
                       setStep('phone');
                     }}
-                    className="h-12 w-full rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] active:scale-[0.99]"
+                    className="h-12 w-full rounded-full bg-[#0E7A34] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#0B5D27] active:scale-[0.99]"
                   >
                     Concordar e entrar por Telefone
                   </button>
@@ -835,13 +832,13 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       setCpfResetNotice('');
                       setStep('cpf');
                     }}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-full border-2 border-[#0F5132] bg-white text-xs font-bold tracking-wide text-[#0F5132] uppercase transition hover:bg-emerald-50 active:scale-[0.99]"
+                    className="flex h-11 w-full items-center justify-center gap-2 rounded-full border-2 border-[#0E7A34] bg-white text-xs font-bold tracking-wide text-[#0E7A34] uppercase transition hover:bg-emerald-50 active:scale-[0.99]"
                   >
                     <CreditCard className="h-4 w-4" />
                     Entrar com CPF (Linha Virtual)
                   </button>
                   <p className="pt-1 text-center text-xs text-slate-400">
-                    Zapei · Mensagens, Ligações e Vitrines
+                    ChatFi · Mensagens, Ligações e Vitrines
                   </p>
                 </div>
               </>
@@ -866,8 +863,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     >
                       <ArrowLeft className="h-5 w-5" />
                     </button>
-                    <h1 className="text-lg font-bold text-[#0F5132]">
-                      Entrar no Zapei
+                    <h1 className="text-lg font-bold text-[#0E7A34]">
+                      Entrar no ChatFi
                     </h1>
                   </div>
 
@@ -879,7 +876,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         setErrorInfo(null);
                         setStep('phone');
                       }}
-                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0F5132] shadow-xs"
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0E7A34] shadow-xs"
                     >
                       <Phone className="h-3.5 w-3.5" />
                       Telefone (SMS)
@@ -899,16 +896,16 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   </div>
 
                   <p className="mt-4 text-center text-xs leading-relaxed text-slate-600">
-                    Insira seu número de telefone. O Zapei enviará um código SMS de 6 dígitos para verificar sua conta.
+                    Insira seu número de telefone. O ChatFi enviará um código SMS de 6 dígitos para verificar sua conta.
                   </p>
 
-                  {/* Country Dropdown with WhatsApp Bottom Border */}
+                  {/* Country Dropdown with Bottom Border */}
                   <div className="relative mt-7">
                     <select
                       aria-label="País"
                       value={selectedCountry.code}
                       onChange={(e) => handleCountryChange(e.target.value)}
-                      className="h-11 w-full appearance-none border-b-2 border-[#0F5132] bg-transparent pr-8 text-center text-sm font-medium text-slate-900 focus:outline-none"
+                      className="h-11 w-full appearance-none border-b-2 border-[#0E7A34] bg-transparent pr-8 text-center text-sm font-medium text-slate-900 focus:outline-none"
                     >
                       {COUNTRIES.map((country) => (
                         <option key={country.code} value={country.code}>
@@ -916,12 +913,12 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         </option>
                       ))}
                     </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-[#0F5132]" />
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-[#0E7A34]" />
                   </div>
 
-                  {/* Classic WhatsApp +DDI | Phone Number Split Underlines */}
+                  {/* Classic +DDI | Phone Number Split Underlines */}
                   <div className="mt-4 flex items-end gap-3">
-                    <div className="flex w-24 items-center border-b-2 border-[#0F5132] pb-1">
+                    <div className="flex w-24 items-center border-b-2 border-[#0E7A34] pb-1">
                       <span className="pl-1 font-mono text-base font-medium text-slate-500">
                         +
                       </span>
@@ -933,7 +930,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         className="h-9 w-full bg-transparent text-center font-mono text-base font-medium text-slate-900 tabular-nums focus:outline-none"
                       />
                     </div>
-                    <div className="flex-1 border-b-2 border-[#0F5132] pb-1">
+                    <div className="flex-1 border-b-2 border-[#0E7A34] pb-1">
                       <input
                         type="tel"
                         autoFocus
@@ -976,7 +973,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                             href={firebaseProvidersUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-1 pt-1 font-semibold text-[#0F5132] underline"
+                            className="inline-flex items-center gap-1 pt-1 font-semibold text-[#0E7A34] underline"
                           >
                             Abrir Provedores no Firebase Console
                             <ExternalLink className="h-3.5 w-3.5" />
@@ -991,7 +988,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   <button
                     type="submit"
                     disabled={busy}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] disabled:opacity-50"
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0E7A34] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#0B5D27] disabled:opacity-50"
                   >
                     {busy ? (
                       <>
@@ -1026,7 +1023,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     >
                       <ArrowLeft className="h-5 w-5" />
                     </button>
-                    <h1 className="text-lg font-bold text-[#0F5132]">
+                    <h1 className="text-lg font-bold text-[#0E7A34]">
                       Entrar com CPF
                     </h1>
                   </div>
@@ -1051,7 +1048,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         setErrorInfo(null);
                         setStep('cpf');
                       }}
-                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0F5132] shadow-xs"
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-white text-xs font-bold text-[#0E7A34] shadow-xs"
                     >
                       <CreditCard className="h-3.5 w-3.5" />
                       Entrar com CPF
@@ -1069,7 +1066,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       }}
                       className={`flex-1 pb-2.5 text-xs font-bold transition border-b-2 ${
                         cpfSubMode === 'login'
-                          ? 'border-[#0F5132] text-[#0F5132]'
+                          ? 'border-[#0E7A34] text-[#0E7A34]'
                           : 'border-transparent text-slate-500 hover:text-slate-700'
                       }`}
                     >
@@ -1084,7 +1081,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       }}
                       className={`flex-1 pb-2.5 text-xs font-bold transition border-b-2 ${
                         cpfSubMode === 'register'
-                          ? 'border-[#0F5132] text-[#0F5132]'
+                          ? 'border-[#0E7A34] text-[#0E7A34]'
                           : 'border-transparent text-slate-500 hover:text-slate-700'
                       }`}
                     >
@@ -1105,8 +1102,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                             required
                             value={cpfName}
                             onChange={(e) => setCpfName(e.target.value)}
-                            placeholder="Como você quer aparecer no Zapei"
-                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                            placeholder="Como você quer aparecer no ChatFi"
+                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
                           />
                         </div>
                       </div>
@@ -1121,7 +1118,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         {cpfComplete && (
                           <span
                             className={`inline-flex items-center gap-1 text-[11px] font-bold ${
-                              cpfValid ? 'text-[#0F5132]' : 'text-red-600'
+                              cpfValid ? 'text-[#0E7A34]' : 'text-red-600'
                             }`}
                           >
                             {cpfValid ? (
@@ -1151,7 +1148,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                           className={`h-11 w-full rounded-xl border bg-white pl-9 pr-3 font-mono text-sm text-slate-900 tabular-nums focus:outline-none ${
                             cpfComplete && !cpfValid
                               ? 'border-red-300 focus:border-red-500'
-                              : 'border-slate-300 focus:border-[#0F5132]'
+                              : 'border-slate-300 focus:border-[#0E7A34]'
                           }`}
                         />
                       </div>
@@ -1171,7 +1168,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                             value={cpfEmail}
                             onChange={(e) => setCpfEmail(e.target.value)}
                             placeholder="seuemail@exemplo.com"
-                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                            className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
                           />
                         </div>
                         <p className="mt-1 text-[11px] text-slate-500">
@@ -1191,7 +1188,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                             type="button"
                             disabled={cpfResetBusy}
                             onClick={() => void handleCpfForgotPassword()}
-                            className="text-[11px] font-bold text-[#0F5132] hover:underline disabled:opacity-50"
+                            className="text-[11px] font-bold text-[#0E7A34] hover:underline disabled:opacity-50"
                           >
                             {cpfResetBusy ? 'Enviando link...' : 'Esqueci minha senha'}
                           </button>
@@ -1211,7 +1208,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                           placeholder={
                             cpfSubMode === 'register' ? 'Mínimo 6 caracteres' : 'Digite sua senha'
                           }
-                          className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-10 text-sm text-slate-900 focus:border-[#0F5132] focus:outline-none"
+                          className="h-11 w-full rounded-xl border border-slate-300 bg-white pl-9 pr-10 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
                         />
                         <button
                           type="button"
@@ -1230,17 +1227,17 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
 
                     {cpfSubMode === 'register' && (
                       <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[11px] text-emerald-900">
-                        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+                        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
                         <span>
                           Proteção LGPD: seu CPF é convertido em hash SHA-256 e libera{' '}
-                          <strong>1 Linha Virtual exclusiva (ZAP-XXXX-XXXX)</strong>.
+                          <strong>1 Linha Virtual exclusiva (CFI-XXXX-XXXX)</strong>.
                         </span>
                       </div>
                     )}
 
                     {cpfResetNotice && (
                       <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-medium text-emerald-900">
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
                         <span>{cpfResetNotice}</span>
                       </div>
                     )}
@@ -1256,7 +1253,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                             href={firebaseProvidersUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-1 font-semibold text-[#0F5132] underline"
+                            className="inline-flex items-center gap-1 font-semibold text-[#0E7A34] underline"
                           >
                             Ativar E-mail/senha no Firebase Console
                             <ExternalLink className="h-3.5 w-3.5" />
@@ -1271,7 +1268,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   <button
                     type="submit"
                     disabled={busy || !cpfValid}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] disabled:opacity-50"
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0E7A34] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#0B5D27] disabled:opacity-50"
                   >
                     {busy ? (
                       <>
@@ -1283,7 +1280,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     ) : cpfSubMode === 'register' ? (
                       'Criar Conta e Linha Virtual'
                     ) : (
-                      'Entrar no Zapei'
+                      'Entrar no ChatFi'
                     )}
                   </button>
                 </div>
@@ -1306,7 +1303,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     >
                       <ArrowLeft className="h-5 w-5" />
                     </button>
-                    <h1 className="text-base font-bold text-[#0F5132]">
+                    <h1 className="text-base font-bold text-[#0E7A34]">
                       Verificando {formattedFullPhone}
                     </h1>
                   </div>
@@ -1323,13 +1320,13 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         setErrorInfo(null);
                         setStep('phone');
                       }}
-                      className="font-semibold text-[#0F5132] hover:underline"
+                      className="font-semibold text-[#0E7A34] hover:underline"
                     >
                       Número errado?
                     </button>
                   </p>
 
-                  {/* 6-Digit WhatsApp Split OTP Boxes (- - -   - - -) */}
+                  {/* 6-Digit Split OTP Boxes (- - -   - - -) */}
                   <div className="mt-8 flex items-center justify-center gap-1.5 sm:gap-2">
                     {otpDigits.map((digit, idx) => (
                       <React.Fragment key={idx}>
@@ -1345,7 +1342,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                           disabled={busy}
                           onChange={(e) => handleOtpDigitChange(idx, e.target.value)}
                           onKeyDown={(e) => handleOtpKeyDown(idx, e)}
-                          className="h-11 w-9 sm:h-12 sm:w-10 border-b-2 border-[#0F5132] bg-slate-50/70 text-center font-mono text-lg sm:text-xl font-bold text-slate-900 tabular-nums focus:bg-emerald-50/40 focus:outline-none disabled:opacity-50"
+                          className="h-11 w-9 sm:h-12 sm:w-10 border-b-2 border-[#0E7A34] bg-slate-50/70 text-center font-mono text-lg sm:text-xl font-bold text-slate-900 tabular-nums focus:bg-emerald-50/40 focus:outline-none disabled:opacity-50"
                         />
                         {idx === 2 && (
                           <span className="px-0.5 sm:px-1 font-mono text-base sm:text-lg text-slate-400">–</span>
@@ -1370,7 +1367,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         type="button"
                         onClick={() => void handleSendRealSms()}
                         disabled={busy}
-                        className="inline-flex min-h-[40px] items-center gap-1.5 text-xs font-semibold text-[#0F5132] hover:underline disabled:opacity-50"
+                        className="inline-flex min-h-[40px] items-center gap-1.5 text-xs font-semibold text-[#0E7A34] hover:underline disabled:opacity-50"
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
                         Reenviar SMS
@@ -1390,7 +1387,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     type="button"
                     disabled={busy || otpDigits.join('').length < 6}
                     onClick={() => void submitOtpCode(otpDigits.join(''))}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] disabled:opacity-40"
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0E7A34] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#0B5D27] disabled:opacity-40"
                   >
                     {busy ? (
                       <>
@@ -1405,7 +1402,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               </div>
             )}
 
-            {/* STEP 4: PROFILE INFO (Identical to WhatsApp Profile Setup Screen) */}
+            {/* STEP 4: PROFILE INFO */}
             {step === 'profile' && (
               <form
                 onSubmit={handleSaveProfileSubmit}
@@ -1420,12 +1417,12 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                 />
 
                 <div className="mx-auto w-full max-w-sm text-center">
-                  <h1 className="text-lg font-bold text-[#0F5132]">Dados do perfil</h1>
+                  <h1 className="text-lg font-bold text-[#0E7A34]">Dados do perfil</h1>
                   <p className="mt-2 text-xs leading-relaxed text-slate-500">
                     Insira seu nome e, se desejar, adicione uma foto de perfil.
                   </p>
 
-                  {/* Circular WhatsApp Photo Upload */}
+                  {/* Circular Photo Upload */}
                   <div className="mt-7 flex flex-col items-center">
                     <button
                       type="button"
@@ -1442,7 +1439,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       ) : (
                         <Camera className="h-10 w-10 text-slate-400" />
                       )}
-                      <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full bg-[#0F5132] text-white shadow">
+                      <span className="absolute bottom-1 right-1 flex h-8 w-8 items-center justify-center rounded-full bg-[#0E7A34] text-white shadow">
                         <Camera className="h-4 w-4" />
                       </span>
                     </button>
@@ -1459,7 +1456,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         onChange={(e) => setName(e.target.value)}
                         placeholder="Digite seu nome"
                         maxLength={80}
-                        className="h-11 w-full border-b-2 border-[#0F5132] bg-transparent px-1 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none"
+                        className="h-11 w-full border-b-2 border-[#0E7A34] bg-transparent px-1 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none"
                       />
                     </div>
                     {authUser?.phoneNumber && (
@@ -1483,7 +1480,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                   <button
                     type="submit"
                     disabled={busy}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0F5132] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#146c43] disabled:opacity-50"
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#0E7A34] text-sm font-bold tracking-wide text-white uppercase shadow-sm transition hover:bg-[#0B5D27] disabled:opacity-50"
                   >
                     {busy ? (
                       <>
@@ -1511,7 +1508,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
         </div>
       </div>
 
-      {/* Iconic WhatsApp Phone Number Confirmation Modal */}
+      {/* Phone Number Confirmation Modal */}
       {showConfirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]">
           <div className="w-full max-w-xs rounded-2xl bg-white p-6 shadow-2xl">
@@ -1529,7 +1526,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowConfirmDialog(false)}
-                className="min-h-[44px] px-3 text-xs font-bold tracking-wide text-[#0F5132] uppercase hover:bg-emerald-50 rounded-lg"
+                className="min-h-[44px] px-3 text-xs font-bold tracking-wide text-[#0E7A34] uppercase hover:bg-emerald-50 rounded-lg"
               >
                 Editar
               </button>
@@ -1537,7 +1534,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                 type="button"
                 disabled={busy}
                 onClick={() => void handleSendRealSms()}
-                className="min-h-[44px] px-5 text-xs font-bold tracking-wide text-[#0F5132] uppercase hover:bg-emerald-50 rounded-lg disabled:opacity-50"
+                className="min-h-[44px] px-5 text-xs font-bold tracking-wide text-[#0E7A34] uppercase hover:bg-emerald-50 rounded-lg disabled:opacity-50"
               >
                 OK
               </button>

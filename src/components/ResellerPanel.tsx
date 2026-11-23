@@ -198,7 +198,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0F5132] text-white">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0E7A34] text-white">
               <Store className="h-6 w-6" />
             </div>
             <div>
@@ -225,7 +225,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               onClick={onOpenBilling}
               className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold ${
                 profile.subscriptionStatus === 'active'
-                  ? 'border-emerald-200 bg-emerald-50 text-[#0F5132]'
+                  ? 'border-emerald-200 bg-emerald-50 text-[#0E7A34]'
                   : profile.subscriptionStatus === 'trial'
                     ? 'border-slate-200 bg-slate-50 text-[#0D2B3E]'
                     : 'border-orange-300 bg-orange-50 text-orange-800'
@@ -262,7 +262,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 onClick={() => setActiveTab(tab.id as ResellerTab)}
                 className={`flex min-h-[40px] shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
                   active
-                    ? 'bg-[#0F5132] text-white'
+                    ? 'bg-[#0E7A34] text-white'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >
@@ -275,7 +275,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       </div>
 
       {feedback && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-[#0F5132]">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-[#0E7A34]">
           {feedback}
         </div>
       )}
@@ -291,7 +291,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               Conectar Fornecedor pelo Telefone
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Digite o número de telefone de um fabricante no Zapei para puxar os produtos automaticamente para sua vitrine e definir sua margem de lucro.
+              Digite o número de telefone de um fabricante no ChatFi para puxar os produtos automaticamente para sua vitrine e definir sua margem de lucro.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
@@ -300,12 +300,12 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 value={factoryPhone}
                 onChange={(e) => setFactoryPhone(e.target.value)}
                 placeholder="(11) 99999-9999"
-                className="h-11 flex-1 rounded-xl border border-slate-200 px-3.5 font-mono text-sm focus:border-[#0F5132] focus:outline-none"
+                className="h-11 flex-1 rounded-xl border border-slate-200 px-3.5 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={busy}
-                className="h-11 rounded-xl bg-[#0F5132] px-5 text-xs font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+                className="h-11 rounded-xl bg-[#0E7A34] px-5 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 {busy ? 'Buscando fabricante...' : 'Conectar Fabricante'}
               </button>
@@ -319,7 +319,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 Nenhuma fábrica conectada ainda
               </p>
               <p className="mt-1 text-xs text-slate-500">
-                Conecte um fabricante real acima pelo telefone cadastrado no Zapei. Os produtos da fábrica entram na sua vitrine com sigilo total de origem.
+                Conecte um fabricante real acima pelo telefone cadastrado no ChatFi. Os produtos da fábrica entram na sua vitrine com sigilo total de origem.
               </p>
             </div>
           ) : (
@@ -360,7 +360,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               reviewPhotos: e.target.checked,
                             })
                           }
-                          className="h-4 w-4 rounded text-[#0F5132]"
+                          className="h-4 w-4 rounded text-[#0E7A34]"
                         />
                         Revisar fotos antes de publicar
                       </label>
@@ -372,7 +372,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                         }
                         className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition ${
                           conn.paused
-                            ? 'bg-[#0F5132] text-white hover:bg-[#146c43]'
+                            ? 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
                             : 'bg-red-600 text-white hover:bg-red-700'
                         }`}
                       >
@@ -501,7 +501,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           <span className="block text-[10px] text-slate-500">
                             Seu Preço na Vitrine
                           </span>
-                          <span className="font-mono font-bold text-[#0F5132] tabular-nums">
+                          <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
                             {formatBRL(publicPrice)}
                           </span>
                         </div>
@@ -535,7 +535,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               ],
                             })
                           }
-                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43]"
+                          className="flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
                         >
                           <Check className="h-4 w-4" />
                           Aprovar na Vitrine
@@ -591,7 +591,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       <p className="text-slate-500">
                         Custo Fábricas: <strong>{formatBRL(order.factoryCostTotal)}</strong>
                       </p>
-                      <p className="text-sm font-bold text-[#0F5132]">
+                      <p className="text-sm font-bold text-[#0E7A34]">
                         Total Cliente: {formatBRL(order.buyerFinalTotal)}
                       </p>
                     </div>
@@ -711,7 +711,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               </span>
                             </div>
                           ) : sub.status === 'dispatched' ? (
-                            <div className="rounded-lg bg-emerald-50 p-3 text-xs text-[#0F5132]">
+                            <div className="rounded-lg bg-emerald-50 p-3 text-xs text-[#0E7A34]">
                               <p className="font-semibold">
                                 Despachado via {sub.logisticsType} ({sub.logisticsCompany}) ·{' '}
                                 {sub.receiptNote || 'Comprovante anexado'}
@@ -777,7 +777,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                     `Logística do subpedido ${sub.subOrderCode} enviada para ${sub.factoryName}.`
                                   );
                                 }}
-                                className="sm:col-span-3 flex h-9 items-center justify-center gap-1.5 rounded-lg bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43]"
+                                className="sm:col-span-3 flex h-9 items-center justify-center gap-1.5 rounded-lg bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
                               >
                                 <Truck className="h-4 w-4" />
                                 Enviar Dados de Despacho para a Fábrica
@@ -803,7 +803,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               <span className="text-xs font-semibold text-slate-500">
                 A Receber de Clientes
               </span>
-              <p className="mt-1 font-mono text-2xl font-bold text-[#0F5132] tabular-nums">
+              <p className="mt-1 font-mono text-2xl font-bold text-[#0E7A34] tabular-nums">
                 {formatBRL(totalReceivable)}
               </p>
             </div>
@@ -816,10 +816,10 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               </p>
             </div>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
-              <span className="text-xs font-semibold text-[#0F5132]">
+              <span className="text-xs font-semibold text-[#0E7A34]">
                 Lucro Líquido Estimado
               </span>
-              <p className="mt-1 font-mono text-2xl font-bold text-[#0F5132] tabular-nums">
+              <p className="mt-1 font-mono text-2xl font-bold text-[#0E7A34] tabular-nums">
                 {formatBRL(estimatedNetProfit)}
               </p>
             </div>
@@ -961,7 +961,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
           <h2 className="text-sm font-bold text-slate-900">
             Dados da Minha Vitrine
           </h2>
-          <div className="flex items-start gap-2 rounded-xl bg-emerald-50 p-3 text-xs text-[#0F5132]">
+          <div className="flex items-start gap-2 rounded-xl bg-emerald-50 p-3 text-xs text-[#0E7A34]">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>
               Na sua vitrine pública, o comprador final vê apenas o nome da sua loja e lotes anônimos (Lote A, Lote B). Nunca exibimos o rótulo &ldquo;revendedor&rdquo; nem os nomes/telefones das fábricas parceiras.
@@ -977,7 +977,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               required
               value={storefrontName}
               onChange={(e) => setStorefrontName(e.target.value)}
-              className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0F5132] focus:outline-none"
+              className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
             />
           </div>
 
@@ -999,7 +999,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
 
           <button
             type="submit"
-            className="h-11 w-full rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43]"
+            className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
           >
             Salvar Configurações da Vitrine
           </button>

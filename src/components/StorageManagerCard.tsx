@@ -165,7 +165,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-2.5">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0F5132]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0E7A34]">
             <HardDrive className="h-5 w-5" />
           </div>
           <div>
@@ -197,7 +197,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                  Espaço usado pelo Zapei neste aparelho
+                  Espaço usado pelo ChatFi neste aparelho
                 </p>
                 <p className="mt-0.5 font-mono text-2xl font-bold text-slate-900 tabular-nums">
                   {loading ? '...' : formatBytesPtBr(summary?.totalBytes || 0)}
@@ -220,7 +220,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
               )}
               {imagePct > 0 && (
                 <div
-                  className="h-full bg-[#0F5132] transition-all"
+                  className="h-full bg-[#0E7A34] transition-all"
                   style={{ width: `${imagePct}%` }}
                   title={`Fotos: ${formatBytesPtBr(summary?.imageBytes || 0)}`}
                 />
@@ -250,7 +250,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
               </div>
               <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-slate-200/80">
                 <div className="flex items-center gap-1.5 text-slate-600">
-                  <span className="h-2.5 w-2.5 rounded-full bg-[#0F5132] shrink-0" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#0E7A34] shrink-0" />
                   <span className="font-semibold">Fotos</span>
                 </div>
                 <p className="mt-1 font-mono text-xs font-bold text-slate-900 tabular-nums">
@@ -304,7 +304,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
                     .filter(Boolean)
                     .slice(0, 2)
                     .map((p) => p[0]?.toUpperCase() || '')
-                    .join('') || 'ZP';
+                    .join('') || 'CF';
 
                   const parts: string[] = [];
                   if (chat.videoCount > 0) {
@@ -329,7 +329,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
                       className="flex w-full items-center justify-between gap-3 bg-white px-4 py-3 text-left transition hover:bg-slate-50"
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#0F5132] text-xs font-bold text-white">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] text-xs font-bold text-white">
                           {initials}
                         </div>
                         <div className="min-w-0">
@@ -346,7 +346,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
                         <p className="font-mono text-xs font-bold text-slate-900 tabular-nums">
                           {formatBytesPtBr(chat.totalBytes)}
                         </p>
-                        <p className="text-[10px] font-semibold text-[#0F5132]">
+                        <p className="text-[10px] font-semibold text-[#0E7A34]">
                           Gerenciar →
                         </p>
                       </div>
@@ -359,9 +359,9 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
 
           {/* Privacy & No-Auto-Delete Guarantee */}
           <div className="flex items-start gap-2 rounded-xl bg-emerald-50/60 px-3.5 py-2.5 text-[11px] leading-relaxed text-slate-700 ring-1 ring-emerald-200/70">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5132]" />
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
             <span>
-              <strong>Controle total:</strong> o Zapei nunca apaga suas mensagens ou mídias automaticamente. A nuvem atua apenas como ponte temporária (até 14 dias se o contato estiver sem sinal) e limpa o arquivo assim que ele chega ao aparelho.
+              <strong>Controle total:</strong> o ChatFi nunca apaga suas mensagens ou mídias automaticamente. A nuvem atua apenas como ponte temporária (até 14 dias se o contato estiver sem sinal) e limpa o arquivo assim que ele chega ao aparelho.
             </span>
           </div>
         </>
@@ -397,7 +397,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
               >
                 {filteredItems.every((it) => selectedIds.has(it.messageId)) ? (
                   <>
-                    <CheckSquare className="h-3.5 w-3.5 text-[#0F5132]" />
+                    <CheckSquare className="h-3.5 w-3.5 text-[#0E7A34]" />
                     Desmarcar todos
                   </>
                 ) : (
@@ -426,7 +426,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
                 onClick={() => setFilter(tab.id)}
                 className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                   filter === tab.id
-                    ? 'bg-[#0F5132] text-white'
+                    ? 'bg-[#0E7A34] text-white'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 }`}
               >

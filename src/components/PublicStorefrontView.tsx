@@ -330,7 +330,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 {owner.storefrontName || owner.displayName}
               </h1>
               <p className="text-xs text-slate-500">
-                Vitrine Comercial Zapei · Compra gratuita para clientes
+                Vitrine Comercial ChatFi · Compra gratuita para clientes
               </p>
             </div>
           </div>
@@ -341,7 +341,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
               onClick={() => setActiveSubView('catalog')}
               className={`min-h-[38px] rounded-xl px-3 text-xs font-semibold transition ${
                 activeSubView === 'catalog'
-                  ? 'bg-[#0F5132] text-white'
+                  ? 'bg-[#0E7A34] text-white'
                   : 'bg-slate-100 text-slate-700'
               }`}
             >
@@ -352,7 +352,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
               onClick={() => setActiveSubView('orders')}
               className={`min-h-[38px] rounded-xl px-3 text-xs font-semibold transition ${
                 activeSubView === 'orders'
-                  ? 'bg-[#0F5132] text-white'
+                  ? 'bg-[#0E7A34] text-white'
                   : 'bg-slate-100 text-slate-700'
               }`}
             >
@@ -377,7 +377,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
       <div className="flex-1 overflow-y-auto px-4 py-5">
         <div className="mx-auto max-w-6xl space-y-5">
           {orderNotice && (
-            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-semibold text-[#0F5132]">
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-semibold text-[#0E7A34]">
               <CheckCircle2 className="h-4 w-4 shrink-0" />
               <span>{orderNotice}</span>
             </div>
@@ -390,7 +390,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 Vitrine temporariamente pausada
               </h2>
               <p className="mt-1 text-xs text-slate-500">
-                Você pode continuar conversando e ligando normalmente para este contato pelo Zapei.
+                Você pode continuar conversando e ligando normalmente para este contato pelo ChatFi.
               </p>
             </div>
           ) : activeSubView === 'catalog' ? (
@@ -404,7 +404,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     onClick={() => setSelectedCategory(cat)}
                     className={`min-h-[38px] shrink-0 rounded-xl px-4 text-xs font-semibold transition ${
                       selectedCategory === cat
-                        ? 'bg-[#0F5132] text-white'
+                        ? 'bg-[#0E7A34] text-white'
                         : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
@@ -457,7 +457,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 </h3>
                               </div>
                               <div className="text-right">
-                                <span className="font-mono text-base font-bold text-[#0F5132] tabular-nums">
+                                <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
                                   {formatBRL(listing.publicPrice)}
                                 </span>
                                 <span className="block text-[10px] text-slate-400">
@@ -490,7 +490,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               >
                                 <Minus className="h-4 w-4" />
                               </button>
-                              <span className="font-mono text-xs font-bold text-[#0F5132] tabular-nums">
+                              <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
                                 {inCart.boxes} cx no carrinho
                               </span>
                               <button
@@ -502,7 +502,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                     listing.product.stockBoxes
                                   )
                                 }
-                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0F5132] text-white shadow-sm"
+                                className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0E7A34] text-white shadow-sm"
                               >
                                 <Plus className="h-4 w-4" />
                               </button>
@@ -511,7 +511,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             <button
                               type="button"
                               onClick={() => addToCart(listing)}
-                              className="h-11 w-full rounded-xl bg-[#0F5132] text-xs font-semibold text-white transition hover:bg-[#146c43]"
+                              className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white transition hover:bg-[#0B5D27]"
                             >
                               Adicionar Caixa ao Pedido
                             </button>
@@ -534,7 +534,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setActiveSubView('catalog')}
-                    className="mt-4 rounded-xl bg-[#0F5132] px-4 py-2.5 text-xs font-semibold text-white"
+                    className="mt-4 rounded-xl bg-[#0E7A34] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
                   >
                     Voltar ao catálogo
                   </button>
@@ -555,7 +555,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             Regra de envio: {group.deliveryPolicy.label}
                           </p>
                         </div>
-                        <span className="font-mono text-sm font-bold text-[#0F5132] tabular-nums">
+                        <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
                           {formatBRL(group.buyerSubtotal)}
                         </span>
                       </div>
@@ -617,7 +617,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       <span className="text-sm font-semibold text-slate-700">
                         Total Estimado do Pedido ({totalCartBoxes} caixas)
                       </span>
-                      <span className="font-mono text-xl font-bold text-[#0F5132] tabular-nums">
+                      <span className="font-mono text-xl font-bold text-[#0E7A34] tabular-nums">
                         {formatBRL(grandTotalBuyer)}
                       </span>
                     </div>
@@ -628,7 +628,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       type="button"
                       onClick={() => void handleCheckout()}
                       disabled={submitting}
-                      className="mt-4 h-12 w-full rounded-xl bg-[#0F5132] text-sm font-semibold text-white hover:bg-[#146c43] disabled:opacity-50"
+                      className="mt-4 h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
                     >
                       {submitting ? 'Enviando pedido...' : 'Enviar Pedido para Conferência'}
                     </button>
@@ -658,13 +658,13 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           Realizado em {order.createdAt}
                         </p>
                       </div>
-                      <span className="font-mono text-base font-bold text-[#0F5132] tabular-nums">
+                      <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
                         {formatBRL(order.buyerFinalTotal)}
                       </span>
                     </div>
 
                     {order.discountAmount > 0 && (
-                      <p className="text-xs font-semibold text-[#0F5132]">
+                      <p className="text-xs font-semibold text-[#0E7A34]">
                         Desconto aplicado: -{formatBRL(order.discountAmount)}
                       </p>
                     )}
@@ -692,7 +692,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             </span>
                           </div>
                           {sub.status === 'dispatched' && sub.receiptNote && (
-                            <p className="text-[#0F5132]">
+                            <p className="text-[#0E7A34]">
                               Comprovante: {sub.receiptNote}
                             </p>
                           )}

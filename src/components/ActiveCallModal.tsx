@@ -290,7 +290,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
           ) : (
             <div
               className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/20"
-              style={{ backgroundColor: call.peerAvatarColor || '#0F5132' }}
+              style={{ backgroundColor: call.peerAvatarColor || '#0E7A34' }}
             >
               {call.peerInitials}
             </div>
@@ -398,7 +398,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
             ) : (
               <div
                 className="relative flex h-32 w-32 sm:h-36 sm:w-36 items-center justify-center rounded-full text-4xl font-bold text-white shadow-2xl ring-4 ring-white/15"
-                style={{ backgroundColor: call.peerAvatarColor || '#0F5132' }}
+                style={{ backgroundColor: call.peerAvatarColor || '#0E7A34' }}
               >
                 {call.peerInitials}
               </div>
@@ -418,7 +418,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
           )}
           {call.direction === 'outgoing' && call.status === 'ringing' && call.remotePushDelivered === false && (
             <p className="mt-3 max-w-xs rounded-2xl border border-amber-300/35 bg-amber-500/15 px-3.5 py-2 text-[11px] leading-relaxed text-amber-100">
-              O aparelho de {call.peerName} ainda não ativou toque com tela bloqueada — só tocará se o Zapei estiver aberto na tela.
+              O aparelho de {call.peerName} ainda não ativou toque com tela bloqueada — só tocará se o ChatFi estiver aberto na tela.
             </p>
           )}
           {ringtoneBlocked && call.direction === 'incoming' && call.status === 'ringing' && (
@@ -467,7 +467,7 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
               <button
                 type="button"
                 onClick={onAcceptIncoming}
-                className="flex min-h-[56px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#0F5132] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#146c43]"
+                className="flex min-h-[56px] flex-1 items-center justify-center gap-2 rounded-2xl bg-[#0E7A34] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#0B5D27]"
               >
                 {isVideoCall ? <Video className="h-5 w-5" /> : <Phone className="h-5 w-5" />}
                 Atender

@@ -4,8 +4,10 @@
   --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
   --font-sans: "DM Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --color-zapei-emerald: #0F5132;
-  --color-zapei-emerald-hover: #0B3D26;
+  --color-chatfi-green: #0E7A34;
+  --color-chatfi-green-dark: #0B5D27;
+  --color-zapei-emerald: #0E7A34;
+  --color-zapei-emerald-hover: #0B5D27;
   --color-zapei-petrol: #0D2B3E;
   --color-zapei-canvas: #F8FAFC;
   --color-zapei-orange: #F97316;

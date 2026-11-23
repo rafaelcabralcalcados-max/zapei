@@ -59,7 +59,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
         uid: c.matchedUid,
         name: c.name,
         initials: c.initials,
-        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0E7A34',
         avatarUrl: dir?.avatarUrl,
       });
     }
@@ -71,7 +71,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
         uid: u.uid,
         name: u.displayName,
         initials: u.initials,
-        avatarBg: u.avatarColor || '#0F5132',
+        avatarBg: u.avatarColor || '#0E7A34',
         avatarUrl: u.avatarUrl,
       });
     }
@@ -87,7 +87,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Ligações de Voz e Vídeo</h1>
             <p className="text-xs text-slate-500">
-              Faça ligações de voz e vídeo gratuitas para qualquer pessoa no Zapei.
+              Faça ligações de voz e vídeo gratuitas para qualquer pessoa no ChatFi.
             </p>
           </div>
         </div>
@@ -109,7 +109,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
                   ) : (
                     <div
                       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                      style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
+                      style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
                     >
                       {peer.initials}
                     </div>
@@ -123,7 +123,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
                     type="button"
                     onClick={() => onStartCallWithPeer(peer, 'audio')}
                     title={`Ligar para ${peer.name}`}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#0F5132] border border-slate-200 hover:bg-emerald-50"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-[#0E7A34] border border-slate-200 hover:bg-emerald-50"
                   >
                     <Phone className="h-3.5 w-3.5" />
                   </button>
@@ -141,7 +141,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
           </div>
         ) : (
           <p className="mt-3 rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs text-slate-500">
-            Assim que outra pessoa entrar no Zapei, ela aparece aqui com foto para você ligar por voz ou vídeo.
+            Assim que outra pessoa entrar no ChatFi, ela aparece aqui com foto para você ligar por voz ou vídeo.
           </p>
         )}
       </section>
@@ -211,7 +211,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
                         {isMissed ? (
                           <PhoneMissed className="h-3.5 w-3.5 text-red-500" />
                         ) : isOutgoing ? (
-                          <PhoneOutgoing className="h-3.5 w-3.5 text-[#0F5132]" />
+                          <PhoneOutgoing className="h-3.5 w-3.5 text-[#0E7A34]" />
                         ) : (
                           <PhoneIncoming className="h-3.5 w-3.5 text-[#0D2B3E]" />
                         )}
@@ -246,7 +246,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
                           'audio'
                         )
                       }
-                      className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-700 hover:bg-emerald-50 hover:text-[#0F5132]"
+                      className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-700 hover:bg-emerald-50 hover:text-[#0E7A34]"
                       title="Retornar por voz"
                     >
                       <Phone className="h-4 w-4" />

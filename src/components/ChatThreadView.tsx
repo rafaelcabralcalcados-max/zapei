@@ -156,7 +156,7 @@ async function mediaUrlToBlobAndFile(
   const safeBase = baseName
     .replace(/[^a-zA-Z0-9_-]/g, '-')
     .replace(/-+/g, '-')
-    .slice(0, 32) || 'zapei-midia';
+    .slice(0, 32) || 'chatfi-midia';
   const filename = `${safeBase}-${Date.now().toString().slice(-5)}.${ext}`;
   const file = new File([blob], filename, {
     type: blob.type || (fallbackExt === 'jpg' ? 'image/jpeg' : 'audio/webm'),
@@ -323,7 +323,7 @@ const RealAudioBubble: React.FC<{
         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-40 ${
           isMine
             ? 'bg-white/20 text-white hover:bg-white/30'
-            : 'bg-[#0F5132] text-white hover:bg-[#146c43]'
+            : 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
         }`}
         aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'}
       >
@@ -347,7 +347,7 @@ const RealAudioBubble: React.FC<{
             }`}
           >
             <div
-              className={`h-full transition-all ${isMine ? 'bg-white' : 'bg-[#0F5132]'}`}
+              className={`h-full transition-all ${isMine ? 'bg-white' : 'bg-[#0E7A34]'}`}
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -573,7 +573,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setMediaBusy(true);
     try {
       const baseName =
-        kind === 'image' ? 'zapei-foto' : kind === 'video' ? 'zapei-video' : 'zapei-audio';
+        kind === 'image' ? 'chatfi-foto' : kind === 'video' ? 'chatfi-video' : 'chatfi-audio';
       const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
       const { blob, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       triggerBlobDownload(blob, filename);
@@ -604,7 +604,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setMediaBusy(true);
     try {
       const baseName =
-        kind === 'image' ? 'zapei-foto' : kind === 'video' ? 'zapei-video' : 'zapei-audio';
+        kind === 'image' ? 'chatfi-foto' : kind === 'video' ? 'chatfi-video' : 'chatfi-audio';
       const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
       const { blob, file, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       const nav = navigator as Navigator & {
@@ -612,7 +612,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       };
       const shareData: ShareData = {
         files: [file],
-        title: 'Zapei',
+        title: 'ChatFi',
         ...(caption && caption !== 'Foto' && caption !== 'Vídeo' ? { text: caption } : {}),
       };
 
@@ -966,7 +966,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           ) : (
             <div
               className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-              style={{ backgroundColor: peer.avatarBg || '#0F5132' }}
+              style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
             >
               {peer.initials}
             </div>
@@ -978,7 +978,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <p className="truncate text-xs text-slate-500">
               {peer.hasStorefront
                 ? peer.storefrontName || 'Vitrine comercial ativa'
-                : peer.phone || 'Online no Zapei'}
+                : peer.phone || 'Online no ChatFi'}
             </p>
           </div>
         </div>
@@ -989,7 +989,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               type="button"
               onClick={onOpenStorefront}
               title="Abrir vitrine"
-              className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0F5132] px-2.5 text-xs font-semibold text-white transition hover:bg-[#146c43] sm:h-10 sm:px-3"
+              className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0E7A34] px-2.5 text-xs font-semibold text-white transition hover:bg-[#0B5D27] sm:h-10 sm:px-3"
             >
               <Store className="h-4 w-4 shrink-0" />
               <span className="hidden sm:inline">Vitrine</span>
@@ -999,7 +999,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             type="button"
             onClick={() => onStartCall('audio')}
             title="Ligação de voz"
-            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0F5132]"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0E7A34]"
           >
             <Phone className="h-4 w-4" />
           </button>
@@ -1121,7 +1121,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2'
                   } ${
                     isMine
-                      ? 'rounded-br-sm bg-[#0F5132] text-white'
+                      ? 'rounded-br-sm bg-[#0E7A34] text-white'
                       : 'rounded-bl-sm border border-slate-200/90 bg-white text-slate-800'
                   }`}
                 >
@@ -1135,7 +1135,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       msg.type === 'image' || msg.type === 'video'
                         ? 'bg-black/50 text-white hover:bg-black/70'
                         : isMine
-                          ? 'bg-[#0F5132]/85 text-emerald-100 hover:bg-white/20 hover:text-white'
+                          ? 'bg-[#0E7A34]/85 text-emerald-100 hover:bg-white/20 hover:text-white'
                           : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
                     }`}
                   >
@@ -1345,7 +1345,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         onClick={() => onInspectOrder(msg.orderId)}
                         className={`mt-2.5 w-full rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                           isMine
-                            ? 'bg-white text-[#0F5132] hover:bg-slate-100'
+                            ? 'bg-white text-[#0E7A34] hover:bg-slate-100'
                             : 'bg-[#0D2B3E] text-white hover:bg-[#143d57]'
                         }`}
                       >
@@ -1372,12 +1372,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         className={`mb-1.5 rounded-lg border-l-4 px-2.5 py-1.5 text-xs ${
                           isMine
                             ? 'border-emerald-300 bg-black/20 text-emerald-50'
-                            : 'border-[#0F5132] bg-slate-100 text-slate-600'
+                            : 'border-[#0E7A34] bg-slate-100 text-slate-600'
                         }`}
                       >
                         <p
                           className={`font-bold ${
-                            isMine ? 'text-emerald-200' : 'text-[#0F5132]'
+                            isMine ? 'text-emerald-200' : 'text-[#0E7A34]'
                           }`}
                         >
                           {parsedQuote.quoteSender}
@@ -1458,8 +1458,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       {/* WhatsApp-style Reply Preview Bar */}
       {replyingTo && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="min-w-0 flex-1 border-l-4 border-[#0F5132] pl-2.5">
-            <p className="truncate text-xs font-bold text-[#0F5132]">
+          <div className="min-w-0 flex-1 border-l-4 border-[#0E7A34] pl-2.5">
+            <p className="truncate text-xs font-bold text-[#0E7A34]">
               Respondendo a {replyingTo.senderName}
             </p>
             <p className="truncate text-xs text-slate-600">{replyingTo.snippet}</p>
@@ -1548,7 +1548,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={() => void stopAndSendRecording()}
-                className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0F5132] px-3 py-2 text-xs font-semibold text-white hover:bg-[#146c43]"
+                className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0B5D27]"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
                 Enviar
@@ -1563,7 +1563,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               title="Emojis"
               className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition sm:h-11 sm:w-11 ${
                 showEmojiPicker
-                  ? 'border-[#0F5132] bg-emerald-50 text-[#0F5132]'
+                  ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34]'
                   : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
               }`}
               aria-label="Abrir emojis"
@@ -1578,7 +1578,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onChange={(e) => setDraft(e.target.value)}
               onFocus={() => setShowEmojiPicker(false)}
               placeholder="Mensagem"
-              className="h-9 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0F5132] focus:bg-white focus:outline-none sm:h-11"
+              className="h-9 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:bg-white focus:outline-none sm:h-11"
             />
 
             <button
@@ -1586,7 +1586,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onClick={() => galleryInputRef.current?.click()}
               disabled={sending}
               title="Enviar foto, vídeo ou áudio do aparelho"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
               aria-label="Galeria de fotos e áudios"
             >
               <ImageIcon className="h-5 w-5" />
@@ -1597,7 +1597,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onClick={() => videoInputRef.current?.click()}
               disabled={sending}
               title="Enviar vídeo (até 25 MB)"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
               aria-label="Enviar vídeo"
             >
               <Film className="h-5 w-5" />
@@ -1609,7 +1609,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => cameraInputRef.current?.click()}
                 disabled={sending}
                 title="Tirar foto com a câmera"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0F5132] sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
                 aria-label="Câmera"
               >
                 <Camera className="h-5 w-5" />
@@ -1620,7 +1620,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="submit"
                 disabled={sending}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Enviar mensagem"
               >
                 <Send className="h-5 w-5" />
@@ -1631,7 +1631,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => void startRealRecording()}
                 disabled={sending}
                 title="Gravar mensagem de voz (até 3 min)"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white transition hover:bg-[#146c43] disabled:opacity-50 sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Gravar áudio"
               >
                 <Mic className="h-5 w-5" />
@@ -1688,7 +1688,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <button
               type="submit"
               disabled={sending}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0F5132] text-white shadow-lg transition hover:bg-[#146c43] active:scale-95"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] text-white shadow-lg transition hover:bg-[#0B5D27] active:scale-95"
               aria-label="Confirmar envio da foto"
             >
               <Send className="h-5 w-5" />
@@ -1747,7 +1747,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <button
               type="submit"
               disabled={sending}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0F5132] text-white shadow-lg transition hover:bg-[#146c43] active:scale-95"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] text-white shadow-lg transition hover:bg-[#0B5D27] active:scale-95"
               aria-label="Confirmar envio do vídeo"
             >
               <Send className="h-5 w-5" />
@@ -1862,7 +1862,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   )
                 }
                 disabled={mediaBusy}
-                className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#146c43] active:scale-95"
+                className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#0B5D27] active:scale-95"
               >
                 <Share2 className="h-4 w-4 shrink-0" />
                 <span>Compartilhar</span>
@@ -1916,7 +1916,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => handleStartReply(actionSheetMsg)}
                 className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
               >
-                <Reply className="h-4 w-4 text-[#0F5132]" />
+                <Reply className="h-4 w-4 text-[#0E7A34]" />
                 <span>Responder</span>
               </button>
 
@@ -1947,7 +1947,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <Download className="h-4 w-4 text-[#0E7A34]" />
                     <span>Salvar foto no aparelho</span>
                   </button>
                   <button
@@ -1960,7 +1960,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <Share2 className="h-4 w-4 text-[#0E7A34]" />
                     <span>Compartilhar foto</span>
                   </button>
                 </>
@@ -1977,7 +1977,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <Download className="h-4 w-4 text-[#0E7A34]" />
                     <span>Salvar vídeo no aparelho</span>
                   </button>
                   <button
@@ -1990,7 +1990,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <Share2 className="h-4 w-4 text-[#0E7A34]" />
                     <span>Compartilhar vídeo</span>
                   </button>
                 </>
@@ -2007,7 +2007,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Download className="h-4 w-4 text-[#0F5132]" />
+                    <Download className="h-4 w-4 text-[#0E7A34]" />
                     <span>Salvar áudio</span>
                   </button>
                   <button
@@ -2019,7 +2019,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <Share2 className="h-4 w-4 text-[#0E7A34]" />
                     <span>Compartilhar áudio</span>
                   </button>
                 </>
@@ -2048,7 +2048,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
                   >
-                    <Share2 className="h-4 w-4 text-[#0F5132]" />
+                    <Share2 className="h-4 w-4 text-[#0E7A34]" />
                     <span>Compartilhar texto</span>
                   </button>
                 </>
@@ -2091,8 +2091,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   autoComplete="off"
                   value={forwardSearch}
                   onChange={(e) => setForwardSearch(e.target.value)}
-                  placeholder="Buscar pessoa no Zapei..."
-                  className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm focus:border-[#0F5132] focus:bg-white focus:outline-none"
+                  placeholder="Buscar pessoa no ChatFi..."
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm focus:border-[#0E7A34] focus:bg-white focus:outline-none"
                 />
               </div>
             </div>
@@ -2100,7 +2100,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto pb-safe">
               {filteredForwardTargets.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-500">
-                  Nenhum contato encontrado no Zapei.
+                  Nenhum contato encontrado no ChatFi.
                 </div>
               ) : (
                 filteredForwardTargets.map((target) => (
@@ -2121,7 +2121,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       ) : (
                         <div
                           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                          style={{ backgroundColor: target.avatarBg || '#0F5132' }}
+                          style={{ backgroundColor: target.avatarBg || '#0E7A34' }}
                         >
                           {target.initials}
                         </div>
@@ -2137,7 +2137,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         )}
                       </div>
                     </div>
-                    <span className="shrink-0 rounded-lg bg-[#0F5132] px-2.5 py-1.5 text-xs font-semibold text-white">
+                    <span className="shrink-0 rounded-lg bg-[#0E7A34] px-2.5 py-1.5 text-xs font-semibold text-white">
                       {forwardingUid === target.uid ? 'Enviando...' : 'Enviar'}
                     </span>
                   </button>

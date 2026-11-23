@@ -24,6 +24,7 @@ import {
   db,
   deletePhonebookContact,
   disconnectUserDevice,
+  ensureCurrentDeviceRegisteredSilently,
   fetchPublicUserStorefront,
   getDeterministicChatId,
   lookupRegisteredUserByPhone,
@@ -57,7 +58,7 @@ import {
   updateRealSubOrder,
   type PublicDirectoryUser,
 } from './lib/firebase';
-import { getOrCreateLocalDeviceInfo } from './lib/cpfAndDeviceUtils';
+import { getOrCreateLocalDeviceInfo, isVirtualLineFormat } from './lib/cpfAndDeviceUtils';
 import {
   answerRealIncomingCall,
   installAudioUnlockListeners,
@@ -134,6 +135,7 @@ import type {
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
 import { CallsView } from './components/CallsView';
+import { ChatFiLogo } from './components/ChatFiLogo';
 import {
   ChatThreadView,
   type ActiveChatPeer,
@@ -192,6 +194,8 @@ export default function App() {
   >([]);
   const hasSeenSelfInDevicesRef = useRef(false);
   const checkedDeviceUidRef = useRef<string | null>(null);
+  const lastAuthUidRef = useRef<string | null>(null);
+  const ensuredDeviceSelfRef = useRef<string | null>(null);
   const [pendingSharedPayloads, setPendingSharedPayloads] = useState<StoredSharedPayload[]>([]);
 
   // Navigation & UI Modals
@@ -335,12 +339,14 @@ export default function App() {
     }
   }, [authUser, isOnline, outboxPackets, showToast]);
 
-  // 1. Subscribe to Firebase Auth
+  // 1. Subscribe to Firebase Auth (keep already-connected session completely intact on token refreshes)
   useEffect(() => {
     const unsub = subscribeFirebaseAuth((user) => {
-      setAuthUser(user);
       setAuthReady(true);
       if (!user) {
+        lastAuthUidRef.current = null;
+        ensuredDeviceSelfRef.current = null;
+        setAuthUser(null);
         setProfile(null);
         setProfileLoaded(true);
         setDeviceAuthState('idle');
@@ -363,25 +369,31 @@ export default function App() {
         webrtcHandleRef.current = null;
         setActiveCall(null);
       } else {
-        setProfileLoaded(false);
+        const isDifferentUser = lastAuthUidRef.current !== user.uid;
+        lastAuthUidRef.current = user.uid;
+        setAuthUser(user);
+        if (isDifferentUser) {
+          setProfileLoaded(false);
+        }
       }
     });
     return () => unsub();
   }, []);
 
-  // 2. Subscribe to User Profile
-  useEffect(() => {
-    if (!authUser) return undefined;
-    return subscribeUserProfile(authUser.uid, authUser.email || '', (loaded) => {
-      setProfile(loaded);
-      setProfileLoaded(true);
-    });
-  }, [authUser]);
-
-  // 2a. Connected Devices Gate: verify or register this device as Primary or request QR/6-digit approval
   const authUid = authUser?.uid ?? null;
   const profileUid = profile?.uid ?? null;
 
+  // 2. Subscribe to User Profile (keyed strictly by authUid so token refreshes never re-subscribe)
+  useEffect(() => {
+    if (!authUid) return undefined;
+    return subscribeUserProfile(authUid, authUserRef.current?.email || '', (loaded) => {
+      setProfile(loaded);
+      setProfileLoaded(true);
+    });
+  }, [authUid]);
+
+  // 2a. Connected Devices Gate: already-authorized devices unlock IMMEDIATELY with zero checking screen;
+  // only brand-new devices check Firestore once and request QR Code or 6-digit password approval.
   useEffect(() => {
     if (!authUid || !profileUid) return undefined;
     if (checkedDeviceUidRef.current === authUid) {
@@ -394,18 +406,16 @@ export default function App() {
     hasSeenSelfInDevicesRef.current = false;
     const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
 
-    // If opening app offline on an already-authorized device, unlock local cached chats immediately
-    if (!isDeviceOnline()) {
-      try {
-        if (localStorage.getItem(localAuthCacheKey) === authUid) {
-          settled = true;
-          setDeviceAuthState('authorized');
-          setActiveAuthRequest(null);
-          return undefined;
-        }
-      } catch {
-        // ignore storage errors
+    // If this device is already authorized for this account, keep it 100% intact immediately (online or offline).
+    try {
+      if (localStorage.getItem(localAuthCacheKey) === authUid) {
+        settled = true;
+        setActiveAuthRequest(null);
+        setDeviceAuthState('authorized');
+        return undefined;
       }
+    } catch {
+      // ignore storage errors
     }
 
     setDeviceAuthState('checking');
@@ -466,7 +476,7 @@ export default function App() {
 
   // 2a-ii. Real-time watch on activeAuthRequest while this new device waits for approval
   useEffect(() => {
-    if (deviceAuthState !== 'pending_approval' || !activeAuthRequest || !authUser) {
+    if (deviceAuthState !== 'pending_approval' || !activeAuthRequest || !authUid) {
       return undefined;
     }
     const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
@@ -475,61 +485,98 @@ export default function App() {
       setActiveAuthRequest(updated);
       if (updated.status === 'approved') {
         try {
-          localStorage.setItem(localAuthCacheKey, authUser.uid);
+          localStorage.setItem(localAuthCacheKey, authUid);
         } catch {
           // ignore
         }
         setDeviceAuthState('authorized');
         setActiveAuthRequest(null);
-        showToast('Acesso liberado pelo aparelho principal! Bem-vindo ao Zapei.');
+        showToast('Acesso liberado pelo aparelho principal! Bem-vindo ao ChatFi.');
       }
     });
-  }, [deviceAuthState, activeAuthRequest?.id, authUser, localDeviceInfo.deviceId, showToast]);
+  }, [deviceAuthState, activeAuthRequest?.id, authUid, localDeviceInfo.deviceId, showToast]);
 
-  // 2a-iii. Real-time list of Connected Devices + instant remote session revocation listener
+  // 2a-iii. Passive real-time Connected Devices list (never writes or refreshes the active device;
+  // only revokes if the server explicitly confirms this device was manually disconnected elsewhere)
   useEffect(() => {
-    if (!authUser || deviceAuthState !== 'authorized') return undefined;
+    if (!authUid || deviceAuthState !== 'authorized') return undefined;
     const localAuthCacheKey = `zapei_device_auth_uid_${localDeviceInfo.deviceId}`;
 
-    return subscribeUserDevices(authUser.uid, (devices) => {
+    return subscribeUserDevices(authUid, (devices, { fromCache }) => {
       setConnectedDevices(devices);
+      if (fromCache) return;
+
       const stillPresent = devices.some((d) => d.deviceId === localDeviceInfo.deviceId);
       if (stillPresent) {
         hasSeenSelfInDevicesRef.current = true;
-      } else if (hasSeenSelfInDevicesRef.current) {
-        // This device was remotely disconnected from another device!
-        hasSeenSelfInDevicesRef.current = false;
-        try {
-          localStorage.removeItem(localAuthCacheKey);
-        } catch {
-          // ignore
-        }
-        showToast('Este aparelho foi desconectado remotamente.');
-        void signOutFirebase();
+        return;
       }
-    });
-  }, [authUser, deviceAuthState, localDeviceInfo.deviceId, showToast]);
 
-  // 2a-iv. Real-time listener on already-authorized devices for incoming new device linking requests
+      if (devices.length === 0) {
+        // Legacy account with no devices recorded yet: register silently once in background
+        if (ensuredDeviceSelfRef.current !== authUid) {
+          ensuredDeviceSelfRef.current = authUid;
+          void ensureCurrentDeviceRegisteredSilently(authUid, localDeviceInfo);
+        }
+        return;
+      }
+
+      // Server confirms other active devices exist and this device was explicitly removed
+      hasSeenSelfInDevicesRef.current = false;
+      try {
+        localStorage.removeItem(localAuthCacheKey);
+      } catch {
+        // ignore
+      }
+      showToast('Este aparelho foi desconectado remotamente.');
+      void signOutFirebase();
+    });
+  }, [authUid, deviceAuthState, localDeviceInfo, showToast]);
+
+  // 2a-iv. Passive real-time listener on already-authorized devices: opens the 2-option modal
+  // (QR Code or Password) ONLY when another device attempts to connect to this same account/number
   useEffect(() => {
-    if (!authUser || deviceAuthState !== 'authorized') return undefined;
+    if (!authUid || deviceAuthState !== 'authorized') return undefined;
     return subscribePendingAuthRequestsForUser(
-      authUser.uid,
+      authUid,
       localDeviceInfo.deviceId,
       (pending) => {
         setPendingIncomingAuthRequests(pending);
       }
     );
-  }, [authUser, deviceAuthState, localDeviceInfo.deviceId]);
+  }, [authUid, deviceAuthState, localDeviceInfo.deviceId]);
 
-  // 2b. Sync existing browser/PWA Web Push subscription with Zapei server on login & app resume
+  const handleApproveIncomingDevice = useCallback(
+    async (req: DeviceAuthRequest) => {
+      if (!authUid) return;
+      await approveDeviceAuthRequest({
+        uid: authUid,
+        request: req,
+        approverDeviceId: localDeviceInfo.deviceId,
+      });
+      showToast(`Acesso autorizado para ${req.deviceName}.`);
+    },
+    [authUid, localDeviceInfo.deviceId, showToast]
+  );
+
+  const handleRejectIncomingDevice = useCallback(
+    async (req: DeviceAuthRequest) => {
+      await rejectDeviceAuthRequest(req.id, localDeviceInfo.deviceId);
+      showToast(`Solicitação de ${req.deviceName} recusada.`);
+    },
+    [localDeviceInfo.deviceId, showToast]
+  );
+
+  // 2b. Sync existing browser/PWA Web Push subscription with ChatFi server on login & app resume
   useEffect(() => {
-    if (!authUser || deviceAuthState !== 'authorized') return undefined;
+    if (!authUid || deviceAuthState !== 'authorized') return undefined;
     const runSync = (force = false) => {
+      const currentUser = authUserRef.current;
+      if (!currentUser) return;
       const now = Date.now();
       if (!force && now - lastPushSyncMsRef.current < 45000) return;
       lastPushSyncMsRef.current = now;
-      void syncExistingPushSubscription(authUser).then(setPushStatus);
+      void syncExistingPushSubscription(currentUser).then(setPushStatus);
     };
     const clearBadge = () => {
       try {
@@ -556,7 +603,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
     };
-  }, [authUser, deviceAuthState]);
+  }, [authUid, deviceAuthState]);
 
   const handleEnableBackgroundPush = useCallback(async () => {
     if (!authUser) return;
@@ -582,8 +629,8 @@ export default function App() {
 
   // 3. Subscribe to all real Firestore collections once authenticated, registered & device authorized
   useEffect(() => {
-    if (!authUser || !profile || deviceAuthState !== 'authorized') return undefined;
-    const uid = authUser.uid;
+    if (!authUid || !profileUid || deviceAuthState !== 'authorized') return undefined;
+    const uid = authUid;
     chatsSubStartedAtRef.current = Date.now();
     seenChatSigRef.current.clear();
     const unsubs = [
@@ -597,7 +644,7 @@ export default function App() {
       subscribePayments(uid, setPayments),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [authUser, profile?.uid, deviceAuthState]);
+  }, [authUid, profileUid, deviceAuthState]);
 
   // 3a. Ensure every logged-in user (including accounts created earlier) is findable by name or Virtual Line
   const syncedDirectoryKeyRef = useRef<string>('');
@@ -682,7 +729,7 @@ export default function App() {
           senderId: newestIncoming.otherUid,
           senderName,
           initials: getInitials(senderName),
-          avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0F5132',
+          avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0E7A34',
           avatarUrl: dirMatch?.avatarUrl,
           preview: newestIncoming.lastMessage,
         });
@@ -786,7 +833,7 @@ export default function App() {
                 ? `Chamada de vídeo · ${incoming.callerName}`
                 : `Ligação de voz · ${incoming.callerName}`,
               {
-                body: 'Zapei está chamando · Toque para atender agora',
+                body: 'ChatFi está chamando · Toque para atender agora',
                 icon: '/pwa-192x192.png',
                 badge: '/pwa-192x192.png',
                 tag: `zapei-call-${incoming.id}`,
@@ -812,10 +859,10 @@ export default function App() {
       await registerOrUpdateUserProfile({
         uid: authUser.uid,
         email: authUser.email || base?.email || '',
-        displayName: overrides.name ?? base?.name ?? authUser.displayName ?? 'Usuário Zapei',
+        displayName: overrides.name ?? base?.name ?? authUser.displayName ?? 'Usuário ChatFi',
         phone: overrides.phone ?? base?.phone ?? '',
-        statusMessage: overrides.statusMessage ?? base?.statusMessage ?? 'Disponível no Zapei',
-        avatarColor: overrides.avatarBg ?? base?.avatarBg ?? '#0F5132',
+        statusMessage: overrides.statusMessage ?? base?.statusMessage ?? 'Disponível no ChatFi',
+        avatarColor: overrides.avatarBg ?? base?.avatarBg ?? '#0E7A34',
         avatarUrl: overrides.avatarUrl ?? base?.avatarUrl ?? '',
         commercialMode: overrides.commercialMode ?? base?.commercialMode ?? 'buyer',
         manufacturerActivated:
@@ -1169,7 +1216,7 @@ export default function App() {
           const callerId = String(d.callerId || '');
           const callerName = String(d.callerName || 'Contato');
           const callerInitials = String(d.callerInitials || getInitials(callerName));
-          const callerAvatarColor = String(d.callerAvatarColor || '#0F5132');
+          const callerAvatarColor = String(d.callerAvatarColor || '#0E7A34');
           const offerSdp = String(d.offerSdp);
 
           let canAutoAnswer = false;
@@ -1262,7 +1309,7 @@ export default function App() {
               uid: live.uid,
               name: live.displayName,
               initials: getInitials(live.displayName),
-              avatarBg: '#0F5132',
+              avatarBg: '#0E7A34',
               role:
                 live.commercialMode === 'manufacturer'
                   ? 'manufacturer'
@@ -1326,7 +1373,7 @@ export default function App() {
     const result = await authorizeAllZapeiResourcesOnce(authUser);
     setPushStatus(result.pushStatus);
     setShowPoliciesModal(false);
-    showToast('Termos aceitos e recursos do Zapei configurados neste aparelho.');
+    showToast('Termos aceitos e recursos do ChatFi configurados neste aparelho.');
   }, [profile?.uid, authUser, showToast]);
 
   const handleAuthorizeResourcesFromSettings = useCallback(async () => {
@@ -1396,7 +1443,7 @@ export default function App() {
         name,
         subtitle: dirMatch?.virtualLine || contactMatch?.phone || 'Conversa recente',
         initials: getInitials(name),
-        avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0F5132',
+        avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0E7A34',
         avatarUrl: dirMatch?.avatarUrl,
       });
     }
@@ -1408,9 +1455,9 @@ export default function App() {
       byUid.set(ct.matchedUid, {
         uid: ct.matchedUid,
         name: ct.name,
-        subtitle: dirMatch?.virtualLine || ct.phone || 'Contato Zapei',
+        subtitle: dirMatch?.virtualLine || ct.phone || 'Contato ChatFi',
         initials: ct.initials || getInitials(ct.name),
-        avatarBg: ct.avatarBg || dirMatch?.avatarColor || '#0F5132',
+        avatarBg: ct.avatarBg || dirMatch?.avatarColor || '#0E7A34',
         avatarUrl: dirMatch?.avatarUrl,
       });
     }
@@ -1808,7 +1855,7 @@ export default function App() {
         return {
           ok: false,
           message:
-            'Nenhum usuário cadastrado no Zapei foi encontrado com este número de telefone.',
+            'Nenhum usuário cadastrado no ChatFi foi encontrado com este número de telefone.',
         };
       }
       if (match.uid === profile.uid) {
@@ -1820,7 +1867,7 @@ export default function App() {
       if (match.role !== 'manufacturer') {
         return {
           ok: false,
-          message: `${match.displayName} está no Zapei, mas ainda não ativou o perfil de Fabricante.`,
+          message: `${match.displayName} está no ChatFi, mas ainda não ativou o perfil de Fabricante.`,
         };
       }
       await createRealFactoryConnection({
@@ -1851,8 +1898,10 @@ export default function App() {
 
   const normalizedChatQuery = normalizeSearchText(chatSearch);
   const chatQueryDigits = chatSearch.replace(/\D/g, '');
-  const chatQueryNormalizedPhone =
-    chatQueryDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(chatSearch.trim())
+  const chatQueryIsVirtualLine = isVirtualLineFormat(chatSearch);
+  const chatQueryNormalizedPhone = chatQueryIsVirtualLine
+    ? chatSearch.trim().toUpperCase()
+    : chatQueryDigits.length >= 10 && !/[a-zA-ZÀ-ÿ]/.test(chatSearch.trim())
       ? normalizePhoneDigits(chatSearch)
       : '';
 
@@ -1880,7 +1929,9 @@ export default function App() {
     setChatPhoneLookupBusy(true);
     const timer = window.setTimeout(async () => {
       try {
-        const found = await lookupRegisteredUserByPhone(chatSearch);
+        const found = await lookupRegisteredUserByPhone(
+          chatQueryIsVirtualLine ? chatQueryNormalizedPhone : chatSearch
+        );
         if (cancelled) return;
         if (found && found.uid !== profile.uid) {
           setChatPhoneMatch({
@@ -1889,7 +1940,9 @@ export default function App() {
             initials: found.initials,
             avatarBg: found.avatarColor,
             avatarUrl: found.avatarUrl,
-            phone: formatPhoneDisplay(chatSearch),
+            phone: chatQueryIsVirtualLine
+              ? chatQueryNormalizedPhone
+              : formatPhoneDisplay(chatSearch),
             role: found.role,
             hasStorefront: found.hasStorefront,
             storefrontName: found.storefrontName,
@@ -2038,12 +2091,12 @@ export default function App() {
         uid: c.matchedUid,
         name: c.name,
         initials: c.initials,
-        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0E7A34',
         avatarUrl: dir?.avatarUrl,
         phone: c.phone,
         subtitle: c.hasStorefront && c.storefrontName
           ? c.storefrontName
-          : dir?.statusMessage || 'No Zapei',
+          : dir?.statusMessage || 'No ChatFi',
         role: c.role,
         hasStorefront: c.hasStorefront,
         storefrontName: c.storefrontName,
@@ -2051,7 +2104,7 @@ export default function App() {
       });
     }
 
-    // 2. All registered users on Zapei (Public Directory — includes Phone & CPF/Virtual Line users)
+    // 2. All registered users on ChatFi (Public Directory — includes Phone & CPF/Virtual Line users)
     for (const u of directoryUsers) {
       if (u.uid === profile?.uid) continue;
       if (shownChatUids.has(u.uid) || seen.has(u.uid)) continue;
@@ -2067,14 +2120,14 @@ export default function App() {
         uid: u.uid,
         name: u.displayName,
         initials: u.initials,
-        avatarBg: u.avatarColor || '#0F5132',
+        avatarBg: u.avatarColor || '#0E7A34',
         avatarUrl: u.avatarUrl,
         phone: u.virtualLine,
         subtitle: u.hasStorefront && u.storefrontName
           ? u.storefrontName
           : u.virtualLine
-            ? `${u.virtualLine} · ${u.statusMessage || 'No Zapei'}`
-            : u.statusMessage || 'Disponível no Zapei',
+            ? `${u.virtualLine} · ${u.statusMessage || 'No ChatFi'}`
+            : u.statusMessage || 'Disponível no ChatFi',
         role: u.role,
         hasStorefront: u.hasStorefront,
         storefrontName: u.storefrontName,
@@ -2082,7 +2135,7 @@ export default function App() {
       });
     }
 
-    // 3. Direct phone match if user typed a phone number in Conversas
+    // 3. Direct phone / virtual line match if user typed a number in Conversas
     if (
       chatPhoneMatch &&
       !shownChatUids.has(chatPhoneMatch.uid) &&
@@ -2127,9 +2180,9 @@ export default function App() {
         uid: c.matchedUid,
         name: c.name,
         initials: c.initials,
-        avatarBg: c.avatarBg || dir?.avatarColor || '#0F5132',
+        avatarBg: c.avatarBg || dir?.avatarColor || '#0E7A34',
         avatarUrl: dir?.avatarUrl,
-        subtitle: c.phone || dir?.statusMessage || 'No Zapei',
+        subtitle: c.phone || dir?.statusMessage || 'No ChatFi',
       });
     }
     for (const u of directoryUsers) {
@@ -2139,9 +2192,9 @@ export default function App() {
         uid: u.uid,
         name: u.displayName,
         initials: u.initials,
-        avatarBg: u.avatarColor || '#0F5132',
+        avatarBg: u.avatarColor || '#0E7A34',
         avatarUrl: u.avatarUrl,
-        subtitle: u.storefrontName || u.statusMessage || 'No Zapei',
+        subtitle: u.storefrontName || u.statusMessage || 'No ChatFi',
       });
     }
     return list;
@@ -2157,9 +2210,10 @@ export default function App() {
   if (!authReady || (authUser && !profileLoaded)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC]">
-        <div className="flex flex-col items-center gap-3 text-slate-600">
-          <Loader2 className="h-8 w-8 animate-spin text-[#0F5132]" />
-          <p className="text-xs font-semibold">Conectando ao Zapei...</p>
+        <div className="flex flex-col items-center gap-3.5 text-slate-600">
+          <ChatFiLogo className="h-16 w-16 rounded-2xl shadow-md" />
+          <Loader2 className="h-6 w-6 animate-spin text-[#0E7A34]" />
+          <p className="text-xs font-semibold">Conectando ao ChatFi...</p>
         </div>
       </div>
     );
@@ -2189,8 +2243,9 @@ export default function App() {
   if (deviceAuthState === 'idle' || deviceAuthState === 'checking') {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC]">
-        <div className="flex flex-col items-center gap-3 text-slate-600">
-          <Loader2 className="h-8 w-8 animate-spin text-[#0F5132]" />
+        <div className="flex flex-col items-center gap-3.5 text-slate-600">
+          <ChatFiLogo className="h-16 w-16 rounded-2xl shadow-md" />
+          <Loader2 className="h-6 w-6 animate-spin text-[#0E7A34]" />
           <p className="text-xs font-semibold">Verificando aparelho conectado...</p>
         </div>
       </div>
@@ -2249,20 +2304,33 @@ export default function App() {
       {/* Desktop Left Navigation Rail */}
       <aside className="hidden md:flex md:w-20 lg:w-60 shrink-0 flex-col justify-between border-r border-slate-200 bg-[#0D2B3E] text-white">
         <div>
-          <div className="flex items-center gap-3 px-4 py-5 border-b border-white/10">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-lg font-extrabold text-white shadow-sm">
-              Z
-            </div>
-            <div className="hidden lg:block min-w-0">
-              <span className="block text-base font-extrabold tracking-tight">Zapei</span>
-              <span className="block truncate text-[11px] text-emerald-200/80">
-                {profile.commercialMode === 'manufacturer'
-                  ? 'Fabricante'
-                  : profile.commercialMode === 'reseller'
-                    ? 'Revendedor'
-                    : 'Mensageiro Grátis'}
-              </span>
-            </div>
+          <div className="border-b border-white/10 p-3">
+            <button
+              type="button"
+              onClick={() => setActiveTab('settings')}
+              className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-xl p-2 hover:bg-white/10 transition"
+            >
+              {profile.avatarUrl ? (
+                <img
+                  src={profile.avatarUrl}
+                  alt={profile.name}
+                  className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
+                />
+              ) : (
+                <div
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-white/20"
+                  style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
+                >
+                  {profile.initials}
+                </div>
+              )}
+              <div className="hidden lg:block min-w-0 text-left">
+                <p className="truncate text-sm font-bold text-white">{profile.name}</p>
+                <p className="truncate font-mono text-[11px] text-slate-300 tabular-nums">
+                  {profile.virtualLine || profile.phone}
+                </p>
+              </div>
+            </button>
           </div>
 
           <nav className="mt-3 space-y-1 px-2.5">
@@ -2276,7 +2344,7 @@ export default function App() {
                   onClick={() => setActiveTab(item.id)}
                   className={`flex min-h-[44px] w-full items-center justify-center lg:justify-start gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                     active
-                      ? 'bg-[#0F5132] text-white shadow-sm'
+                      ? 'bg-[#0E7A34] text-white shadow-sm'
                       : 'text-slate-300 hover:bg-white/10 hover:text-white'
                   }`}
                 >
@@ -2288,33 +2356,18 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="border-t border-white/10 p-3">
-          <button
-            type="button"
-            onClick={() => setActiveTab('settings')}
-            className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-xl p-2 hover:bg-white/10 transition"
-          >
-            {profile.avatarUrl ? (
-              <img
-                src={profile.avatarUrl}
-                alt={profile.name}
-                className="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-white/25"
-              />
-            ) : (
-              <div
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                style={{ backgroundColor: profile.avatarBg || '#0F5132' }}
-              >
-                {profile.initials}
-              </div>
-            )}
-            <div className="hidden lg:block min-w-0 text-left">
-              <p className="truncate text-xs font-bold text-white">{profile.name}</p>
-              <p className="truncate font-mono text-[11px] text-slate-300 tabular-nums">
-                {profile.virtualLine || profile.phone}
-              </p>
-            </div>
-          </button>
+        <div className="flex items-center justify-center lg:justify-start gap-3 px-4 py-4 border-t border-white/10">
+          <ChatFiLogo className="h-10 w-10 shrink-0 rounded-xl shadow-sm" />
+          <div className="hidden lg:block min-w-0">
+            <span className="block text-base font-extrabold tracking-tight">ChatFi</span>
+            <span className="block truncate text-[11px] text-emerald-200/80">
+              {profile.commercialMode === 'manufacturer'
+                ? 'Fabricante'
+                : profile.commercialMode === 'reseller'
+                  ? 'Revendedor'
+                  : 'Mensageiro Grátis'}
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -2323,11 +2376,9 @@ export default function App() {
         {/* Mobile Compact Top Header (hidden when inside an active mobile chat thread) */}
         {!mobileInChat && (
           <header className="flex md:hidden items-center justify-between gap-2 border-b border-slate-200 bg-[#0D2B3E] px-3.5 pb-2.5 pt-safe text-white shrink-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#0F5132] text-sm font-extrabold">
-                Z
-              </div>
-              <span className="truncate text-base font-extrabold tracking-tight">Zapei</span>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <ChatFiLogo className="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
+              <span className="truncate text-base font-extrabold tracking-tight">ChatFi</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <PWAInstallButton compact />
@@ -2335,7 +2386,7 @@ export default function App() {
           </header>
         )}
 
-        {/* WhatsApp-Style Floating Incoming Message Alert Banner */}
+        {/* Floating Incoming Message Alert Banner */}
         {incomingMsgBanner && (
           <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:w-96 pt-safe">
             <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white/95 p-3 shadow-xl backdrop-blur">
@@ -2352,12 +2403,12 @@ export default function App() {
                   <img
                     src={incomingMsgBanner.avatarUrl}
                     alt={incomingMsgBanner.senderName}
-                    className="h-11 w-11 shrink-0 rounded-full object-cover ring-2 ring-[#0F5132]/20"
+                    className="h-11 w-11 shrink-0 rounded-full object-cover ring-2 ring-[#0E7A34]/20"
                   />
                 ) : (
                   <div
                     className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                    style={{ backgroundColor: incomingMsgBanner.avatarBg || '#0F5132' }}
+                    style={{ backgroundColor: incomingMsgBanner.avatarBg || '#0E7A34' }}
                   >
                     {incomingMsgBanner.initials}
                   </div>
@@ -2367,7 +2418,7 @@ export default function App() {
                     <span className="truncate text-sm font-bold text-slate-900">
                       {incomingMsgBanner.senderName}
                     </span>
-                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-[#0F5132]">
+                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-[#0E7A34]">
                       Agora
                     </span>
                   </div>
@@ -2390,7 +2441,7 @@ export default function App() {
 
         {/* Toast Notification */}
         {toastMessage && (
-          <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:max-w-sm rounded-xl border border-emerald-200 bg-[#0F5132] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
+          <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:max-w-sm rounded-xl border border-emerald-200 bg-[#0E7A34] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
             {toastMessage}
           </div>
         )}
@@ -2411,7 +2462,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setActiveTab('contacts')}
-                      className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-[#0F5132] hover:bg-emerald-100"
+                      className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-[#0E7A34] hover:bg-emerald-100"
                     >
                       + Nova conversa
                     </button>
@@ -2421,17 +2472,17 @@ export default function App() {
                     <input
                       type="text"
                       inputMode="search"
-                      name="zapei_chat_search"
+                      name="chatfi_chat_search"
                       autoComplete="off"
                       autoCorrect="off"
                       spellCheck={false}
                       value={chatSearch}
                       onChange={(e) => setChatSearch(e.target.value)}
-                      placeholder="Buscar conversa ou pessoa no Zapei..."
-                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm focus:border-[#0F5132] focus:bg-white focus:outline-none"
+                      placeholder="Buscar conversa, pessoa ou CFI-..."
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm focus:border-[#0E7A34] focus:bg-white focus:outline-none"
                     />
                     {chatPhoneLookupBusy ? (
-                      <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0F5132]" />
+                      <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0E7A34]" />
                     ) : chatSearch ? (
                       <button
                         type="button"
@@ -2459,7 +2510,7 @@ export default function App() {
                         {!isOnline ? (
                           <WifiOff className="h-4 w-4 shrink-0 text-amber-600" />
                         ) : (
-                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0F5132]" />
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0E7A34]" />
                         )}
                         <p className="text-[11px] font-medium leading-snug">
                           {!isOnline
@@ -2493,7 +2544,7 @@ export default function App() {
                           matchedContact?.name || dir?.displayName || thread.otherName;
                         const photoUrl = dir?.avatarUrl;
                         const avatarBg =
-                          matchedContact?.avatarBg || dir?.avatarColor || '#0F5132';
+                          matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34';
                         const isSelected = selectedPeer?.uid === thread.otherUid;
                         return (
                           <button
@@ -2558,7 +2609,7 @@ export default function App() {
                                   </span>
                                 </p>
                                 {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
-                                  <Store className="h-3.5 w-3.5 shrink-0 text-[#0F5132]" />
+                                  <Store className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
                                 )}
                               </div>
                             </div>
@@ -2568,14 +2619,14 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Unified WhatsApp-Style Results: People on Zapei (shown when searching OR when user has no chats yet) */}
+                  {/* Unified Results: People on ChatFi */}
                   {(Boolean(normalizedChatQuery) || chats.length === 0) &&
                     matchingZapeiPeople.length > 0 && (
                       <div className="divide-y divide-slate-100 border-t border-slate-100">
                         <div className="bg-slate-50/80 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
                           {normalizedChatQuery
-                            ? `No Zapei (${matchingZapeiPeople.length})`
-                            : `Pessoas no Zapei (${matchingZapeiPeople.length})`}
+                            ? `No ChatFi (${matchingZapeiPeople.length})`
+                            : `Pessoas no ChatFi (${matchingZapeiPeople.length})`}
                         </div>
                         {matchingZapeiPeople.map((person) => (
                           <button
@@ -2607,7 +2658,7 @@ export default function App() {
                             ) : (
                               <div
                                 className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                                style={{ backgroundColor: person.avatarBg || '#0F5132' }}
+                                style={{ backgroundColor: person.avatarBg || '#0E7A34' }}
                               >
                                 {person.initials}
                               </div>
@@ -2617,8 +2668,8 @@ export default function App() {
                                 <span className="truncate text-sm font-bold text-slate-900">
                                   {person.name}
                                 </span>
-                                <span className="shrink-0 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-[#0F5132]">
-                                  No Zapei
+                                <span className="shrink-0 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-[#0E7A34]">
+                                  No ChatFi
                                 </span>
                               </div>
                               <p className="mt-0.5 truncate text-xs text-slate-500">
@@ -2630,24 +2681,24 @@ export default function App() {
                       </div>
                     )}
 
-                  {/* Empty State only when neither chats nor matching Zapei users exist */}
+                  {/* Empty State only when neither chats nor matching ChatFi users exist */}
                   {filteredChats.length === 0 && matchingZapeiPeople.length === 0 && (
                     <div className="p-6 text-center">
                       <MessageSquare className="mx-auto h-9 w-9 text-slate-300" />
                       <p className="mt-3 text-sm font-semibold text-slate-800">
                         {normalizedChatQuery
-                          ? `Nenhuma pessoa chamada "${chatSearch.trim()}" no Zapei ainda`
+                          ? `Nenhuma pessoa chamada "${chatSearch.trim()}" no ChatFi ainda`
                           : 'Nenhuma conversa iniciada ainda'}
                       </p>
                       <p className="mt-1 text-xs leading-relaxed text-slate-500">
                         {normalizedChatQuery
-                          ? 'Assim que ela abrir o Zapei no celular dela com a versão atualizada, o nome e a foto aparecem automaticamente aqui.'
-                          : 'Digite o nome de quem já usa o Zapei na busca acima ou abra Contatos para conversar ou ligar em tempo real.'}
+                          ? 'Assim que ela abrir o ChatFi no celular dela com a versão atualizada, o nome e a foto aparecem automaticamente aqui.'
+                          : 'Digite o nome de quem já usa o ChatFi na busca acima ou abra Contatos para conversar ou ligar em tempo real.'}
                       </p>
                       <button
                         type="button"
                         onClick={() => setActiveTab('contacts')}
-                        className="mt-4 rounded-xl bg-[#0F5132] px-4 py-2 text-xs font-semibold text-white hover:bg-[#146c43]"
+                        className="mt-4 rounded-xl bg-[#0E7A34] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0B5D27]"
                       >
                         Abrir Contatos
                       </button>
@@ -2861,11 +2912,9 @@ export default function App() {
                   />
                 ) : (
                   <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-50 text-[#0F5132]">
-                      <MessageSquare className="h-8 w-8" />
-                    </div>
-                    <h2 className="mt-4 text-lg font-bold text-slate-900">
-                      Zapei Mensageiro em Tempo Real
+                    <ChatFiLogo className="h-20 w-20 rounded-3xl shadow-md ring-8 ring-emerald-50" />
+                    <h2 className="mt-5 text-lg font-bold text-slate-900">
+                      ChatFi Mensageiro em Tempo Real
                     </h2>
                     <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
                       Selecione uma conversa à esquerda ou abra sua agenda de contatos para enviar mensagens, gravar áudios, enviar fotos ou fazer chamadas reais de voz e vídeo.
@@ -3171,7 +3220,7 @@ export default function App() {
                   type="button"
                   onClick={() => setActiveTab(item.id)}
                   className={`flex min-h-[46px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[11px] font-semibold transition ${
-                    active ? 'text-[#0F5132]' : 'text-slate-500'
+                    active ? 'text-[#0E7A34]' : 'text-slate-500'
                   }`}
                 >
                   <Icon className="h-5 w-5 shrink-0" />
@@ -3308,18 +3357,8 @@ export default function App() {
       {pendingIncomingAuthRequests.length > 0 && (
         <DeviceApprovalModal
           request={pendingIncomingAuthRequests[0]}
-          onApprove={async (req) => {
-            await approveDeviceAuthRequest({
-              uid: profile.uid,
-              request: req,
-              approverDeviceId: localDeviceInfo.deviceId,
-            });
-            showToast(`Acesso autorizado para ${req.deviceName}.`);
-          }}
-          onReject={async (req) => {
-            await rejectDeviceAuthRequest(req.id, localDeviceInfo.deviceId);
-            showToast(`Solicitação de ${req.deviceName} recusada.`);
-          }}
+          onApprove={handleApproveIncomingDevice}
+          onReject={handleRejectIncomingDevice}
         />
       )}
 

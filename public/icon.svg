@@ -1,6 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <rect width="512" height="512" rx="112" fill="#0F5132"/>
-  <path d="M132 152C132 134.327 146.327 120 164 120H348C365.673 120 380 134.327 380 152V312C380 329.673 365.673 344 348 344H224L154 396C144.4 403.1 132 396.2 132 384.2V152Z" fill="#FFFFFF"/>
-  <path d="M196 196H316L212 288H316" stroke="#0F5132" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="348" cy="160" r="22" fill="#F97316"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="ChatFi">
+  <defs>
+    <radialGradient id="chatfiBg" cx="50%" cy="22%" r="78%">
+      <stop offset="0%" stop-color="#129640" />
+      <stop offset="52%" stop-color="#0E7A34" />
+      <stop offset="100%" stop-color="#074B1F" />
+    </radialGradient>
+    <linearGradient id="chatfiMark" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E6EFE9" />
+    </linearGradient>
+    <filter id="chatfiShadow" x="-12%" y="-12%" width="124%" height="128%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#032910" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Official ChatFi Dark Green Squircle -->
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#chatfiBg)" />
+
+  <!-- Official White Cloud / Spiral Speech Emblem -->
+  <g filter="url(#chatfiShadow)">
+    <path
+      fill="url(#chatfiMark)"
+      fill-rule="evenodd"
+      d="M 262 378
+         C 374 378 450 306 450 228
+         C 450 164 404 122 340 112
+         C 320 80 286 64 252 64
+         C 214 64 182 82 164 112
+         C 100 124 62 178 62 246
+         C 62 344 146 426 262 446
+         L 262 378 Z
+         M 262 308
+         L 262 376
+         C 180 356 126 300 126 244
+         C 126 196 158 164 202 174
+         C 208 140 226 122 254 122
+         C 282 122 300 140 306 174
+         C 350 166 384 192 384 234
+         C 384 278 334 308 262 308 Z"
+    />
+  </g>
+
+  <!-- Centered CHATFI Wordmark -->
+  <text
+    x="256"
+    y="258"
+    text-anchor="middle"
+    fill="#FFFFFF"
+    font-family="'Plus Jakarta Sans', 'DM Sans', 'Segoe UI', Arial, sans-serif"
+    font-size="56"
+    font-weight="800"
+    letter-spacing="2.5"
+  >
+    CHATFI
+  </text>
 </svg>

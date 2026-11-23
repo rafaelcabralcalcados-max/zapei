@@ -41,7 +41,7 @@ export const ConnectedDevicesCard: React.FC<ConnectedDevicesCardProps> = ({
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-start gap-2.5">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0F5132]">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0E7A34]">
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
@@ -79,7 +79,7 @@ export const ConnectedDevicesCard: React.FC<ConnectedDevicesCardProps> = ({
                   <div
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
                       device.primary
-                        ? 'bg-[#0F5132] text-white'
+                        ? 'bg-[#0E7A34] text-white'
                         : 'bg-white text-slate-700 ring-1 ring-slate-200'
                     }`}
                   >
@@ -96,7 +96,7 @@ export const ConnectedDevicesCard: React.FC<ConnectedDevicesCardProps> = ({
                         {device.deviceName}
                       </p>
                       {device.primary && (
-                        <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-[#0F5132]">
+                        <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-[#0E7A34]">
                           Aparelho Principal
                         </span>
                       )}

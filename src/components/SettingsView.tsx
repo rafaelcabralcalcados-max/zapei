@@ -86,7 +86,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             ) : (
               <div
                 className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white"
-                style={{ backgroundColor: profile.avatarBg || '#0F5132' }}
+                style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
               >
                 {profile.initials}
               </div>
@@ -101,7 +101,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <button
                     type="button"
                     onClick={() => void handleCopyVirtualLine()}
-                    className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-[#0F5132] transition hover:bg-emerald-100"
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-[#0E7A34] transition hover:bg-emerald-100"
                   >
                     {copiedLine ? (
                       <>
@@ -147,10 +147,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-slate-900">
-              Ferramentas Comerciais
+              Perfis e Planos
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Mensagens, ligações e compras são grátis para sempre. Quer vender? Toque no seu perfil abaixo, digite o nome da sua empresa ou vitrine e comece na hora (30 dias grátis, depois R$ 59,90/mês).
+              Converse, faça chamadas e compre nas vitrines gratuitamente. Para vender ou gerenciar sua operação, selecione um perfil comercial abaixo.
             </p>
           </div>
 
@@ -160,7 +160,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               onClick={onOpenBilling}
               className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100"
             >
-              <CreditCard className="h-4 w-4 text-[#0F5132]" />
+              <CreditCard className="h-4 w-4 text-[#0E7A34]" />
               {profile.subscriptionStatus === 'active'
                 ? 'Plano Ativo — R$ 59,90/mês'
                 : profile.subscriptionStatus === 'trial'
@@ -177,26 +177,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={() => onSelectMode('buyer')}
             className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition ${
               profile.commercialMode === 'buyer'
-                ? 'border-[#0F5132] bg-emerald-50/60 ring-1 ring-[#0F5132]'
+                ? 'border-[#0E7A34] bg-emerald-50/60 ring-1 ring-[#0E7A34]'
                 : 'border-slate-200 bg-white hover:bg-slate-50'
             }`}
           >
             <div>
               <div className="flex items-center justify-between">
-                <MessageSquare className="h-6 w-6 text-[#0F5132]" />
+                <MessageSquare className="h-6 w-6 text-[#0E7A34]" />
                 {profile.commercialMode === 'buyer' && (
-                  <CheckCircle2 className="h-5 w-5 text-[#0F5132]" />
+                  <CheckCircle2 className="h-5 w-5 text-[#0E7A34]" />
                 )}
               </div>
               <h3 className="mt-3 text-sm font-bold text-slate-900">
-                Uso Padrão (Comprador)
+                Uso Pessoal
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Mensagens, chamadas de voz e vídeo, agenda e compras em vitrines.
+                Mensagens instantâneas, chamadas de voz e vídeo, agenda de contatos e compras diretas nas vitrines.
               </p>
             </div>
-            <span className="mt-3 text-xs font-bold text-[#0F5132]">
-              Grátis para sempre
+            <span className="mt-3 text-xs font-bold text-[#0E7A34]">
+              Gratuito para sempre
             </span>
           </button>
 
@@ -218,16 +218,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </div>
               <h3 className="mt-3 text-sm font-bold text-slate-900">
-                Sou Fabricante (Empresa)
+                Sou Fabricante
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Catálogo com grade por vírgulas, estoque rápido, conferência com corte parcial e despacho.
+                Catálogo atacadista completo, controle rápido de estoque, conferência ágil de pedidos e gestão de envios.
               </p>
             </div>
             <span className="mt-3 text-xs font-bold text-[#0D2B3E]">
               {profile.manufacturerActivated
-                ? 'Perfil ativado · Abrir painel'
-                : '30 dias grátis · R$ 59,90/mês'}
+                ? 'Perfil ativado • Abrir painel'
+                : '30 dias grátis • R$ 59,90/mês'}
             </span>
           </button>
 
@@ -237,28 +237,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={() => onSelectMode('reseller')}
             className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition ${
               profile.commercialMode === 'reseller'
-                ? 'border-[#0F5132] bg-emerald-50/60 ring-1 ring-[#0F5132]'
+                ? 'border-[#0E7A34] bg-emerald-50/60 ring-1 ring-[#0E7A34]'
                 : 'border-slate-200 bg-white hover:bg-slate-50'
             }`}
           >
             <div>
               <div className="flex items-center justify-between">
-                <Store className="h-6 w-6 text-[#0F5132]" />
+                <Store className="h-6 w-6 text-[#0E7A34]" />
                 {profile.commercialMode === 'reseller' && (
-                  <CheckCircle2 className="h-5 w-5 text-[#0F5132]" />
+                  <CheckCircle2 className="h-5 w-5 text-[#0E7A34]" />
                 )}
               </div>
               <h3 className="mt-3 text-sm font-bold text-slate-900">
                 Sou Revendedor
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                Conexão com fábricas por telefone, margens por categoria, revisão de fotos e financeiro duplo.
+                Conexão direta com fábricas, vitrine personalizada, precificação automática por margem e controle financeiro integrado.
               </p>
             </div>
-            <span className="mt-3 text-xs font-bold text-[#0F5132]">
+            <span className="mt-3 text-xs font-bold text-[#0E7A34]">
               {profile.resellerActivated
-                ? 'Perfil ativado · Abrir painel'
-                : '30 dias grátis · R$ 59,90/mês'}
+                ? 'Perfil ativado • Abrir painel'
+                : '30 dias grátis • R$ 59,90/mês'}
             </span>
           </button>
         </div>
@@ -267,7 +267,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <button
             type="button"
             onClick={onOpenCommercialPanel}
-            className="h-11 w-full rounded-xl bg-[#0F5132] text-xs font-semibold text-white hover:bg-[#146c43]"
+            className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
           >
             Abrir Painel{' '}
             {profile.commercialMode === 'manufacturer' ? 'do Fabricante' : 'do Revendedor'}
@@ -307,13 +307,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {/* PWA Install & WhatsApp Share Target Info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-2.5">
-          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#0F5132]" />
+          <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#0E7A34]" />
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Instalar Zapei e Receber do WhatsApp
+              Instalar ChatFi e Receber do WhatsApp
             </h3>
             <p className="text-xs text-slate-500">
-              Adicione o Zapei na tela inicial para abrir em tela cheia e fazê-lo aparecer automaticamente no botão <strong>Compartilhar</strong> do WhatsApp para enviar imagens e áudios direto para suas conversas.
+              Adicione o ChatFi na tela inicial para abrir em tela cheia e fazê-lo aparecer automaticamente no botão <strong>Compartilhar</strong> do WhatsApp para enviar imagens e áudios direto para suas conversas.
             </p>
           </div>
         </div>

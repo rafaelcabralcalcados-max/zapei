@@ -39,7 +39,7 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
           <div
             className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
               isEnabled
-                ? 'bg-[#0F5132] text-white'
+                ? 'bg-[#0E7A34] text-white'
                 : 'bg-[#0D2B3E] text-white'
             }`}
           >
@@ -58,7 +58,7 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
                 Notificações em Segundo Plano
               </h2>
               {isEnabled && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0F5132]">
+                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0E7A34]">
                   <CheckCircle2 className="h-3 w-3" />
                   Ativo
                 </span>
@@ -79,13 +79,13 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
 
             {isIosNeedsInstall && (
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                No iPhone, adicione o Zapei à Tela de Início para receber avisos de chamadas e mensagens com a tela bloqueada.
+                No iPhone, adicione o ChatFi à Tela de Início para receber avisos de chamadas e mensagens com a tela bloqueada.
               </p>
             )}
 
             {isDenied && (
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                As notificações estão desativadas nas preferências deste aparelho. Habilite as notificações do Zapei nos ajustes do sistema para receber alertas em segundo plano.
+                As notificações estão desativadas nas preferências deste aparelho. Habilite as notificações do ChatFi nos ajustes do sistema para receber alertas em segundo plano.
               </p>
             )}
 
@@ -96,7 +96,7 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
             )}
 
             {feedback && (
-              <p className="mt-2 text-xs font-semibold text-[#0F5132]">
+              <p className="mt-2 text-xs font-semibold text-[#0E7A34]">
                 {feedback}
               </p>
             )}
@@ -111,8 +111,8 @@ export const BackgroundCallPushCard: React.FC<BackgroundCallPushCardProps> = ({
               onClick={() => void onEnable()}
               className={`inline-flex min-h-[40px] shrink-0 items-center justify-center gap-2 rounded-xl px-4 text-xs font-bold transition disabled:opacity-60 ${
                 isEnabled
-                  ? 'border border-emerald-300 bg-white text-[#0F5132] hover:bg-emerald-50'
-                  : 'bg-[#0F5132] text-white hover:bg-[#146c43]'
+                  ? 'border border-emerald-300 bg-white text-[#0E7A34] hover:bg-emerald-50'
+                  : 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
               }`}
             >
               {busy ? (

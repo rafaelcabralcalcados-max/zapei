@@ -17,12 +17,12 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ compact = fa
       <button
         type="button"
         onClick={() => void install()}
-        className={`inline-flex items-center justify-center gap-2 rounded-xl bg-[#0F5132] text-white font-medium transition-colors hover:bg-[#0B3D26] whitespace-nowrap shrink-0 cursor-pointer ${
+        className={`inline-flex items-center justify-center gap-2 rounded-xl bg-[#0E7A34] text-white font-medium transition-colors hover:bg-[#0B5D27] whitespace-nowrap shrink-0 cursor-pointer ${
           compact ? 'px-3 py-2 text-xs min-h-[40px]' : 'w-full px-4 py-3 text-sm min-h-[44px]'
         }`}
       >
         <Download className="w-4 h-4 shrink-0" />
-        <span>Instalar Zapei</span>
+        <span>Instalar ChatFi</span>
       </button>
     );
   }
@@ -36,7 +36,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ compact = fa
           compact ? 'px-3 py-2 text-xs min-h-[40px]' : 'w-full px-4 py-3 text-sm min-h-[44px]'
         }`}
       >
-        <Smartphone className="w-4 h-4 shrink-0 text-[#0F5132]" />
+        <Smartphone className="w-4 h-4 shrink-0 text-[#0E7A34]" />
         <span>{isIOS ? 'Instalar no iPhone' : 'Instalar App (PWA)'}</span>
       </button>
 
@@ -44,7 +44,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ compact = fa
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0D2B3E]/50 backdrop-blur-xs p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl border border-slate-200">
             <div className="flex items-start justify-between gap-4">
-              <h3 className="text-base font-bold text-[#0D2B3E]">Instalar Zapei no aparelho</h3>
+              <h3 className="text-base font-bold text-[#0D2B3E]">Instalar ChatFi no aparelho</h3>
               <button
                 type="button"
                 onClick={() => setShowGuide(false)}
@@ -63,14 +63,14 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ compact = fa
               ) : (
                 <>
                   1. Abra o menu do navegador (ícone de três pontos ou barra de endereço).<br />
-                  2. Selecione <strong>Instalar aplicativo</strong> ou <strong>Adicionar à tela inicial</strong> para abrir o Zapei em tela cheia.
+                  2. Selecione <strong>Instalar aplicativo</strong> ou <strong>Adicionar à tela inicial</strong> para abrir o ChatFi em tela cheia.
                 </>
               )}
             </p>
             <button
               type="button"
               onClick={() => setShowGuide(false)}
-              className="mt-5 w-full min-h-[44px] rounded-xl bg-[#0F5132] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0B3D26] cursor-pointer"
+              className="mt-5 w-full min-h-[44px] rounded-xl bg-[#0E7A34] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#0B5D27] cursor-pointer"
             >
               Entendi
             </button>

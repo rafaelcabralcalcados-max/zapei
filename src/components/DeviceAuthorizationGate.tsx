@@ -8,11 +8,11 @@ import {
   LogOut,
   RefreshCw,
   ShieldAlert,
-  ShieldCheck,
   Smartphone,
 } from 'lucide-react';
 import { encodeDeviceAuthQrPayload } from '../lib/cpfAndDeviceUtils';
 import type { DeviceAuthRequest } from '../types/zapei';
+import { ChatFiLogo } from './ChatFiLogo';
 
 interface DeviceAuthorizationGateProps {
   userName: string;
@@ -91,9 +91,7 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
         <div className="bg-[#0D2B3E] px-6 py-5 text-white">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#0F5132] text-white shadow-sm">
-                <ShieldCheck className="h-6 w-6" />
-              </div>
+              <ChatFiLogo className="h-11 w-11 shrink-0 rounded-2xl shadow-sm ring-2 ring-white/15" />
               <div className="min-w-0">
                 <h1 className="text-lg font-extrabold tracking-tight">
                   Autorizar Novo Aparelho
@@ -153,7 +151,7 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
                 type="button"
                 disabled={regenerating}
                 onClick={() => void onRegenerate()}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#0F5132] px-5 text-xs font-bold text-white transition hover:bg-[#146c43] disabled:opacity-50"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#0E7A34] px-5 text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 {regenerating ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -166,9 +164,9 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
           ) : (
             <>
               <p className="text-xs leading-relaxed text-slate-600">
-                Sua conta já está ativa em outro aparelho. Abra o <strong>Zapei</strong> no seu
-                aparelho principal e autorize este acesso lendo o <strong>QR Code</strong> ou
-                digitando o <strong>código de 6 dígitos</strong> abaixo:
+                Sua conta já está ativa em outro aparelho. Um quadro de autorização foi aberto no
+                aparelho que já tem acesso — escolha <strong>Código QR</strong> ou{' '}
+                <strong>Senha de 6 dígitos</strong> para liberar este login:
               </p>
 
               {/* Simultaneous QR Code + 6-Digit Code */}
@@ -176,28 +174,28 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
                 {/* Option A: Dynamic QR Code */}
                 <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
                   <span className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                    Opção 1 · QR Code
+                    Opção 1 · Código QR
                   </span>
                   {qrDataUrl ? (
                     <img
                       src={qrDataUrl}
-                      alt="QR Code de autorização do Zapei"
+                      alt="Código QR de autorização do ChatFi"
                       className="h-44 w-44 rounded-xl border border-slate-100"
                     />
                   ) : (
                     <div className="flex h-44 w-44 items-center justify-center rounded-xl bg-slate-50">
-                      <Loader2 className="h-6 w-6 animate-spin text-[#0F5132]" />
+                      <Loader2 className="h-6 w-6 animate-spin text-[#0E7A34]" />
                     </div>
                   )}
                   <p className="mt-2 text-center text-[11px] text-slate-500">
-                    Aponte a câmera do aparelho principal
+                    Aponte a câmera do aparelho conectado
                   </p>
                 </div>
 
-                {/* Option B: 6-Digit Authorization Code */}
+                {/* Option B: 6-Digit Access Password */}
                 <div className="flex flex-col items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#0F5132]">
-                    Opção 2 · Código de 6 dígitos
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#0E7A34]">
+                    Opção 2 · Senha de 6 dígitos
                   </span>
 
                   <div className="my-4 text-center">
@@ -207,7 +205,7 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
                     <button
                       type="button"
                       onClick={() => void handleCopyCode()}
-                      className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#0F5132] transition hover:bg-emerald-100/70"
+                      className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#0E7A34] transition hover:bg-emerald-100/70"
                     >
                       {copied ? (
                         <>
@@ -224,7 +222,7 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
                   </div>
 
                   <p className="text-center text-[11px] text-slate-600">
-                    Digite este código no aviso que apareceu no seu aparelho principal.
+                    Digite esta senha no quadro que apareceu no aparelho conectado.
                   </p>
                 </div>
               </div>
@@ -232,7 +230,7 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
               {/* Live waiting indicator */}
               <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                 <div className="flex items-center gap-2.5">
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0F5132]" />
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#0E7A34]" />
                   <p className="text-xs font-medium text-slate-700">
                     {statusMessage ||
                       'Aguardando aprovação em tempo real... Assim que liberar, suas conversas abrirão automaticamente.'}

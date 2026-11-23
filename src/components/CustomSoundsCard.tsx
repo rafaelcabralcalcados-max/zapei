@@ -41,9 +41,9 @@ const SOUND_SLOTS: Array<{
     slot: 'call',
     title: 'Toque de Chamadas (Voz e Vídeo)',
     subtitle: 'Toca em loop enquanto o telefone chama',
-    defaultLabel: 'Toque padrão do Zapei',
+    defaultLabel: 'Toque padrão do ChatFi',
     icon: PhoneIncoming,
-    accentBg: 'bg-[#0F5132] text-white',
+    accentBg: 'bg-[#0E7A34] text-white',
   },
   {
     slot: 'text_message',
@@ -129,13 +129,13 @@ export const CustomSoundsCard: React.FC<CustomSoundsCardProps> = ({ onNotify }) 
     }
     setErrorMsg('');
     await removeCustomSound(slot);
-    onNotify?.('Som restaurado para o padrão do Zapei.');
+    onNotify?.('Som restaurado para o padrão do ChatFi.');
   };
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 space-y-4">
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0F5132] text-white">
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white">
           <Music className="h-5 w-5" />
         </div>
         <div className="min-w-0">
@@ -188,7 +188,7 @@ export const CustomSoundsCard: React.FC<CustomSoundsCardProps> = ({ onNotify }) 
                     <span
                       className={`inline-flex max-w-full items-center gap-1 truncate rounded-md px-2 py-0.5 text-[11px] font-semibold ${
                         customMeta
-                          ? 'bg-emerald-100 text-[#0F5132]'
+                          ? 'bg-emerald-100 text-[#0E7A34]'
                           : 'bg-slate-200/80 text-slate-600'
                       }`}
                     >
@@ -223,7 +223,7 @@ export const CustomSoundsCard: React.FC<CustomSoundsCardProps> = ({ onNotify }) 
                     </>
                   ) : (
                     <>
-                      <Play className="h-3.5 w-3.5 fill-current text-[#0F5132]" />
+                      <Play className="h-3.5 w-3.5 fill-current text-[#0E7A34]" />
                       Ouvir
                     </>
                   )}
@@ -233,7 +233,7 @@ export const CustomSoundsCard: React.FC<CustomSoundsCardProps> = ({ onNotify }) 
                   type="button"
                   disabled={isSaving}
                   onClick={() => inputRefs.current[slot]?.click()}
-                  className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] px-3 text-xs font-semibold text-white transition hover:bg-[#146c43] disabled:opacity-60"
+                  className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
                   {isSaving ? 'Salvando...' : 'Escolher do celular'}
@@ -243,7 +243,7 @@ export const CustomSoundsCard: React.FC<CustomSoundsCardProps> = ({ onNotify }) 
                   <button
                     type="button"
                     onClick={() => void handleResetDefault(slot)}
-                    title="Restaurar som padrão do Zapei"
+                    title="Restaurar som padrão do ChatFi"
                     className="inline-flex min-h-[38px] items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 transition hover:bg-red-50 hover:text-red-700"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />

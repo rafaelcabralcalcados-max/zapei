@@ -132,7 +132,7 @@ export async function enableRealBackgroundCallPush(
     return {
       status: 'ios_needs_install',
       message:
-        'No iPhone, adicione o Zapei à Tela de Início para ativar alertas com a tela bloqueada.',
+        'No iPhone, adicione o ChatFi à Tela de Início para ativar alertas com a tela bloqueada.',
     };
   }
 

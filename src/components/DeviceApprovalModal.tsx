@@ -20,13 +20,15 @@ interface DeviceApprovalModalProps {
   onReject: (request: DeviceAuthRequest) => Promise<void>;
 }
 
+type ApprovalOption = 'qr' | 'password';
+
 export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
   request,
   onApprove,
   onReject,
 }) => {
+  const [selectedOption, setSelectedOption] = useState<ApprovalOption | null>(null);
   const [enteredCode, setEnteredCode] = useState('');
-  const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerError, setScannerError] = useState('');
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -36,6 +38,10 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const approvingRef = useRef(false);
+  const onApproveRef = useRef(onApprove);
+  onApproveRef.current = onApprove;
+  const requestRef = useRef(request);
+  requestRef.current = request;
 
   const isMobileRequester = /Android|iPhone|iPad|iOS/i.test(
     `${request.deviceName} ${request.platform}`
@@ -53,6 +59,7 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
   };
 
   useEffect(() => {
+    setSelectedOption(null);
     setEnteredCode('');
     setFormError('');
     setScannerError('');
@@ -60,7 +67,7 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
   }, [request.id]);
 
   useEffect(() => {
-    if (!scannerOpen) {
+    if (selectedOption !== 'qr') {
       stopCamera();
       return undefined;
     }
@@ -70,7 +77,9 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
 
     const startScanner = async () => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setScannerError('Este navegador não liberou acesso à câmera. Digite o código de 6 dígitos abaixo.');
+        setScannerError(
+          'Câmera indisponível neste aparelho. Escolha a opção "Senha (6 dígitos)" para autorizar.'
+        );
         return;
       }
 
@@ -94,6 +103,7 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
           if (cancelled || approvingRef.current) return;
           const v = videoRef.current;
           const c = canvasRef.current;
+          const currentReq = requestRef.current;
           if (v && c && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && v.videoWidth > 0) {
             c.width = v.videoWidth;
             c.height = v.videoHeight;
@@ -108,22 +118,21 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
                 const parsed = parseDeviceAuthQrPayload(decoded.data);
                 if (
                   parsed &&
-                  parsed.requestId === request.id &&
-                  parsed.requestToken === request.requestToken &&
-                  parsed.code6 === request.code6
+                  parsed.requestId === currentReq.id &&
+                  parsed.requestToken === currentReq.requestToken &&
+                  parsed.code6 === currentReq.code6
                 ) {
                   approvingRef.current = true;
                   stopCamera();
-                  setScannerOpen(false);
                   setEnteredCode(parsed.code6);
                   setBusy(true);
-                  void onApprove(request).finally(() => {
+                  void onApproveRef.current(currentReq).finally(() => {
                     setBusy(false);
                   });
                   return;
                 } else if (parsed) {
                   setScannerError(
-                    'Este QR Code pertence a outra tentativa. Atualize a tela do outro aparelho ou digite os 6 dígitos.'
+                    'Este Código QR pertence a outra tentativa. Atualize a tela do aparelho novo ou use a opção Senha.'
                   );
                 }
               }
@@ -136,7 +145,7 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
       } catch {
         if (!cancelled) {
           setScannerError(
-            'Não foi possível abrir a câmera. Autorize a câmera ou digite o código de 6 dígitos.'
+            'Não foi possível abrir a câmera. Autorize o uso da câmera ou escolha a opção "Senha (6 dígitos)".'
           );
         }
       }
@@ -147,17 +156,17 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
       cancelled = true;
       stopCamera();
     };
-  }, [scannerOpen, request, onApprove]);
+  }, [selectedOption, request.id]);
 
-  const handleConfirmCode = async (e: React.FormEvent) => {
+  const handleConfirmPasswordCode = async (e: React.FormEvent) => {
     e.preventDefault();
     const digits = enteredCode.replace(/\D/g, '');
     if (digits.length !== 6) {
-      setFormError('Digite os 6 dígitos exibidos na tela do novo aparelho.');
+      setFormError('Digite a senha de 6 dígitos exibida na tela do aparelho novo.');
       return;
     }
     if (digits !== request.code6) {
-      setFormError('Código incorreto. Confira os 6 números exibidos no outro aparelho.');
+      setFormError('Senha incorreta. Confira os 6 números exibidos no outro aparelho.');
       return;
     }
     setFormError('');
@@ -193,17 +202,17 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                Alerta de segurança · Novo acesso
+                Novo aparelho tentando conectar
               </p>
               <h2 className="mt-0.5 text-base font-extrabold leading-snug">
-                Tentativa de conexão detectada em {request.deviceName}. Deseja autorizar?
+                Outro dispositivo solicitou acesso à sua conta. Deseja liberar o login?
               </h2>
             </div>
           </div>
         </div>
 
         <div className="space-y-4 p-5">
-          {/* Device details */}
+          {/* Requester device details */}
           <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-[#0D2B3E] ring-1 ring-slate-200">
               {isMobileRequester ? (
@@ -218,17 +227,81 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
             </div>
           </div>
 
-          {/* Toggle Camera QR Scanner */}
-          {scannerOpen ? (
+          {/* 2 Login Authorization Options for the New Device */}
+          <div>
+            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+              Escolha como liberar o aparelho novo
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setFormError('');
+                  setSelectedOption('qr');
+                }}
+                className={`flex flex-col items-center justify-center gap-1.5 rounded-2xl border p-3.5 text-center transition disabled:opacity-50 ${
+                  selectedOption === 'qr'
+                    ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34] ring-2 ring-[#0E7A34]/20'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50/40'
+                }`}
+              >
+                <div
+                  className={`flex h-10 w-10 items-center justify-center rounded-xl ${
+                    selectedOption === 'qr'
+                      ? 'bg-[#0E7A34] text-white'
+                      : 'bg-slate-100 text-[#0D2B3E]'
+                  }`}
+                >
+                  <QrCode className="h-5 w-5" />
+                </div>
+                <span className="text-xs font-extrabold">1. Código QR</span>
+                <span className="text-[11px] leading-tight text-slate-500">
+                  Ler pela câmera
+                </span>
+              </button>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setScannerError('');
+                  setSelectedOption('password');
+                }}
+                className={`flex flex-col items-center justify-center gap-1.5 rounded-2xl border p-3.5 text-center transition disabled:opacity-50 ${
+                  selectedOption === 'password'
+                    ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34] ring-2 ring-[#0E7A34]/20'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-emerald-300 hover:bg-emerald-50/40'
+                }`}
+              >
+                <div
+                  className={`flex h-10 w-10 items-center justify-center rounded-xl ${
+                    selectedOption === 'password'
+                      ? 'bg-[#0E7A34] text-white'
+                      : 'bg-slate-100 text-[#0D2B3E]'
+                  }`}
+                >
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <span className="text-xs font-extrabold">2. Senha</span>
+                <span className="text-[11px] leading-tight text-slate-500">
+                  Código de 6 dígitos
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Option 1: Live Camera QR Code Scanner */}
+          {selectedOption === 'qr' && (
             <div className="space-y-2.5 rounded-2xl border border-emerald-200 bg-slate-900 p-3 text-white">
               <div className="flex items-center justify-between">
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-300">
                   <Camera className="h-4 w-4" />
-                  Aponte para o QR Code na tela do outro aparelho
+                  Aponte para o Código QR no aparelho novo
                 </span>
                 <button
                   type="button"
-                  onClick={() => setScannerOpen(false)}
+                  onClick={() => setSelectedOption(null)}
                   className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
                   aria-label="Fechar câmera"
                 >
@@ -253,70 +326,63 @@ export const DeviceApprovalModal: React.FC<DeviceApprovalModalProps> = ({
                 </p>
               )}
             </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setScannerOpen(true)}
-              disabled={busy}
-              className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 text-xs font-bold text-[#0F5132] transition hover:bg-emerald-100/70 disabled:opacity-50"
-            >
-              <QrCode className="h-4 w-4" />
-              Ler QR Code pela câmera
-            </button>
           )}
 
-          {/* 6-digit code confirmation form */}
-          <form onSubmit={handleConfirmCode} className="space-y-3">
-            <div>
-              <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                <KeyRound className="h-3.5 w-3.5 text-[#0F5132]" />
-                Ou digite o código de 6 dígitos mostrado no outro aparelho
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                autoComplete="one-time-code"
-                value={enteredCode}
-                onChange={(e) => {
-                  setEnteredCode(e.target.value.replace(/\D/g, '').slice(0, 6));
-                  setFormError('');
-                }}
-                placeholder="000000"
-                className="h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-center font-mono text-xl font-bold tracking-[0.35em] text-slate-900 focus:border-[#0F5132] focus:outline-none"
-              />
-            </div>
+          {/* Option 2: 6-Digit Access Password Input */}
+          {selectedOption === 'password' && (
+            <form onSubmit={handleConfirmPasswordCode} className="space-y-3">
+              <div>
+                <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                  <KeyRound className="h-3.5 w-3.5 text-[#0E7A34]" />
+                  Digite a senha de 6 dígitos exibida no aparelho novo
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  autoFocus
+                  autoComplete="one-time-code"
+                  value={enteredCode}
+                  onChange={(e) => {
+                    setEnteredCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                    setFormError('');
+                  }}
+                  placeholder="000000"
+                  className="h-12 w-full rounded-xl border border-slate-300 bg-white px-4 text-center font-mono text-xl font-bold tracking-[0.35em] text-slate-900 focus:border-[#0E7A34] focus:outline-none"
+                />
+              </div>
 
-            {formError && (
-              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-                {formError}
-              </p>
-            )}
+              {formError && (
+                <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                  {formError}
+                </p>
+              )}
 
-            <div className="grid grid-cols-2 gap-2.5 pt-1">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void handleReject()}
-                className="flex h-11 items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-red-50 text-xs font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
-              >
-                <X className="h-4 w-4" />
-                Recusar
-              </button>
               <button
                 type="submit"
                 disabled={busy || enteredCode.replace(/\D/g, '').length !== 6}
-                className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-[#0F5132] text-xs font-bold text-white transition hover:bg-[#146c43] disabled:opacity-50"
+                className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
               >
                 {busy ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <CheckCircle2 className="h-4 w-4" />
                 )}
-                Autorizar Acesso
+                Autorizar Login no Novo Aparelho
               </button>
-            </div>
-          </form>
+            </form>
+          )}
+
+          {/* Always-visible Reject Action */}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleReject()}
+            className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-red-50 text-xs font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+            Recusar acesso deste aparelho
+          </button>
         </div>
       </div>
     </div>
