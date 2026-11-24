@@ -368,6 +368,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "requestToken", "code6", "deviceId", "deviceName", "platform", "status", "expiresAtMs", "createdAt", "updatedAt"]
+    },
+    "PushEndpointBlob": {
+      "title": "PushEndpointBlob",
+      "description": "AES-256-GCM encrypted Web Push subscriptions persisted per user so background call and message notifications survive server restarts.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ciphertext": { "type": "string", "minLength": 1, "maxLength": 32000 },
+        "iv": { "type": "string", "minLength": 12, "maxLength": 64 },
+        "authTag": { "type": "string", "minLength": 16, "maxLength": 64 },
+        "deviceCount": { "type": "number" },
+        "updatedAtMs": { "type": "number" }
+      },
+      "required": ["ownerId", "ciphertext", "iv", "authTag", "deviceCount", "updatedAtMs"]
     }
   },
   "firestore": {
@@ -394,6 +408,10 @@
     "/auth_requests/{requestId}": {
       "schema": { "$ref": "#/entities/DeviceAuthRequest" },
       "description": "Pending and resolved real-time device linking requests via QR code or 6-digit code."
+    },
+    "/push_endpoints/{userId}": {
+      "schema": { "$ref": "#/entities/PushEndpointBlob" },
+      "description": "AES-256-GCM encrypted W3C Web Push device subscriptions for closed-app and lock-screen delivery."
     },
     "/phone_index/{phoneHash}": {
       "schema": { "$ref": "#/entities/PhoneIndex" },

@@ -134,7 +134,7 @@ interface ZapeiPushPayload {
   senderId?: string;
   senderName?: string;
   body?: string;
-  messageType?: 'text' | 'audio' | 'image';
+  messageType?: 'text' | 'audio' | 'image' | 'video';
   messageId?: string;
 }
 
@@ -227,7 +227,9 @@ self.addEventListener('push', (event: PushEvent) => {
       ? `🎤 ${rawBody}`
       : payload.messageType === 'image' && !rawBody.startsWith('📷')
         ? `📷 ${rawBody}`
-        : rawBody;
+        : payload.messageType === 'video' && !rawBody.startsWith('🎥')
+          ? `🎥 ${rawBody}`
+          : rawBody;
   const uniqueMsgKey = payload.messageId || String(Date.now());
   const msgOptions: NotificationOptions & {
     vibrate?: number[];

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'fs';
 import http from 'http';
@@ -12,15 +13,18 @@ import { getAuth } from 'firebase-admin/auth';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load Firebase projectId (used ONLY for stateless verifyIdToken — needs zero IAM)
+// Load Firebase projectId & databaseId (verifyIdToken is stateless; Firestore REST uses user's own Bearer token)
 const firebaseConfigPath = path.resolve(__dirname, 'firebase-applet-config.json');
 const firebaseAppletConfig = JSON.parse(
   fs.readFileSync(firebaseConfigPath, 'utf-8')
-) as { projectId?: string };
+) as { projectId?: string; firestoreDatabaseId?: string };
+
+const firebaseProjectId = firebaseAppletConfig.projectId || '';
+const firebaseDatabaseId = firebaseAppletConfig.firestoreDatabaseId || '(default)';
 
 const adminApp = getApps().length
   ? getApp()
-  : initializeApp({ projectId: firebaseAppletConfig.projectId });
+  : initializeApp({ projectId: firebaseProjectId });
 const adminAuth = getAuth(adminApp);
 
 // --- Persistent VAPID Keys (W3C Web Push for Android Chrome, iOS 16.4+ PWA, Desktop) ---
@@ -74,10 +78,130 @@ function saveSubscriptions(map: SubscriptionMap): void {
 }
 
 const subscriptionsByUid: SubscriptionMap = loadSubscriptions();
+const VALID_UID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+
+// --- AES-256-GCM Encryption + Firestore REST Persistence (Survives Render / Cloud Run Restarts) ---
+const pushEncryptionKey = crypto.createHash('sha256').update(vapidKeys.privateKey).digest();
+
+function encryptSubscriptions(subs: WebPushSubscription[]): {
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+} {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', pushEncryptionKey, iv);
+  const plaintext = JSON.stringify(subs);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return {
+    ciphertext: encrypted.toString('base64'),
+    iv: iv.toString('base64'),
+    authTag: cipher.getAuthTag().toString('base64'),
+  };
+}
+
+function decryptSubscriptions(blob: {
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+}): WebPushSubscription[] {
+  try {
+    const iv = Buffer.from(blob.iv, 'base64');
+    const authTag = Buffer.from(blob.authTag, 'base64');
+    const ciphertext = Buffer.from(blob.ciphertext, 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', pushEncryptionKey, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
+      'utf8'
+    );
+    const parsed = JSON.parse(decrypted);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidPushSubscription);
+  } catch {
+    return [];
+  }
+}
+
+function buildPushEndpointFirestoreUrl(uid: string): string | null {
+  if (!firebaseProjectId || !VALID_UID_REGEX.test(uid)) return null;
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    firebaseProjectId
+  )}/databases/${encodeURIComponent(
+    firebaseDatabaseId
+  )}/documents/push_endpoints/${encodeURIComponent(uid)}`;
+}
+
+async function persistSubscriptionsToFirestore(
+  uid: string,
+  subs: WebPushSubscription[],
+  idToken: string
+): Promise<void> {
+  const url = buildPushEndpointFirestoreUrl(uid);
+  if (!url || !idToken) return;
+  try {
+    if (subs.length === 0) {
+      await fetch(url, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      return;
+    }
+    const enc = encryptSubscriptions(subs);
+    if (enc.ciphertext.length > 32000) return;
+    await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        fields: {
+          ownerId: { stringValue: uid },
+          ciphertext: { stringValue: enc.ciphertext },
+          iv: { stringValue: enc.iv },
+          authTag: { stringValue: enc.authTag },
+          deviceCount: { integerValue: String(subs.length) },
+          updatedAtMs: { integerValue: String(Date.now()) },
+        },
+      }),
+    });
+  } catch {
+    // Non-fatal: local cache still active
+  }
+}
+
+async function fetchSubscriptionsFromFirestore(
+  targetUid: string,
+  bearerToken: string
+): Promise<WebPushSubscription[]> {
+  const url = buildPushEndpointFirestoreUrl(targetUid);
+  if (!url || !bearerToken) return [];
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${bearerToken}` },
+    });
+    if (!res.ok) return [];
+    const docData = (await res.json()) as {
+      fields?: {
+        ciphertext?: { stringValue?: string };
+        iv?: { stringValue?: string };
+        authTag?: { stringValue?: string };
+      };
+    };
+    const ciphertext = docData.fields?.ciphertext?.stringValue || '';
+    const iv = docData.fields?.iv?.stringValue || '';
+    const authTag = docData.fields?.authTag?.stringValue || '';
+    if (!ciphertext || !iv || !authTag) return [];
+    return decryptSubscriptions({ ciphertext, iv, authTag });
+  } catch {
+    return [];
+  }
+}
 
 // --- Authenticated Express Request Helper ---
 interface AuthenticatedRequest extends Request {
   verifiedUid?: string;
+  idToken?: string;
 }
 
 async function requireFirebaseAuth(
@@ -94,6 +218,7 @@ async function requireFirebaseAuth(
   try {
     const decoded = await adminAuth.verifyIdToken(idToken);
     req.verifiedUid = decoded.uid;
+    req.idToken = idToken;
     next();
   } catch {
     res.status(401).json({ error: 'Sessão inválida ou expirada.' });
@@ -119,9 +244,19 @@ function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
 async function dispatchPushToUser(
   targetUid: string,
   payload: Record<string, unknown>,
-  options: { ttl: number; urgency: 'very-low' | 'low' | 'normal' | 'high'; topic?: string }
+  options: { ttl: number; urgency: 'very-low' | 'low' | 'normal' | 'high'; topic?: string },
+  callerIdToken?: string
 ): Promise<{ sent: number; removed: number }> {
-  const subs = subscriptionsByUid[targetUid] || [];
+  let subs = subscriptionsByUid[targetUid] || [];
+  // If local ephemeral disk was cleared (e.g. Render/Cloud Run restart), hydrate from Firestore
+  if (subs.length === 0 && callerIdToken) {
+    const restored = await fetchSubscriptionsFromFirestore(targetUid, callerIdToken);
+    if (restored.length > 0) {
+      subscriptionsByUid[targetUid] = restored;
+      saveSubscriptions(subscriptionsByUid);
+      subs = restored;
+    }
+  }
   if (subs.length === 0) return { sent: 0, removed: 0 };
 
   const jsonPayload = JSON.stringify(payload);
@@ -166,33 +301,44 @@ async function startServer(): Promise<void> {
     res.json({ publicKey: vapidKeys.publicKey });
   });
 
-  // 2. Register authenticated user's device PushSubscription
-  app.post('/api/push/subscribe', requireFirebaseAuth, (req: AuthenticatedRequest, res) => {
+  // 2. Register authenticated user's device PushSubscription (memory + disk + encrypted Firestore)
+  app.post('/api/push/subscribe', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
     const uid = req.verifiedUid!;
+    const idToken = req.idToken || '';
     const sub = req.body?.subscription;
     if (!isValidPushSubscription(sub)) {
       res.status(400).json({ error: 'Inscrição Web Push inválida.' });
       return;
     }
 
-    const existing = subscriptionsByUid[uid] || [];
+    let existing = subscriptionsByUid[uid] || [];
+    if (existing.length === 0 && idToken) {
+      existing = await fetchSubscriptionsFromFirestore(uid, idToken);
+    }
     const deduped = existing.filter((item) => item.endpoint !== sub.endpoint);
     deduped.push(sub);
     // Keep up to 6 devices per user
-    subscriptionsByUid[uid] = deduped.slice(-6);
+    const nextList = deduped.slice(-6);
+    subscriptionsByUid[uid] = nextList;
     saveSubscriptions(subscriptionsByUid);
-    res.json({ ok: true, devices: subscriptionsByUid[uid].length });
+    await persistSubscriptionsToFirestore(uid, nextList, idToken);
+    res.json({ ok: true, devices: nextList.length });
   });
 
   // 3. Remove device subscription
-  app.post('/api/push/unsubscribe', requireFirebaseAuth, (req: AuthenticatedRequest, res) => {
+  app.post('/api/push/unsubscribe', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
     const uid = req.verifiedUid!;
+    const idToken = req.idToken || '';
     const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : '';
-    if (endpoint && subscriptionsByUid[uid]) {
-      subscriptionsByUid[uid] = subscriptionsByUid[uid].filter(
-        (item) => item.endpoint !== endpoint
-      );
+    let existing = subscriptionsByUid[uid] || [];
+    if (existing.length === 0 && idToken) {
+      existing = await fetchSubscriptionsFromFirestore(uid, idToken);
+    }
+    if (endpoint && existing.length > 0) {
+      const nextList = existing.filter((item) => item.endpoint !== endpoint);
+      subscriptionsByUid[uid] = nextList;
       saveSubscriptions(subscriptionsByUid);
+      await persistSubscriptionsToFirestore(uid, nextList, idToken);
     }
     res.json({ ok: true });
   });
@@ -214,6 +360,7 @@ async function startServer(): Promise<void> {
   // 4. High-priority incoming call (repeated ring cadence) / cancellation Web Push
   app.post('/api/push/notify-call', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
     const actorUid = req.verifiedUid!;
+    const callerIdToken = req.idToken || '';
     const calleeId = typeof req.body?.calleeId === 'string' ? req.body.calleeId.slice(0, 128) : '';
     const callId = typeof req.body?.callId === 'string' ? req.body.callId.slice(0, 128) : '';
     const callerName =
@@ -239,7 +386,8 @@ async function startServer(): Promise<void> {
         const result = await dispatchPushToUser(
           targetUid,
           { type: 'call_cancelled', callId },
-          { ttl: 30, urgency: 'high' }
+          { ttl: 30, urgency: 'high' },
+          callerIdToken
         );
         res.json({ ok: true, ...result });
         return;
@@ -268,20 +416,21 @@ async function startServer(): Promise<void> {
           ringIndex,
         },
         {
-          ttl: 30,
+          ttl: 45,
           urgency: 'high',
-        }
+        },
+        callerIdToken
       );
 
     // Pulse #1 immediately
     const firstResult = await sendRingPulse(1);
 
-    // Repeat ringing pulses every 3.5 seconds (up to 7 total pulses ~24s) so the locked phone rings repeatedly
+    // Repeat ringing pulses every 3.2 seconds (up to 9 total pulses ~28s) so the locked phone rings repeatedly
     if (firstResult.sent > 0) {
       let pulseCount = 1;
       const timer = setInterval(() => {
         pulseCount += 1;
-        if (pulseCount > 7) {
+        if (pulseCount > 9) {
           stopCallRingLoop(callId);
           return;
         }
@@ -290,7 +439,7 @@ async function startServer(): Promise<void> {
             stopCallRingLoop(callId);
           }
         });
-      }, 3500);
+      }, 3200);
       activeCallRingLoops.set(callId, { timer, callerId: actorUid, calleeId });
     }
 
@@ -303,6 +452,7 @@ async function startServer(): Promise<void> {
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
       const senderId = req.verifiedUid!;
+      const callerIdToken = req.idToken || '';
       const recipientId =
         typeof req.body?.recipientId === 'string' ? req.body.recipientId.slice(0, 128) : '';
       const senderName =
@@ -334,7 +484,8 @@ async function startServer(): Promise<void> {
           messageType,
           messageId,
         },
-        { ttl: 3600, urgency: 'high' }
+        { ttl: 3600, urgency: 'high' },
+        callerIdToken
       );
 
       res.json({ ok: true, ...result });

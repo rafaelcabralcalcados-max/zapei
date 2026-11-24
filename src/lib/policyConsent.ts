@@ -98,20 +98,11 @@ export async function authorizeAllZapeiResourcesOnce(
     // ignore
   }
 
-  // 2. Request Camera + Microphone once (releases hardware immediately after grant)
-  let mediaAuthorized = false;
-  try {
-    const mediaRes = await preauthorizeMediaPermissions();
-    mediaAuthorized = mediaRes.ok;
-  } catch {
-    mediaAuthorized = false;
-  }
-
-  // 3. Request Push Notifications / Background Alerts once if supported and not already denied
+  // 2. Request Push Notifications FIRST while the fresh user tap gesture is still valid on iOS/Android
   let pushStatus: BackgroundPushStatus = 'unsupported';
   try {
     const currentStatus = await getBackgroundPushStatus();
-    if (authUser && currentStatus === 'prompt') {
+    if (authUser && (currentStatus === 'prompt' || currentStatus === 'enabled')) {
       const pushRes = await enableRealBackgroundCallPush(authUser);
       pushStatus = pushRes.status;
     } else {
@@ -123,6 +114,15 @@ export async function authorizeAllZapeiResourcesOnce(
     } catch {
       pushStatus = 'unsupported';
     }
+  }
+
+  // 3. Request Camera + Microphone once (releases hardware immediately after grant)
+  let mediaAuthorized = false;
+  try {
+    const mediaRes = await preauthorizeMediaPermissions();
+    mediaAuthorized = mediaRes.ok;
+  } catch {
+    mediaAuthorized = false;
   }
 
   return { mediaAuthorized, pushStatus };

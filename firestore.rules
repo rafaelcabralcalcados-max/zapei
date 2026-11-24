@@ -431,6 +431,18 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidPushEndpointBlob(data) {
+      return data.keys().hasAll(['ownerId', 'ciphertext', 'iv', 'authTag', 'deviceCount', 'updatedAtMs'])
+        && data.keys().hasOnly(['ownerId', 'ciphertext', 'iv', 'authTag', 'deviceCount', 'updatedAtMs'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.ciphertext is string && data.ciphertext.size() >= 1 && data.ciphertext.size() <= 32000
+        && data.iv is string && data.iv.size() >= 12 && data.iv.size() <= 64
+        && data.authTag is string && data.authTag.size() >= 16 && data.authTag.size() <= 64
+        && data.deviceCount is number && data.deviceCount >= 0 && data.deviceCount <= 10
+        && data.updatedAtMs is number && data.updatedAtMs > 0;
+    }
+
     // --- Collection Rules ---
 
     // 1. Users (Public storefront / messenger profile; NO PII — all PII is strictly in /private/info)
@@ -597,6 +609,19 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approvedByDeviceId', 'updatedAt']);
       allow delete: if isVerified() && isValidId(requestId)
         && existing().uid == request.auth.uid;
+    }
+
+    // 2e. Encrypted Web Push Subscriptions (exact-match GET only for push dispatch; owner-only writes)
+    match /push_endpoints/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if false;
+      allow create: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidPushEndpointBlob(incoming());
+      allow update: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidPushEndpointBlob(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['ciphertext', 'iv', 'authTag', 'deviceCount', 'updatedAtMs']);
+      allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
     }
 
     // 3. Reseller-to-Factory Connections
