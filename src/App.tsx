@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Bell,
   Briefcase,
   Clock,
   Factory,
@@ -253,7 +252,7 @@ export default function App() {
   const [pushStatus, setPushStatus] = useState<BackgroundPushStatus>('prompt');
   const [pushBusy, setPushBusy] = useState(false);
   const [pushFeedback, setPushFeedback] = useState('');
-  const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
+  const autoPushPromptedRef = useRef(false);
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
   const lastPushSyncMsRef = useRef<number>(0);
 
@@ -675,11 +674,37 @@ export default function App() {
     const onFocus = () => runSync(false);
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
+
+    // For accounts that already accepted Terms previously, silently trigger native OS notification
+    // permission on first interaction (no in-app banner or extra prompts) so background push activates seamlessly.
+    const onFirstInteraction = () => {
+      if (autoPushPromptedRef.current) return;
+      const currentUser = authUserRef.current;
+      if (!currentUser) return;
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      if (Notification.permission !== 'default') return;
+      autoPushPromptedRef.current = true;
+      void enableRealBackgroundCallPush(currentUser)
+        .then((res) => setPushStatus(res.status))
+        .catch(() => {});
+    };
+
+    if (
+      policyConsent &&
+      typeof window !== 'undefined' &&
+      'Notification' in window &&
+      Notification.permission === 'default' &&
+      !autoPushPromptedRef.current
+    ) {
+      window.addEventListener('click', onFirstInteraction, { once: true, capture: true });
+    }
+
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('click', onFirstInteraction, { capture: true });
     };
-  }, [authUid, deviceAuthState]);
+  }, [authUid, deviceAuthState, policyConsent]);
 
   const handleEnableBackgroundPush = useCallback(async () => {
     if (!authUser) return;
@@ -2711,63 +2736,6 @@ export default function App() {
                       )}
                     </div>
                   )}
-
-                  {/* One-tap Background Notifications & Calls Banner (when not yet active on this device) */}
-                  {!pushBannerDismissed &&
-                    (pushStatus === 'prompt' ||
-                      pushStatus === 'ios_needs_install' ||
-                      pushStatus === 'denied') && (
-                      <div className="mx-3 mt-2.5 rounded-xl border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-slate-800">
-                        <div className="flex items-start gap-2.5">
-                          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#0E7A34] text-white">
-                            <Bell className="h-4 w-4" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <p className="text-xs font-bold text-slate-900">
-                                {pushStatus === 'ios_needs_install'
-                                  ? 'Receba ligações com a tela bloqueada no iPhone'
-                                  : pushStatus === 'denied'
-                                    ? 'Notificações bloqueadas neste aparelho'
-                                    : 'Receba mensagens e ligações com o ChatFi fechado'}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => setPushBannerDismissed(true)}
-                                aria-label="Fechar aviso"
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-emerald-100 hover:text-slate-700"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                            <p className="mt-0.5 text-[11px] leading-snug text-slate-600">
-                              {pushStatus === 'ios_needs_install'
-                                ? 'Toque em Compartilhar → Adicionar à Tela de Início e abra o ChatFi pelo ícone para ativar alertas em segundo plano.'
-                                : pushStatus === 'denied'
-                                  ? 'Habilite as notificações do ChatFi nas configurações do navegador ou do celular para tocar mesmo fora do app.'
-                                  : 'Ative as notificações para tocar e avisar na tela bloqueada igual ao WhatsApp.'}
-                            </p>
-                            {pushStatus === 'prompt' && (
-                              <button
-                                type="button"
-                                disabled={pushBusy}
-                                onClick={() => void handleEnableBackgroundPush()}
-                                className="mt-2 inline-flex min-h-[34px] items-center gap-1.5 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
-                              >
-                                {pushBusy ? (
-                                  <>
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    Ativando...
-                                  </>
-                                ) : (
-                                  'Ativar notificações agora'
-                                )}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
 
                   {/* Matching / Existing Conversations */}
                   {filteredChats.length > 0 && (

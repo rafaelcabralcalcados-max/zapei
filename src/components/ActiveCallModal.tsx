@@ -411,16 +411,6 @@ export const ActiveCallModal: React.FC<ActiveCallModalProps> = ({
           <p className="mt-1.5 font-mono text-sm text-emerald-200/90 tabular-nums">
             {statusText()}
           </p>
-          {call.direction === 'outgoing' && call.status === 'ringing' && call.remotePushDelivered === true && (
-            <p className="mt-3 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-3.5 py-1 text-[11px] font-medium text-emerald-200">
-              Chamando no aparelho de {call.peerName}...
-            </p>
-          )}
-          {call.direction === 'outgoing' && call.status === 'ringing' && call.remotePushDelivered === false && (
-            <p className="mt-3 max-w-xs rounded-2xl border border-white/15 bg-white/10 px-3.5 py-2 text-[11px] leading-relaxed text-slate-200">
-              Chamando... Se o ChatFi de {call.peerName} estiver fechado, ele precisa ativar as notificações no aparelho.
-            </p>
-          )}
           {ringtoneBlocked && call.direction === 'incoming' && call.status === 'ringing' && (
             <button
               type="button"

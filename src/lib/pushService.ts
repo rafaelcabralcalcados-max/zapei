@@ -148,7 +148,10 @@ export async function enableRealBackgroundCallPush(
     };
   }
 
-  const permission = await Notification.requestPermission();
+  let permission: NotificationPermission = Notification.permission;
+  if (permission === 'default') {
+    permission = await Notification.requestPermission();
+  }
   if (permission !== 'granted') {
     return {
       status: 'denied',

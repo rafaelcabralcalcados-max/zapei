@@ -98,15 +98,14 @@ export async function authorizeAllZapeiResourcesOnce(
     // ignore
   }
 
-  // 2. Request Push Notifications FIRST while the fresh user tap gesture is still valid on iOS/Android
+  // 2. Request Push Notifications FIRST synchronously inside the user tap gesture (required by iOS Safari & Android Chrome)
   let pushStatus: BackgroundPushStatus = 'unsupported';
   try {
-    const currentStatus = await getBackgroundPushStatus();
-    if (authUser && (currentStatus === 'prompt' || currentStatus === 'enabled')) {
+    if (authUser) {
       const pushRes = await enableRealBackgroundCallPush(authUser);
       pushStatus = pushRes.status;
     } else {
-      pushStatus = currentStatus;
+      pushStatus = await getBackgroundPushStatus();
     }
   } catch {
     try {
