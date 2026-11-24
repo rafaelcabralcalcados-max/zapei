@@ -53,6 +53,7 @@ import {
   subscribeUserDevices,
   subscribeUserProfile,
   syncPublicDirectoryEntry,
+  takeOverAsPrimaryDevice,
   updateRealConnection,
   updateRealOrder,
   updateRealPayment,
@@ -2184,7 +2185,7 @@ export default function App() {
     });
   }, [mergedChats, contacts, directoryByUid, normalizedChatQuery]);
 
-  // Unified Zapei people matching search (or available right away when no chats exist yet)
+  // WhatsApp-style contacts matching search (saved contacts + exact Phone/CFI lookup only — zero global strangers)
   const matchingZapeiPeople = useMemo(() => {
     const shownChatUids = new Set(filteredChats.map((c) => c.otherUid));
     const seen = new Set<string>();
@@ -2202,7 +2203,7 @@ export default function App() {
       deliveryPolicyLabel?: string;
     }> = [];
 
-    // 1. Saved contacts who are on Zapei
+    // 1. Saved contacts who are on ChatFi
     for (const c of zapeiContacts) {
       if (!c.matchedUid || c.matchedUid === profile?.uid) continue;
       if (shownChatUids.has(c.matchedUid) || seen.has(c.matchedUid)) continue;
@@ -2240,45 +2241,7 @@ export default function App() {
       });
     }
 
-    // 2. All registered users on ChatFi (Public Directory — includes Phone & CPF/Virtual Line users)
-    for (const u of directoryUsers) {
-      if (u.uid === profile?.uid) continue;
-      if (shownChatUids.has(u.uid) || seen.has(u.uid)) continue;
-      const matches =
-        !normalizedChatQuery ||
-        normalizeSearchText(u.displayName).includes(normalizedChatQuery) ||
-        normalizeSearchText(u.storefrontName || '').includes(normalizedChatQuery) ||
-        normalizeSearchText(u.statusMessage || '').includes(normalizedChatQuery) ||
-        normalizeSearchText(u.virtualLine || '').includes(normalizedChatQuery);
-      if (!matches) continue;
-      seen.add(u.uid);
-      const userPresence = getContactPresenceDisplay(u, {
-        fallback: u.hasStorefront && u.storefrontName ? u.storefrontName : DEFAULT_STATUS_MESSAGE,
-      });
-      results.push({
-        uid: u.uid,
-        name: u.displayName,
-        initials: u.initials,
-        avatarBg: u.avatarColor || '#0E7A34',
-        avatarUrl: u.avatarUrl,
-        phone: u.virtualLine,
-        subtitle: u.hasStorefront && u.storefrontName
-          ? userPresence.isOnline
-            ? `online · ${u.storefrontName}`
-            : u.storefrontName
-          : userPresence.isPresence
-            ? userPresence.label
-            : u.virtualLine
-              ? `${u.virtualLine} · ${userPresence.label}`
-              : userPresence.label,
-        role: u.role,
-        hasStorefront: u.hasStorefront,
-        storefrontName: u.storefrontName,
-        deliveryPolicyLabel: u.deliveryPolicyLabel,
-      });
-    }
-
-    // 3. Direct phone / virtual line match if user typed a number in Conversas
+    // 2. Direct exact phone / virtual line (CFI-XXXX-XXXX) match if user typed a number in Conversas
     if (
       chatPhoneMatch &&
       !shownChatUids.has(chatPhoneMatch.uid) &&
@@ -2305,7 +2268,6 @@ export default function App() {
   }, [
     filteredChats,
     zapeiContacts,
-    directoryUsers,
     directoryByUid,
     normalizedChatQuery,
     profile?.uid,
@@ -2315,6 +2277,21 @@ export default function App() {
   const forwardTargets = useMemo<ForwardTarget[]>(() => {
     const seen = new Set<string>();
     const list: ForwardTarget[] = [];
+    for (const c of mergedChats) {
+      if (!c.otherUid || c.otherUid === profile?.uid || seen.has(c.otherUid)) continue;
+      seen.add(c.otherUid);
+      const matchedContact = contacts.find((ct) => ct.matchedUid === c.otherUid);
+      const dir = directoryByUid.get(c.otherUid);
+      const displayName = matchedContact?.name || dir?.displayName || c.otherName;
+      list.push({
+        uid: c.otherUid,
+        name: displayName,
+        initials: getInitials(displayName),
+        avatarBg: matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34',
+        avatarUrl: dir?.avatarUrl,
+        subtitle: matchedContact?.phone || dir?.statusMessage || 'Conversa ativa',
+      });
+    }
     for (const c of zapeiContacts) {
       if (!c.matchedUid || c.matchedUid === profile?.uid || seen.has(c.matchedUid)) continue;
       seen.add(c.matchedUid);
@@ -2328,20 +2305,8 @@ export default function App() {
         subtitle: c.phone || dir?.statusMessage || 'No ChatFi',
       });
     }
-    for (const u of directoryUsers) {
-      if (u.uid === profile?.uid || seen.has(u.uid)) continue;
-      seen.add(u.uid);
-      list.push({
-        uid: u.uid,
-        name: u.displayName,
-        initials: u.initials,
-        avatarBg: u.avatarColor || '#0E7A34',
-        avatarUrl: u.avatarUrl,
-        subtitle: u.storefrontName || u.statusMessage || 'No ChatFi',
-      });
-    }
     return list;
-  }, [zapeiContacts, directoryUsers, directoryByUid, profile?.uid]);
+  }, [mergedChats, contacts, zapeiContacts, directoryByUid, profile?.uid]);
 
   const allSubOrders = useMemo(
     () => orders.flatMap((o) => o.subOrders),
@@ -2453,6 +2418,22 @@ export default function App() {
           } finally {
             setRegeneratingAuthReq(false);
           }
+        }}
+        onTakeOverPrimary={async () => {
+          await takeOverAsPrimaryDevice(authUser.uid, localDeviceInfo, activeAuthRequest.id);
+          try {
+            localStorage.setItem(
+              `zapei_device_auth_uid_${localDeviceInfo.deviceId}`,
+              authUser.uid
+            );
+          } catch {
+            // ignore storage errors
+          }
+          setActiveAuthRequest(null);
+          setDeviceAuthState('authorized');
+          showToast(
+            'Este aparelho agora é o seu Aparelho Principal! Os demais aparelhos foram desconectados.'
+          );
         }}
         onSignOut={async () => {
           await signOutFirebase();
@@ -2680,7 +2661,7 @@ export default function App() {
                       spellCheck={false}
                       value={chatSearch}
                       onChange={(e) => setChatSearch(e.target.value)}
-                      placeholder="Buscar conversa, pessoa ou CFI-..."
+                      placeholder="Buscar conversa, contato, telefone ou CFI-..."
                       className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm focus:border-[#0E7A34] focus:bg-white focus:outline-none"
                     />
                     {chatPhoneLookupBusy ? (
@@ -2845,14 +2826,14 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Unified Results: People on ChatFi */}
+                  {/* Saved Contacts / Exact Phone or Virtual Line Match */}
                   {(Boolean(normalizedChatQuery) || chats.length === 0) &&
                     matchingZapeiPeople.length > 0 && (
                       <div className="divide-y divide-slate-100 border-t border-slate-100">
                         <div className="bg-slate-50/80 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                          {normalizedChatQuery
-                            ? `No ChatFi (${matchingZapeiPeople.length})`
-                            : `Pessoas no ChatFi (${matchingZapeiPeople.length})`}
+                          {chatPhoneMatch && matchingZapeiPeople.length === 1
+                            ? 'Contato encontrado'
+                            : `Seus contatos no ChatFi (${matchingZapeiPeople.length})`}
                         </div>
                         {matchingZapeiPeople.map((person) => (
                           <div
@@ -2925,19 +2906,19 @@ export default function App() {
                       </div>
                     )}
 
-                  {/* Empty State only when neither chats nor matching ChatFi users exist */}
+                  {/* Empty State only when neither chats nor matching saved contacts exist */}
                   {filteredChats.length === 0 && matchingZapeiPeople.length === 0 && (
                     <div className="p-6 text-center">
                       <MessageSquare className="mx-auto h-9 w-9 text-slate-300" />
                       <p className="mt-3 text-sm font-semibold text-slate-800">
                         {normalizedChatQuery
-                          ? `Nenhuma pessoa chamada "${chatSearch.trim()}" no ChatFi ainda`
+                          ? `Nenhum contato ou conversa encontrado para "${chatSearch.trim()}"`
                           : 'Nenhuma conversa iniciada ainda'}
                       </p>
                       <p className="mt-1 text-xs leading-relaxed text-slate-500">
                         {normalizedChatQuery
-                          ? 'Assim que ela abrir o ChatFi no celular dela com a versão atualizada, o nome e a foto aparecem automaticamente aqui.'
-                          : 'Digite o nome de quem já usa o ChatFi na busca acima ou abra Contatos para conversar ou ligar em tempo real.'}
+                          ? 'Digite o telefone completo com DDD ou a Linha Virtual (CFI-XXXX-XXXX) para encontrar alguém que ainda não está na sua agenda.'
+                          : 'Apenas suas conversas e seus contatos salvos aparecem aqui. Abra Contatos para importar sua agenda ou adicionar um telefone ou Linha Virtual (CFI-...).'}
                       </p>
                       <button
                         type="button"

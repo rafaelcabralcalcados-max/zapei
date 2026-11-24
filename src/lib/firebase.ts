@@ -2731,3 +2731,70 @@ export async function disconnectUserDevice(
   }
 }
 
+/**
+ * Allows an already-authenticated user to transfer Primary Device ownership to the
+ * current device when their previously connected device (e.g., a PC) is powered off
+ * or unavailable. Disconnects all other registered devices and removes the pending request.
+ */
+export async function takeOverAsPrimaryDevice(
+  uid: string,
+  deviceInfo: LocalDeviceInfo,
+  pendingRequestId?: string
+): Promise<void> {
+  const devicesCol = collection(db, 'users', uid, 'devices');
+  const qDevices = query(devicesCol, where('ownerId', '==', uid));
+  let snap;
+  try {
+    snap = await getDocsFromServer(qDevices);
+  } catch {
+    snap = await getDocs(qDevices);
+  }
+
+  let selfExists = false;
+  const deletePromises: Array<Promise<void>> = [];
+  for (const d of snap.docs) {
+    if (d.id === deviceInfo.deviceId) {
+      selfExists = true;
+    } else {
+      deletePromises.push(deleteDoc(doc(db, 'users', uid, 'devices', d.id)));
+    }
+  }
+
+  if (deletePromises.length > 0) {
+    await Promise.all(deletePromises);
+  }
+
+  const selfRef = doc(db, 'users', uid, 'devices', deviceInfo.deviceId);
+  try {
+    if (selfExists) {
+      await updateDoc(selfRef, {
+        deviceName: deviceInfo.deviceName.slice(0, 100),
+        platform: deviceInfo.platform.slice(0, 60),
+        primary: true,
+        lastActiveAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(selfRef, {
+        ownerId: uid,
+        deviceId: deviceInfo.deviceId,
+        deviceName: deviceInfo.deviceName.slice(0, 100),
+        platform: deviceInfo.platform.slice(0, 60),
+        primary: true,
+        createdAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      selfExists ? OperationType.UPDATE : OperationType.CREATE,
+      `users/${uid}/devices/${deviceInfo.deviceId}`
+    );
+  }
+
+  if (pendingRequestId) {
+    await deleteDoc(doc(db, 'auth_requests', pendingRequestId)).catch(() => {});
+  }
+}
+
+

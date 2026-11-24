@@ -6,6 +6,7 @@ import {
   Laptop,
   Loader2,
   LogOut,
+  PowerOff,
   RefreshCw,
   ShieldAlert,
   Smartphone,
@@ -21,6 +22,7 @@ interface DeviceAuthorizationGateProps {
   statusMessage?: string;
   regenerating: boolean;
   onRegenerate: () => Promise<void>;
+  onTakeOverPrimary: () => Promise<void>;
   onSignOut: () => Promise<void>;
 }
 
@@ -31,10 +33,14 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
   statusMessage,
   regenerating,
   onRegenerate,
+  onTakeOverPrimary,
   onSignOut,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copied, setCopied] = useState(false);
+  const [confirmingTakeOver, setConfirmingTakeOver] = useState(false);
+  const [takingOver, setTakingOver] = useState(false);
+  const [takeOverError, setTakeOverError] = useState('');
 
   const isMobileDevice = /Android|iPhone|iPad|iOS/i.test(
     `${request.deviceName} ${request.platform}`
@@ -248,6 +254,82 @@ export const DeviceAuthorizationGate: React.FC<DeviceAuthorizationGateProps> = (
               </div>
             </>
           )}
+
+          {/* Recovery option when the previously connected device (e.g., PC) is turned off or unavailable */}
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-800">
+                <PowerOff className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-slate-900">
+                  O outro aparelho está desligado ou sem acesso?
+                </p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
+                  Você pode definir este aparelho como o novo <strong>Aparelho Principal</strong> agora mesmo. Os outros aparelhos cadastrados serão desconectados automaticamente.
+                </p>
+
+                {takeOverError && (
+                  <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-medium text-red-700">
+                    {takeOverError}
+                  </p>
+                )}
+
+                {!confirmingTakeOver ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTakeOverError('');
+                      setConfirmingTakeOver(true);
+                    }}
+                    className="mt-3 inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3.5 py-1.5 text-xs font-bold text-amber-900 transition hover:bg-amber-100/70"
+                  >
+                    Entrar neste aparelho e desconectar os outros
+                  </button>
+                ) : (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={takingOver}
+                      onClick={async () => {
+                        setTakingOver(true);
+                        setTakeOverError('');
+                        try {
+                          await onTakeOverPrimary();
+                        } catch {
+                          setTakeOverError(
+                            'Não foi possível transferir o acesso agora. Verifique sua internet e tente novamente.'
+                          );
+                          setTakingOver(false);
+                        }
+                      }}
+                      className="inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
+                    >
+                      {takingOver ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Liberando acesso...
+                        </>
+                      ) : (
+                        'Confirmar e entrar agora'
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={takingOver}
+                      onClick={() => {
+                        setConfirmingTakeOver(false);
+                        setTakeOverError('');
+                      }}
+                      className="inline-flex min-h-[38px] items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

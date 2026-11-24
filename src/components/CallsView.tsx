@@ -64,20 +64,8 @@ export const CallsView: React.FC<CallsViewProps> = ({
       });
     }
 
-    for (const u of directoryUsers) {
-      if (u.uid === myUid || seen.has(u.uid)) continue;
-      seen.add(u.uid);
-      list.push({
-        uid: u.uid,
-        name: u.displayName,
-        initials: u.initials,
-        avatarBg: u.avatarColor || '#0E7A34',
-        avatarUrl: u.avatarUrl,
-      });
-    }
-
     return list;
-  }, [zapeiContacts, directoryUsers, directoryByUid, myUid]);
+  }, [zapeiContacts, directoryByUid, myUid]);
 
   return (
     <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
@@ -87,7 +75,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Ligações de Voz e Vídeo</h1>
             <p className="text-xs text-slate-500">
-              Faça ligações de voz e vídeo gratuitas para qualquer pessoa no ChatFi.
+              Faça ligações de voz e vídeo gratuitas para seus contatos no ChatFi.
             </p>
           </div>
         </div>
@@ -141,7 +129,7 @@ export const CallsView: React.FC<CallsViewProps> = ({
           </div>
         ) : (
           <p className="mt-3 rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs text-slate-500">
-            Assim que outra pessoa entrar no ChatFi, ela aparece aqui com foto para você ligar por voz ou vídeo.
+            Adicione contatos na aba Contatos (por telefone ou Linha Virtual CFI-...) para ligar por voz ou vídeo rapidamente.
           </p>
         )}
       </section>

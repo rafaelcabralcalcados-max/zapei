@@ -49,9 +49,9 @@ interface ContactsViewProps {
   onOpenChat: (contact: Contact, avatarUrl?: string) => void;
   onOpenStorefront: (contact: Contact) => void;
   onStartCall: (contact: Contact, type: 'audio' | 'video', avatarUrl?: string) => void;
-  onOpenDirectoryChat: (user: PublicDirectoryUser) => void;
-  onOpenDirectoryStorefront: (user: PublicDirectoryUser) => void;
-  onStartDirectoryCall: (user: PublicDirectoryUser, type: 'audio' | 'video') => void;
+  onOpenDirectoryChat?: (user: PublicDirectoryUser) => void;
+  onOpenDirectoryStorefront?: (user: PublicDirectoryUser) => void;
+  onStartDirectoryCall?: (user: PublicDirectoryUser, type: 'audio' | 'video') => void;
   onOpenDirectFoundChat: (found: PhoneLookupResult, rawPhone: string) => Promise<void>;
   onStartDirectFoundCall: (
     found: PhoneLookupResult,
@@ -74,9 +74,6 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onOpenChat,
   onOpenStorefront,
   onStartCall,
-  onOpenDirectoryChat,
-  onOpenDirectoryStorefront,
-  onStartDirectoryCall,
   onOpenDirectFoundChat,
   onStartDirectFoundCall,
   onPreviewAvatar,
@@ -167,22 +164,6 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const onZapeiContacts = filtered.filter((c) => c.onZapei);
   const inviteContacts = filtered.filter((c) => !c.onZapei);
 
-  const savedMatchedUids = new Set(
-    contacts.filter((c) => c.onZapei && c.matchedUid).map((c) => c.matchedUid as string)
-  );
-
-  const filteredDirectory = directoryUsers.filter((u) => {
-    if (u.uid === currentUserUid) return false;
-    if (savedMatchedUids.has(u.uid)) return false;
-    if (!normalizedQuery) return true;
-    return (
-      normalizeSearchText(u.displayName).includes(normalizedQuery) ||
-      normalizeSearchText(u.storefrontName || '').includes(normalizedQuery) ||
-      normalizeSearchText(u.statusMessage || '').includes(normalizedQuery) ||
-      normalizeSearchText(u.virtualLine || '').includes(normalizedQuery)
-    );
-  });
-
   const handleNativeDeviceSync = async () => {
     setBusy(true);
     setStatusFeedback('');
@@ -254,7 +235,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           <div>
             <h1 className="text-lg font-bold text-slate-900">Contatos</h1>
             <p className="text-xs text-slate-500">
-              Digite o nome, telefone ou Linha Virtual (CFI-...) para encontrar quem já está no ChatFi.
+              Apenas seus contatos salvos aparecem aqui. Importe sua agenda ou adicione um telefone ou Linha Virtual (CFI-...).
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -363,7 +344,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             spellCheck={false}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar pessoa pelo nome, vitrine, telefone ou CFI-..."
+            placeholder="Buscar nos seus contatos ou digitar telefone / CFI-..."
             className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0E7A34] focus:bg-white focus:outline-none"
           />
           {liveLookupBusy ? (
@@ -627,150 +608,6 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         </section>
       )}
 
-      {/* Live Directory: Pessoas no ChatFi (Instant Name Search with Photos) */}
-      {filteredDirectory.length > 0 && (
-        <section className="mt-5">
-          <div className="mb-2.5 flex items-center justify-between px-1">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Pessoas no ChatFi ({filteredDirectory.length})
-            </h2>
-          </div>
-
-          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            {filteredDirectory.map((person) => (
-              <div
-                key={person.uid}
-                className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onPreviewAvatar?.({
-                        name: person.displayName,
-                        initials: person.initials,
-                        avatarBg: person.avatarColor || '#0E7A34',
-                        avatarUrl: person.avatarUrl,
-                        subtitle: person.virtualLine || person.storefrontName,
-                      })
-                    }
-                    title={`Ver foto de ${person.displayName}`}
-                    aria-label={`Ampliar foto de ${person.displayName}`}
-                    className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
-                  >
-                    {person.avatarUrl ? (
-                      <img
-                        src={person.avatarUrl}
-                        alt={person.displayName}
-                        className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                      />
-                    ) : (
-                      <div
-                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                        style={{ backgroundColor: person.avatarColor || '#0E7A34' }}
-                      >
-                        {person.initials}
-                      </div>
-                    )}
-                    {getContactPresenceDisplay(person).isOnline && (
-                      <span
-                        className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
-                        aria-label="Online"
-                      />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenDirectoryChat(person)}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-bold text-slate-900">
-                        {person.displayName}
-                      </span>
-                      {person.virtualLine && (
-                        <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600">
-                          {person.virtualLine}
-                        </span>
-                      )}
-                      {person.hasStorefront && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0E7A34]">
-                          <Store className="h-3 w-3" />
-                          Vitrine Ativa
-                        </span>
-                      )}
-                    </div>
-                    {(() => {
-                      const presence = getContactPresenceDisplay(person, {
-                        fallback: person.hasStorefront && person.storefrontName
-                          ? person.storefrontName
-                          : undefined,
-                      });
-                      return (
-                        <p
-                          className={`truncate text-xs ${
-                            presence.isOnline
-                              ? 'font-semibold text-[#0E7A34]'
-                              : 'text-slate-500'
-                          }`}
-                        >
-                          {presence.isOnline
-                            ? person.hasStorefront && person.storefrontName
-                              ? `online · ${person.storefrontName}`
-                              : 'online'
-                            : presence.isPresence
-                              ? presence.label
-                              : person.hasStorefront && person.storefrontName
-                                ? person.storefrontName
-                                : presence.label}
-                        </p>
-                      );
-                    })()}
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {person.hasStorefront && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenDirectoryStorefront(person)}
-                      className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
-                    >
-                      <Store className="h-3.5 w-3.5" />
-                      Ver Vitrine
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onOpenDirectoryChat(person)}
-                    className="flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" />
-                    Conversar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onStartDirectoryCall(person, 'audio')}
-                    title="Ligação de voz"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0E7A34]"
-                  >
-                    <Phone className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onStartDirectoryCall(person, 'video')}
-                    title="Chamada de vídeo"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-[#0D2B3E]"
-                  >
-                    <Video className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* Invite to ChatFi Section (only when user has saved contacts not yet registered) */}
       {inviteContacts.length > 0 && (
         <section className="mt-5">
@@ -837,19 +674,21 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
         </section>
       )}
 
-      {/* Empty State when no matches exist */}
+      {/* Empty State when no saved contacts match */}
       {onZapeiContacts.length === 0 &&
-        filteredDirectory.length === 0 &&
-        inviteContacts.length === 0 && (
+        inviteContacts.length === 0 &&
+        !(looksLikePhoneQuery && liveLookupResult) && (
           <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
             <Smartphone className="mx-auto h-10 w-10 text-slate-400" />
             <h2 className="mt-3 text-base font-bold text-slate-900">
               {normalizedQuery
-                ? `Nenhuma pessoa chamada "${search.trim()}" no ChatFi ainda`
-                : 'Nenhuma outra pessoa no ChatFi ainda'}
+                ? `Nenhum contato encontrado para "${search.trim()}"`
+                : 'Sua lista de contatos está vazia'}
             </h2>
             <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-              Assim que a pessoa abrir o ChatFi no celular dela com a versão atualizada, o nome e a foto dela aparecem automaticamente aqui para você conversar ou ligar na hora.
+              {normalizedQuery
+                ? 'Para iniciar conversa com quem ainda não está salvo na sua agenda, digite o telefone completo com DDD ou a Linha Virtual (CFI-XXXX-XXXX) na busca acima.'
+                : 'Igual ao WhatsApp, apenas contatos da sua agenda aparecem aqui. Toque em "+ Novo contato" ou sincronize sua agenda usando telefone ou Linha Virtual (CFI-XXXX-XXXX).'}
             </p>
           </div>
         )}
