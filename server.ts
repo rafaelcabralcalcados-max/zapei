@@ -151,7 +151,7 @@ async function persistSubscriptionsToFirestore(
     }
     const enc = encryptSubscriptions(subs);
     if (enc.ciphertext.length > 32000) return;
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -168,8 +168,12 @@ async function persistSubscriptionsToFirestore(
         },
       }),
     });
-  } catch {
-    // Non-fatal: local cache still active
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.error(`[push] Firestore persist failed (${res.status}) for ${uid}:`, errBody.slice(0, 200));
+    }
+  } catch (err) {
+    console.error('[push] Firestore persist error:', err instanceof Error ? err.message : err);
   }
 }
 
@@ -245,34 +249,65 @@ function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
   return candidate.endpoint.length <= 2000;
 }
 
+const firestoreHydratedAtByUid = new Map<string, number>();
+
+function mergeSubscriptions(
+  localSubs: WebPushSubscription[],
+  remoteSubs: WebPushSubscription[]
+): WebPushSubscription[] {
+  const byEndpoint = new Map<string, WebPushSubscription>();
+  for (const s of remoteSubs) byEndpoint.set(s.endpoint, s);
+  for (const s of localSubs) byEndpoint.set(s.endpoint, s);
+  return Array.from(byEndpoint.values()).slice(-6);
+}
+
 async function dispatchPushToUser(
   targetUid: string,
   payload: Record<string, unknown>,
-  options: { ttl: number; urgency: 'very-low' | 'low' | 'normal' | 'high'; topic?: string },
+  options: {
+    ttl: number;
+    urgency: 'very-low' | 'low' | 'normal' | 'high';
+    topic?: string;
+    skipAppleEndpoints?: boolean;
+  },
   callerIdToken?: string
 ): Promise<{ sent: number; removed: number }> {
   let subs = subscriptionsByUid[targetUid] || [];
-  // If local ephemeral disk was cleared (e.g. Render/Cloud Run restart), hydrate from Firestore
-  if (subs.length === 0 && callerIdToken) {
+  const lastHydrated = firestoreHydratedAtByUid.get(targetUid) || 0;
+  const shouldHydrate =
+    Boolean(callerIdToken) && (subs.length === 0 || Date.now() - lastHydrated > 15_000);
+
+  // Hydrate & merge from Firestore so newly registered phones are always reached across restarts/instances
+  if (shouldHydrate && callerIdToken) {
+    firestoreHydratedAtByUid.set(targetUid, Date.now());
     const restored = await fetchSubscriptionsFromFirestore(targetUid, callerIdToken);
     if (restored.length > 0) {
-      subscriptionsByUid[targetUid] = restored;
+      subs = mergeSubscriptions(subs, restored);
+      subscriptionsByUid[targetUid] = subs;
       saveSubscriptions(subscriptionsByUid);
-      subs = restored;
     }
   }
-  if (subs.length === 0) return { sent: 0, removed: 0 };
+  if (subs.length === 0) {
+    console.log(`[push] No registered devices for uid=${targetUid} (type=${String(payload.type || '')})`);
+    return { sent: 0, removed: 0 };
+  }
 
   const jsonPayload = JSON.stringify(payload);
   let sent = 0;
   const validRemaining: WebPushSubscription[] = [];
 
   for (const sub of subs) {
+    const isAppleEndpoint = sub.endpoint.includes('web.push.apple.com');
+    // Apple WebKit revokes subscriptions after 3 silent pushes without showNotification (e.g. call_cancelled)
+    if (options.skipAppleEndpoints && isAppleEndpoint) {
+      validRemaining.push(sub);
+      continue;
+    }
     try {
       await webpush.sendNotification(sub, jsonPayload, {
         TTL: options.ttl,
         urgency: options.urgency,
-        topic: options.topic,
+        ...(options.topic ? { topic: options.topic } : {}),
       });
       sent += 1;
       validRemaining.push(sub);
@@ -281,6 +316,17 @@ async function dispatchPushToUser(
         typeof err === 'object' && err !== null && 'statusCode' in err
           ? Number((err as { statusCode?: unknown }).statusCode)
           : 0;
+      const host = (() => {
+        try {
+          return new URL(sub.endpoint).host;
+        } catch {
+          return 'unknown';
+        }
+      })();
+      console.error(
+        `[push] Delivery failed (${statusCode || 'ERR'}) to ${host} for uid=${targetUid}:`,
+        err instanceof Error ? err.message : err
+      );
       // Prune permanently expired/unsubscribed endpoints (404 / 410)
       if (statusCode !== 404 && statusCode !== 410) {
         validRemaining.push(sub);
@@ -316,14 +362,18 @@ async function startServer(): Promise<void> {
     }
 
     let existing = subscriptionsByUid[uid] || [];
-    if (existing.length === 0 && idToken) {
-      existing = await fetchSubscriptionsFromFirestore(uid, idToken);
+    if (idToken) {
+      const remote = await fetchSubscriptionsFromFirestore(uid, idToken);
+      if (remote.length > 0) {
+        existing = mergeSubscriptions(existing, remote);
+      }
     }
     const deduped = existing.filter((item) => item.endpoint !== sub.endpoint);
     deduped.push(sub);
     // Keep up to 6 devices per user
     const nextList = deduped.slice(-6);
     subscriptionsByUid[uid] = nextList;
+    firestoreHydratedAtByUid.set(uid, Date.now());
     saveSubscriptions(subscriptionsByUid);
     await persistSubscriptionsToFirestore(uid, nextList, idToken);
     res.json({ ok: true, devices: nextList.length });
@@ -390,7 +440,7 @@ async function startServer(): Promise<void> {
         const result = await dispatchPushToUser(
           targetUid,
           { type: 'call_cancelled', callId },
-          { ttl: 30, urgency: 'high' },
+          { ttl: 30, urgency: 'high', skipAppleEndpoints: true },
           callerIdToken
         );
         res.json({ ok: true, ...result });
@@ -429,12 +479,12 @@ async function startServer(): Promise<void> {
     // Pulse #1 immediately
     const firstResult = await sendRingPulse(1);
 
-    // Repeat ringing pulses every 3.2 seconds (up to 9 total pulses ~28s) so the locked phone rings repeatedly
+    // Repeat ringing pulses every 4.2 seconds (up to 7 pulses ~26s) so locked Android & iOS phones ring reliably without APNs throttling
     if (firstResult.sent > 0) {
       let pulseCount = 1;
       const timer = setInterval(() => {
         pulseCount += 1;
-        if (pulseCount > 9) {
+        if (pulseCount > 7) {
           stopCallRingLoop(callId);
           return;
         }
@@ -443,7 +493,7 @@ async function startServer(): Promise<void> {
             stopCallRingLoop(callId);
           }
         });
-      }, 3200);
+      }, 4200);
       activeCallRingLoops.set(callId, { timer, callerId: actorUid, calleeId });
     }
 

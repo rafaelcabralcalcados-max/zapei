@@ -672,15 +672,28 @@ export default function App() {
     window.addEventListener('focus', onFocus);
 
     // For accounts that already accepted Terms previously, silently trigger native OS notification
-    // permission on first interaction (no in-app banner or extra prompts) so background push activates seamlessly.
+    // permission on first click (iOS WebKit requires a real click gesture, not touchend) so background push activates seamlessly.
     const onFirstInteraction = () => {
       if (autoPushPromptedRef.current) return;
       const currentUser = authUserRef.current;
       if (!currentUser) return;
       if (typeof window === 'undefined' || !('Notification' in window)) return;
-      if (Notification.permission !== 'default') return;
+      if (Notification.permission !== 'default') {
+        autoPushPromptedRef.current = true;
+        return;
+      }
       autoPushPromptedRef.current = true;
-      void enableRealBackgroundCallPush(currentUser).catch(() => {});
+      void enableRealBackgroundCallPush(currentUser)
+        .then(() => {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+            autoPushPromptedRef.current = false;
+          }
+        })
+        .catch(() => {
+          if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+            autoPushPromptedRef.current = false;
+          }
+        });
     };
 
     if (
@@ -690,15 +703,13 @@ export default function App() {
       Notification.permission === 'default' &&
       !autoPushPromptedRef.current
     ) {
-      window.addEventListener('click', onFirstInteraction, { once: true, capture: true });
-      window.addEventListener('touchend', onFirstInteraction, { once: true, capture: true });
+      window.addEventListener('click', onFirstInteraction, { capture: true });
     }
 
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('click', onFirstInteraction, { capture: true });
-      window.removeEventListener('touchend', onFirstInteraction, { capture: true });
     };
   }, [authUid, deviceAuthState, policyConsent]);
 
@@ -1526,6 +1537,10 @@ export default function App() {
       };
       if (msg?.type === 'ZAPEI_SHARED_MEDIA_READY') {
         void loadPendingSharedInbox();
+        return;
+      }
+      if (msg?.type === 'ZAPEI_INCOMING_CALL_PING' && msg.payload?.callId) {
+        void processPushWakeAction({ callId: msg.payload.callId });
         return;
       }
       if (msg?.type === 'ZAPEI_INCOMING_MESSAGE_PING' && msg.payload) {

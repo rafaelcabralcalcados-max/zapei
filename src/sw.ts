@@ -166,6 +166,9 @@ self.addEventListener('push', (event: PushEvent) => {
     return;
   }
 
+  const supportsNotificationActions =
+    typeof Notification !== 'undefined' && 'actions' in Notification.prototype;
+
   if (payload.type === 'incoming_call' && payload.callId) {
     const isVideo = payload.callType === 'video';
     const ringIndex = Number(payload.ringIndex || 1);
@@ -174,47 +177,78 @@ self.addEventListener('push', (event: PushEvent) => {
       ? `📹 CHAMADA DE VÍDEO · ${caller}`
       : `📞 LIGAÇÃO · ${caller}`;
 
-    const options: NotificationOptions & {
-      vibrate?: number[];
-      renotify?: boolean;
-      silent?: boolean;
-      actions?: Array<{ action: string; title: string }>;
-    } = {
-      body: `🔔 TOCANDO AGORA — Toque para ATENDER ou RECUSAR`,
-      icon: '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
-      // Unique tag per ring pulse after closing the previous one guarantees iOS & Android re-play sound + vibration
-      tag: `zapei-call-${payload.callId}-${ringIndex}`,
-      renotify: true,
-      silent: false,
-      requireInteraction: true,
-      vibrate: [900, 250, 900, 250, 900],
-      data: {
-        type: 'incoming_call',
-        callId: payload.callId,
-        callType: payload.callType || 'audio',
-        callerName: caller,
-        url: `/?incomingCall=${encodeURIComponent(payload.callId)}`,
-      },
-      actions: [
-        { action: 'answer', title: '✅ Atender' },
-        { action: 'decline', title: '❌ Recusar' },
-      ],
+    const callData = {
+      type: 'incoming_call',
+      callId: payload.callId,
+      callType: payload.callType || 'audio',
+      callerName: caller,
+      url: `/?incomingCall=${encodeURIComponent(payload.callId)}`,
     };
 
+    const minimalOptions: NotificationOptions = {
+      body: 'Toque para atender ou recusar',
+      icon: '/pwa-192x192.png',
+      badge: '/pwa-192x192.png',
+      tag: `zapei-call-${payload.callId}-${ringIndex}`,
+      data: callData,
+    };
+
+    const richOptions: NotificationOptions & {
+      vibrate?: number[];
+      renotify?: boolean;
+      actions?: Array<{ action: string; title: string }>;
+    } = supportsNotificationActions
+      ? {
+          ...minimalOptions,
+          body: '🔔 TOCANDO AGORA — Toque para ATENDER ou RECUSAR',
+          renotify: true,
+          silent: false,
+          requireInteraction: true,
+          vibrate: [900, 250, 900, 250, 900],
+          actions: [
+            { action: 'answer', title: '✅ Atender' },
+            { action: 'decline', title: '❌ Recusar' },
+          ],
+        }
+      : minimalOptions;
+
     event.waitUntil(
-      self.registration
-        .getNotifications()
-        .then((existing) => {
+      (async () => {
+        // Also ping any open ChatFi window so foreground/resuming phones open the call screen immediately
+        try {
+          const windowClients = await self.clients.matchAll({
+            type: 'window',
+            includeUncontrolled: true,
+          });
+          windowClients.forEach((client) => {
+            client.postMessage({
+              type: 'ZAPEI_INCOMING_CALL_PING',
+              payload: { callId: payload.callId },
+            });
+          });
+        } catch {
+          // Non-fatal
+        }
+
+        try {
+          const existing = await self.registration.getNotifications();
           existing.forEach((n) => {
             const d = (n.data || {}) as { callId?: string };
             if (d.callId === payload.callId) {
               n.close();
             }
           });
-        })
-        .catch(() => {})
-        .then(() => self.registration.showNotification(title, options))
+        } catch {
+          // Non-fatal
+        }
+
+        try {
+          await self.registration.showNotification(title, richOptions);
+        } catch {
+          // Guaranteed minimal fallback for strict iOS WebKit / Safari builds
+          await self.registration.showNotification(title, minimalOptions);
+        }
+      })()
     );
     return;
   }
@@ -231,21 +265,13 @@ self.addEventListener('push', (event: PushEvent) => {
           ? `🎥 ${rawBody}`
           : rawBody;
   const uniqueMsgKey = payload.messageId || String(Date.now());
-  const msgOptions: NotificationOptions & {
-    vibrate?: number[];
-    renotify?: boolean;
-    silent?: boolean;
-  } = {
+  const msgMinimalOptions: NotificationOptions = {
     body: formattedBody,
     icon: '/pwa-192x192.png',
     badge: '/pwa-192x192.png',
-    // Unique tag + renotify:true + silent:false ensures EVERY text/audio message chimes & vibrates on iOS & Android
     tag: payload.senderId
       ? `zapei-msg-${payload.senderId}-${uniqueMsgKey}`
       : `zapei-msg-${uniqueMsgKey}`,
-    renotify: true,
-    silent: false,
-    vibrate: [200, 80, 200],
     data: {
       type: 'new_message',
       senderId: payload.senderId || '',
@@ -254,16 +280,26 @@ self.addEventListener('push', (event: PushEvent) => {
         : '/',
     },
   };
+  const msgRichOptions: NotificationOptions & {
+    vibrate?: number[];
+    renotify?: boolean;
+  } = supportsNotificationActions
+    ? {
+        ...msgMinimalOptions,
+        renotify: true,
+        silent: false,
+        vibrate: [200, 80, 200],
+      }
+    : msgMinimalOptions;
 
   event.waitUntil(
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
-      .then((windowClients) => {
+      .then(async (windowClients) => {
         const activeForegroundClient = windowClients.find(
           (c) => c.visibilityState === 'visible' && 'focused' in c && (c as WindowClient).focused
         );
         if (activeForegroundClient) {
-          // App is already open & focused on screen: let in-app WhatsApp chime + banner handle it without double OS alert
           activeForegroundClient.postMessage({
             type: 'ZAPEI_INCOMING_MESSAGE_PING',
             payload: {
@@ -273,6 +309,22 @@ self.addEventListener('push', (event: PushEvent) => {
               messageType: payload.messageType || 'text',
             },
           });
+          // On iOS Safari (no actions support), WebKit strictly enforces userVisibleOnly on every push
+          // and revokes push subscriptions after 3 silent pushes. Show briefly and auto-close.
+          if (!supportsNotificationActions) {
+            try {
+              const fgTag = `zapei-fg-${uniqueMsgKey}`;
+              await self.registration.showNotification(msgTitle, {
+                ...msgMinimalOptions,
+                tag: fgTag,
+                silent: true,
+              });
+              const open = await self.registration.getNotifications({ tag: fgTag });
+              open.forEach((n) => n.close());
+            } catch {
+              // Ignore
+            }
+          }
           return;
         }
         try {
@@ -285,7 +337,11 @@ self.addEventListener('push', (event: PushEvent) => {
         } catch {
           // Ignore badge API errors on unsupported browsers
         }
-        return self.registration.showNotification(msgTitle, msgOptions);
+        try {
+          await self.registration.showNotification(msgTitle, msgRichOptions);
+        } catch {
+          await self.registration.showNotification(msgTitle, msgMinimalOptions);
+        }
       })
   );
 });
