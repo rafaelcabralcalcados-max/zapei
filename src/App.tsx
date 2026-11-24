@@ -1345,8 +1345,8 @@ export default function App() {
             return;
           }
 
-          // Stop repeated lock-screen push pulses as soon as user opened/tapped the call
-          if (authUser) {
+          // Only stop server lock-screen push pulses once the user explicitly tapped a notification action (not on passive background ping)
+          if (authUser && params.callAction === 'answer') {
             void triggerRemoteCallPush(authUser, {
               calleeId: profile.uid,
               callId: params.callId,

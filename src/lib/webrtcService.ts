@@ -759,6 +759,7 @@ export async function startRealOutgoingCall(params: {
     unsubCandidates();
     activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
+    recoverAudioAfterMediaSession();
   };
 
   return {
@@ -946,6 +947,7 @@ export async function answerRealIncomingCall(params: {
     unsubCandidates();
     activeLocalStream.getTracks().forEach((t) => t.stop());
     pc.close();
+    recoverAudioAfterMediaSession();
   };
 
   return {
@@ -1008,6 +1010,19 @@ function getOrCreateAudioContext(): AudioContext | null {
   if (!AudioCtx) return null;
   sharedAudioCtx = new AudioCtx();
   return sharedAudioCtx;
+}
+
+/**
+ * Recovers iOS Safari / mobile audio playback after getUserMedia() ends (iOS puts
+ * AudioContext into 'interrupted' state after mic/camera capture, silencing future ringtones).
+ */
+function recoverAudioAfterMediaSession(): void {
+  ringtoneElementPrimed = false;
+  msgChimeElementPrimed = false;
+  audioMsgChimeElementPrimed = false;
+  if (sharedAudioCtx && (sharedAudioCtx.state as string) === 'interrupted') {
+    void sharedAudioCtx.resume().catch(() => {});
+  }
 }
 
 /**
@@ -1322,7 +1337,7 @@ export function unlockCallAudio(): void {
   ensureCustomSoundsWired();
   try {
     const ctx = getOrCreateAudioContext();
-    if (ctx && ctx.state === 'suspended') {
+    if (ctx && ctx.state !== 'running') {
       void ctx.resume().catch(() => {});
     }
     if (ctx && !audioCtxUnlocked) {
@@ -1658,16 +1673,16 @@ export function startRingtoneAudio(
     }
   }
 
-  // 3. Web Audio dual-tone ringtone fallback (fires if HTMLAudio was blocked)
+  // 3. Web Audio dual-tone ringtone fallback (fires if HTMLAudio was blocked or interrupted on iOS)
   const ctx = getOrCreateAudioContext();
   if (ctx) {
-    if (ctx.state === 'suspended') {
+    if (ctx.state !== 'running') {
       void ctx.resume().catch(() => {});
     }
 
     const pulseWebAudio = () => {
       if (stopped || htmlAudioPlaying) return;
-      if (ctx.state === 'suspended') {
+      if (ctx.state !== 'running') {
         onBlockedChange?.(true);
         void ctx.resume().catch(() => {});
         return;
@@ -1734,7 +1749,7 @@ export function startRingbackToneAudio(): () => void {
   const ctx = getOrCreateAudioContext();
   if (!ctx) return () => {};
 
-  if (ctx.state === 'suspended') {
+  if (ctx.state !== 'running') {
     void ctx.resume().catch(() => {});
   }
 

@@ -4,10 +4,7 @@ import {
   getBackgroundPushStatus,
   type BackgroundPushStatus,
 } from './pushService';
-import {
-  preauthorizeMediaPermissions,
-  unlockCallAudio,
-} from './webrtcService';
+import { unlockCallAudio } from './webrtcService';
 
 export const CURRENT_POLICY_VERSION = '1.0';
 
@@ -76,10 +73,9 @@ export function savePolicyConsentRecord(uid: string): PolicyConsentRecord {
 }
 
 /**
- * Unified one-time device permissions request executed immediately when the user
- * accepts the Zapei Terms of Responsibility & Privacy Policy.
- * Requests microphone, camera, notifications, audio playback unlock, and persistent
- * local media storage in a single cohesive step so the user is not interrupted later.
+ * Executed immediately when the user accepts the ChatFi Terms of Responsibility & Privacy Policy.
+ * Unlocks call/message ringtone audio, requests persistent local media storage, and registers
+ * background Web Push notifications synchronously inside the tap gesture without interrupting iOS audio.
  */
 export async function authorizeAllZapeiResourcesOnce(
   authUser: User | null
@@ -98,7 +94,7 @@ export async function authorizeAllZapeiResourcesOnce(
     // ignore
   }
 
-  // 2. Request Push Notifications FIRST synchronously inside the user tap gesture (required by iOS Safari & Android Chrome)
+  // 2. Request Push Notifications synchronously inside the user tap gesture (required by iOS Safari & Android Chrome)
   let pushStatus: BackgroundPushStatus = 'unsupported';
   try {
     if (authUser) {
@@ -115,14 +111,5 @@ export async function authorizeAllZapeiResourcesOnce(
     }
   }
 
-  // 3. Request Camera + Microphone once (releases hardware immediately after grant)
-  let mediaAuthorized = false;
-  try {
-    const mediaRes = await preauthorizeMediaPermissions();
-    mediaAuthorized = mediaRes.ok;
-  } catch {
-    mediaAuthorized = false;
-  }
-
-  return { mediaAuthorized, pushStatus };
+  return { mediaAuthorized: true, pushStatus };
 }
