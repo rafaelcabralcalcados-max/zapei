@@ -261,35 +261,31 @@ export const TermsAndPermissionsModal: React.FC<TermsAndPermissionsModalProps> =
           )}
 
           <div className="flex items-center justify-end gap-2">
-            {mode === 'review' && onClose && (
+            {mode === 'review' && onClose ? (
               <button
                 type="button"
                 onClick={onClose}
-                className="min-h-[42px] rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                className="min-h-[42px] rounded-xl bg-[#0E7A34] px-5 text-xs font-bold text-white hover:bg-[#0B5D27]"
               >
                 Fechar
               </button>
+            ) : (
+              <button
+                type="button"
+                disabled={busy || !accepted}
+                onClick={() => void handleConfirm()}
+                className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#0E7A34] px-5 text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
+              >
+                {busy ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Configurando acesso...
+                  </>
+                ) : (
+                  'Concordar e Continuar'
+                )}
+              </button>
             )}
-
-            <button
-              type="button"
-              disabled={busy || (mode === 'gate' && !accepted)}
-              onClick={() => void handleConfirm()}
-              className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-[#0E7A34] px-5 text-xs font-bold text-white transition hover:bg-[#0B5D27] disabled:opacity-50 ${
-                mode === 'gate' ? 'w-full' : ''
-              }`}
-            >
-              {busy ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Configurando permissões...
-                </>
-              ) : mode === 'gate' ? (
-                'Concordar e Liberar Acesso'
-              ) : (
-                'Atualizar Permissões do Aparelho'
-              )}
-            </button>
           </div>
         </div>
       </div>

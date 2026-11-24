@@ -13,11 +13,9 @@ import {
   ShieldCheck,
   Store,
 } from 'lucide-react';
-import type { BackgroundPushStatus } from '../lib/pushService';
 import type { PolicyConsentRecord } from '../lib/policyConsent';
 import { sanitizeStatusMessage } from '../lib/presenceUtils';
 import type { CommercialMode, ConnectedDevice, UserProfile } from '../types/zapei';
-import { BackgroundCallPushCard } from './BackgroundCallPushCard';
 import { ConnectedDevicesCard } from './ConnectedDevicesCard';
 import { CustomSoundsCard } from './CustomSoundsCard';
 import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
@@ -30,13 +28,8 @@ interface SettingsViewProps {
   connectedDevices: ConnectedDevice[];
   currentDeviceId: string;
   onDisconnectDevice: (device: ConnectedDevice) => Promise<void>;
-  pushStatus: BackgroundPushStatus;
-  pushBusy: boolean;
-  pushFeedback: string;
-  onEnableBackgroundPush: () => Promise<void>;
   policyConsent: PolicyConsentRecord | null;
   onOpenPolicies: () => void;
-  onAuthorizeResources: () => Promise<void>;
   onEditProfile: () => void;
   onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
   onUpdatePresencePrivacy: (opts: {
@@ -55,13 +48,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   connectedDevices,
   currentDeviceId,
   onDisconnectDevice,
-  pushStatus,
-  pushBusy,
-  pushFeedback,
-  onEnableBackgroundPush,
   policyConsent,
   onOpenPolicies,
-  onAuthorizeResources,
   onEditProfile,
   onPreviewAvatar,
   onUpdatePresencePrivacy,
@@ -500,20 +488,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {/* Custom Phone Sounds for Calls, Text Messages, and Audio Messages */}
       <CustomSoundsCard onNotify={onNotify} />
 
-      {/* Privacy, Terms of Responsibility & One-Time Device Permissions */}
+      {/* Privacy & Terms of Responsibility */}
       <PrivacyAndPermissionsCard
         consent={policyConsent}
-        pushStatus={pushStatus}
         onOpenPolicies={onOpenPolicies}
-        onAuthorizeResources={onAuthorizeResources}
-      />
-
-      {/* Real Background Call Push Notifications */}
-      <BackgroundCallPushCard
-        status={pushStatus}
-        busy={pushBusy}
-        feedback={pushFeedback}
-        onEnable={onEnableBackgroundPush}
       />
 
       {/* PWA Install & WhatsApp Share Target Info */}

@@ -36,10 +36,14 @@ interface VapidKeys {
 }
 
 function loadOrCreateVapidKeys(): VapidKeys {
-  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  const cleanEnvKey = (value: string | undefined) =>
+    (value || '').trim().replace(/^["']+|["']+$/g, '').trim();
+  const envPublic = cleanEnvKey(process.env.VAPID_PUBLIC_KEY);
+  const envPrivate = cleanEnvKey(process.env.VAPID_PRIVATE_KEY);
+  if (envPublic && envPrivate) {
     return {
-      publicKey: process.env.VAPID_PUBLIC_KEY.trim(),
-      privateKey: process.env.VAPID_PRIVATE_KEY.trim(),
+      publicKey: envPublic,
+      privateKey: envPrivate,
     };
   }
   if (fs.existsSync(vapidStorePath)) {

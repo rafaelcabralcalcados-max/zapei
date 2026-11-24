@@ -32,6 +32,24 @@ export function isStandalonePWA(): boolean {
   );
 }
 
+async function getActiveServiceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    throw new Error('Service Worker indisponível.');
+  }
+  const existing = await navigator.serviceWorker.getRegistration();
+  if (!existing) {
+    try {
+      await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    } catch {
+      // Dev mode uses virtual SW or already-registering SW; continue to ready check
+    }
+  }
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    window.setTimeout(() => reject(new Error('Service Worker timeout')), 6000);
+  });
+  return Promise.race([navigator.serviceWorker.ready, timeoutPromise]);
+}
+
 export async function getBackgroundPushStatus(): Promise<BackgroundPushStatus> {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return 'unsupported';
@@ -47,7 +65,7 @@ export async function getBackgroundPushStatus(): Promise<BackgroundPushStatus> {
   }
   if (Notification.permission === 'granted') {
     try {
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await getActiveServiceWorkerRegistration();
       const sub = await reg.pushManager.getSubscription();
       return sub ? 'enabled' : 'prompt';
     } catch {
@@ -166,7 +184,7 @@ export async function enableRealBackgroundCallPush(
   }
   const { publicKey } = (await keyRes.json()) as { publicKey: string };
 
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await getActiveServiceWorkerRegistration();
   const subscription = await ensureFreshSubscriptionForServerKey(reg, publicKey);
 
   const ok = await postSubscriptionToServer(authUser, subscription);
@@ -203,7 +221,7 @@ export async function syncExistingPushSubscription(
     const keyRes = await fetch('/api/push/vapid-public-key');
     if (!keyRes.ok) return status;
     const { publicKey } = (await keyRes.json()) as { publicKey: string };
-    const reg = await navigator.serviceWorker.ready;
+    const reg = await getActiveServiceWorkerRegistration();
     const sub = await ensureFreshSubscriptionForServerKey(reg, publicKey);
     const ok = await postSubscriptionToServer(authUser, sub);
     return ok ? 'enabled' : status;

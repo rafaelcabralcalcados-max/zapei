@@ -85,7 +85,6 @@ import {
   enableRealBackgroundCallPush,
   syncExistingPushSubscription,
   triggerRemoteCallPush,
-  type BackgroundPushStatus,
 } from './lib/pushService';
 import {
   formatPacketTimeLabel,
@@ -248,10 +247,7 @@ export default function App() {
   const seenCallIdsRef = useRef<Set<string>>(new Set());
   const hasLoadedInitialCallsRef = useRef(false);
 
-  // Real Closed-App / Locked-Screen Web Push State
-  const [pushStatus, setPushStatus] = useState<BackgroundPushStatus>('prompt');
-  const [pushBusy, setPushBusy] = useState(false);
-  const [pushFeedback, setPushFeedback] = useState('');
+  // Real Closed-App / Locked-Screen Web Push Sync Trackers
   const autoPushPromptedRef = useRef(false);
   const processedWakeCallIdsRef = useRef<Set<string>>(new Set());
   const lastPushSyncMsRef = useRef<number>(0);
@@ -651,7 +647,7 @@ export default function App() {
       const now = Date.now();
       if (!force && now - lastPushSyncMsRef.current < 45000) return;
       lastPushSyncMsRef.current = now;
-      void syncExistingPushSubscription(currentUser).then(setPushStatus);
+      void syncExistingPushSubscription(currentUser).catch(() => {});
     };
     const clearBadge = () => {
       try {
@@ -684,9 +680,7 @@ export default function App() {
       if (typeof window === 'undefined' || !('Notification' in window)) return;
       if (Notification.permission !== 'default') return;
       autoPushPromptedRef.current = true;
-      void enableRealBackgroundCallPush(currentUser)
-        .then((res) => setPushStatus(res.status))
-        .catch(() => {});
+      void enableRealBackgroundCallPush(currentUser).catch(() => {});
     };
 
     if (
@@ -697,36 +691,16 @@ export default function App() {
       !autoPushPromptedRef.current
     ) {
       window.addEventListener('click', onFirstInteraction, { once: true, capture: true });
+      window.addEventListener('touchend', onFirstInteraction, { once: true, capture: true });
     }
 
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('click', onFirstInteraction, { capture: true });
+      window.removeEventListener('touchend', onFirstInteraction, { capture: true });
     };
   }, [authUid, deviceAuthState, policyConsent]);
-
-  const handleEnableBackgroundPush = useCallback(async () => {
-    if (!authUser) return;
-    setPushBusy(true);
-    setPushFeedback('');
-    try {
-      const result = await enableRealBackgroundCallPush(authUser);
-      setPushStatus(result.status);
-      setPushFeedback(result.message);
-      if (result.status === 'enabled') {
-        showToast('Toque com tela bloqueada ativado neste aparelho!');
-      }
-    } catch (err) {
-      setPushFeedback(
-        err instanceof Error
-          ? err.message
-          : 'Não foi possível ativar notificações em segundo plano.'
-      );
-    } finally {
-      setPushBusy(false);
-    }
-  }, [authUser, showToast]);
 
   // 3. Subscribe to all real Firestore collections once authenticated, registered & device authorized
   useEffect(() => {
@@ -1529,21 +1503,10 @@ export default function App() {
     setPolicyConsent(saved);
     setPolicyCheckedUid(profile.uid);
 
-    const result = await authorizeAllZapeiResourcesOnce(authUser);
-    setPushStatus(result.pushStatus);
+    await authorizeAllZapeiResourcesOnce(authUser);
     setShowPoliciesModal(false);
-    showToast('Termos aceitos e recursos do ChatFi configurados neste aparelho.');
+    showToast('Termos aceitos. Tudo pronto para usar o ChatFi.');
   }, [profile?.uid, authUser, showToast]);
-
-  const handleAuthorizeResourcesFromSettings = useCallback(async () => {
-    const result = await authorizeAllZapeiResourcesOnce(authUser);
-    setPushStatus(result.pushStatus);
-    showToast(
-      result.mediaAuthorized
-        ? 'Recursos de câmera, microfone e alertas atualizados neste aparelho.'
-        : 'Permissões verificadas. Caso algum recurso esteja bloqueado, habilite nos ajustes do aparelho.'
-    );
-  }, [authUser, showToast]);
 
   // Listen for Service Worker notificationclick actions & WhatsApp Web Share Target pings
   useEffect(() => {
@@ -3444,13 +3407,8 @@ export default function App() {
                   showToast(`${device.deviceName} desconectado imediatamente.`);
                 }
               }}
-              pushStatus={pushStatus}
-              pushBusy={pushBusy}
-              pushFeedback={pushFeedback}
-              onEnableBackgroundPush={handleEnableBackgroundPush}
               policyConsent={policyConsent}
               onOpenPolicies={() => setShowPoliciesModal(true)}
-              onAuthorizeResources={handleAuthorizeResourcesFromSettings}
               onEditProfile={() => setShowEditProfile(true)}
               onPreviewAvatar={setAvatarPreview}
               onUpdatePresencePrivacy={async (opts) => {
