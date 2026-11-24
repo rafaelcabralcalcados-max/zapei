@@ -250,6 +250,14 @@ function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
 }
 
 const firestoreHydratedAtByUid = new Map<string, number>();
+const revokedEndpoints = new Set<string>();
+
+function rememberRevokedEndpoint(endpoint: string): void {
+  if (revokedEndpoints.size > 1000) {
+    revokedEndpoints.clear();
+  }
+  revokedEndpoints.add(endpoint);
+}
 
 function mergeSubscriptions(
   localSubs: WebPushSubscription[],
@@ -328,7 +336,9 @@ async function dispatchPushToUser(
         err instanceof Error ? err.message : err
       );
       // Prune permanently expired/unsubscribed endpoints (404 / 410)
-      if (statusCode !== 404 && statusCode !== 410) {
+      if (statusCode === 404 || statusCode === 410) {
+        rememberRevokedEndpoint(sub.endpoint);
+      } else {
         validRemaining.push(sub);
       }
     }
@@ -339,6 +349,9 @@ async function dispatchPushToUser(
     subscriptionsByUid[targetUid] = validRemaining;
     saveSubscriptions(subscriptionsByUid);
   }
+  console.log(
+    `[push] Dispatched type=${String(payload.type || '')} uid=${targetUid} sent=${sent} removed=${removed}`
+  );
   return { sent, removed };
 }
 
@@ -360,6 +373,10 @@ async function startServer(): Promise<void> {
       res.status(400).json({ error: 'Inscrição Web Push inválida.' });
       return;
     }
+    if (revokedEndpoints.has(sub.endpoint)) {
+      res.status(200).json({ ok: false, staleEndpoint: true });
+      return;
+    }
 
     let existing = subscriptionsByUid[uid] || [];
     if (idToken) {
@@ -368,7 +385,9 @@ async function startServer(): Promise<void> {
         existing = mergeSubscriptions(existing, remote);
       }
     }
-    const deduped = existing.filter((item) => item.endpoint !== sub.endpoint);
+    const deduped = existing.filter(
+      (item) => item.endpoint !== sub.endpoint && !revokedEndpoints.has(item.endpoint)
+    );
     deduped.push(sub);
     // Keep up to 6 devices per user
     const nextList = deduped.slice(-6);
@@ -376,6 +395,7 @@ async function startServer(): Promise<void> {
     firestoreHydratedAtByUid.set(uid, Date.now());
     saveSubscriptions(subscriptionsByUid);
     await persistSubscriptionsToFirestore(uid, nextList, idToken);
+    console.log(`[push] Subscribed uid=${uid} devices=${nextList.length}`);
     res.json({ ok: true, devices: nextList.length });
   });
 

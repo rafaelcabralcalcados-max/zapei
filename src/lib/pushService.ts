@@ -75,10 +75,12 @@ export async function getBackgroundPushStatus(): Promise<BackgroundPushStatus> {
   return 'prompt';
 }
 
+const IOS_PUSH_REGEN_KEY = 'chatfi_push_regen_v3';
+
 async function postSubscriptionToServer(
   authUser: User,
   subscription: PushSubscription
-): Promise<boolean> {
+): Promise<{ ok: boolean; staleEndpoint?: boolean }> {
   const token = await authUser.getIdToken();
   const res = await fetch('/api/push/subscribe', {
     method: 'POST',
@@ -88,7 +90,13 @@ async function postSubscriptionToServer(
     },
     body: JSON.stringify({ subscription: subscription.toJSON() }),
   });
-  return res.ok;
+  if (!res.ok) return { ok: false };
+  try {
+    const data = (await res.json()) as { ok?: boolean; staleEndpoint?: boolean };
+    return { ok: Boolean(data.ok), staleEndpoint: Boolean(data.staleEndpoint) };
+  } catch {
+    return { ok: true };
+  }
 }
 
 function uint8ArrayToBase64Url(bytes: Uint8Array): string {
@@ -119,14 +127,15 @@ function subscriptionMatchesVapidKey(
 
 async function ensureFreshSubscriptionForServerKey(
   reg: ServiceWorkerRegistration,
-  publicKey: string
+  publicKey: string,
+  forceRenew = false
 ): Promise<PushSubscription> {
   const existing = await reg.pushManager.getSubscription();
   if (existing) {
-    if (subscriptionMatchesVapidKey(existing, publicKey)) {
+    if (!forceRenew && subscriptionMatchesVapidKey(existing, publicKey)) {
       return existing;
     }
-    // Server VAPID key changed (e.g. after redeploy): silently replace stale subscription
+    // Server VAPID key changed or endpoint was revoked: silently replace stale subscription
     try {
       await existing.unsubscribe();
     } catch {
@@ -137,6 +146,42 @@ async function ensureFreshSubscriptionForServerKey(
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey),
   });
+}
+
+function needsOneTimeIosPushRenewal(): boolean {
+  if (!isIOSDevice()) return false;
+  try {
+    return window.localStorage.getItem(IOS_PUSH_REGEN_KEY) !== '1';
+  } catch {
+    return false;
+  }
+}
+
+function markIosPushRenewed(): void {
+  if (!isIOSDevice()) return;
+  try {
+    window.localStorage.setItem(IOS_PUSH_REGEN_KEY, '1');
+  } catch {
+    // ignore
+  }
+}
+
+async function subscribeAndSyncDevice(
+  authUser: User,
+  reg: ServiceWorkerRegistration,
+  publicKey: string
+): Promise<boolean> {
+  const forceOneTime = needsOneTimeIosPushRenewal();
+  let subscription = await ensureFreshSubscriptionForServerKey(reg, publicKey, forceOneTime);
+  let res = await postSubscriptionToServer(authUser, subscription);
+  if (res.staleEndpoint) {
+    subscription = await ensureFreshSubscriptionForServerKey(reg, publicKey, true);
+    res = await postSubscriptionToServer(authUser, subscription);
+  }
+  if (res.ok && forceOneTime) {
+    markIosPushRenewed();
+  }
+  return res.ok;
 }
 
 /**
@@ -185,9 +230,7 @@ export async function enableRealBackgroundCallPush(
   const { publicKey } = (await keyRes.json()) as { publicKey: string };
 
   const reg = await getActiveServiceWorkerRegistration();
-  const subscription = await ensureFreshSubscriptionForServerKey(reg, publicKey);
-
-  const ok = await postSubscriptionToServer(authUser, subscription);
+  const ok = await subscribeAndSyncDevice(authUser, reg, publicKey);
   if (!ok) {
     throw new Error('Falha ao ativar notificações neste aparelho.');
   }
@@ -201,7 +244,7 @@ export async function enableRealBackgroundCallPush(
 
 /**
  * Silently refreshes an already-granted browser PushSubscription with the server on app boot,
- * automatically healing VAPID key changes after server restarts/redeploys.
+ * automatically healing VAPID key changes or Apple-revoked endpoints after server restarts/redeploys.
  */
 export async function syncExistingPushSubscription(
   authUser: User
@@ -222,8 +265,7 @@ export async function syncExistingPushSubscription(
     if (!keyRes.ok) return status;
     const { publicKey } = (await keyRes.json()) as { publicKey: string };
     const reg = await getActiveServiceWorkerRegistration();
-    const sub = await ensureFreshSubscriptionForServerKey(reg, publicKey);
-    const ok = await postSubscriptionToServer(authUser, sub);
+    const ok = await subscribeAndSyncDevice(authUser, reg, publicKey);
     return ok ? 'enabled' : status;
   } catch {
     return status;
