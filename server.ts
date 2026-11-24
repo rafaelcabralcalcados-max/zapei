@@ -228,7 +228,8 @@ async function requireFirebaseAuth(
     req.verifiedUid = decoded.uid;
     req.idToken = idToken;
     next();
-  } catch {
+  } catch (err) {
+    console.error('[push] Auth token verify failed:', err instanceof Error ? err.message : err);
     res.status(401).json({ error: 'Sessão inválida ou expirada.' });
   }
 }
@@ -362,6 +363,19 @@ async function startServer(): Promise<void> {
   // 1. Public VAPID Key for browser PushManager.subscribe()
   app.get('/api/push/vapid-public-key', (_req, res) => {
     res.json({ publicKey: vapidKeys.publicKey });
+  });
+
+  // 1b. Non-sensitive push service health check (helps verify Render backend & VAPID env setup)
+  app.get('/api/push/health', (_req, res) => {
+    const uids = Object.keys(subscriptionsByUid);
+    const totalDevices = uids.reduce((acc, u) => acc + (subscriptionsByUid[u]?.length || 0), 0);
+    res.json({
+      ok: true,
+      hasEnvVapid: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY),
+      firestoreConfigured: Boolean(firebaseProjectId),
+      cachedUsers: uids.length,
+      cachedDevices: totalDevices,
+    });
   });
 
   // 2. Register authenticated user's device PushSubscription (memory + disk + encrypted Firestore)

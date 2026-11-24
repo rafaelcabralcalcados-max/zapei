@@ -273,7 +273,33 @@ export async function syncExistingPushSubscription(
 }
 
 /**
- * Triggers a real high-priority W3C Web Push to wake up the callee's closed/locked device.
+ * Retries push subscription registration if the first attempt fails transiently (e.g. Render cold start).
+ */
+export async function syncExistingPushSubscriptionWithRetry(
+  authUser: User
+): Promise<BackgroundPushStatus> {
+  const delays = [0, 6000, 15000];
+  let lastStatus: BackgroundPushStatus = 'prompt';
+  for (let i = 0; i < delays.length; i += 1) {
+    if (delays[i] > 0) {
+      await new Promise((r) => window.setTimeout(r, delays[i]));
+    }
+    lastStatus = await syncExistingPushSubscription(authUser);
+    if (
+      lastStatus === 'enabled' ||
+      lastStatus === 'denied' ||
+      lastStatus === 'unsupported' ||
+      lastStatus === 'ios_needs_install'
+    ) {
+      return lastStatus;
+    }
+  }
+  return lastStatus;
+}
+
+/**
+ * Triggers a real high-priority W3C Web Push to wake up the callee's closed/locked device,
+ * with 1 automatic retry for transient server cold-starts.
  */
 export async function triggerRemoteCallPush(
   authUser: User,
@@ -285,7 +311,7 @@ export async function triggerRemoteCallPush(
     event: 'ringing' | 'cancelled';
   }
 ): Promise<{ ok: boolean; sent: number }> {
-  try {
+  const attempt = async (): Promise<{ ok: boolean; sent: number }> => {
     const token = await authUser.getIdToken();
     const res = await fetch('/api/push/notify-call', {
       method: 'POST',
@@ -298,14 +324,26 @@ export async function triggerRemoteCallPush(
     if (!res.ok) return { ok: false, sent: 0 };
     const data = (await res.json()) as { ok?: boolean; sent?: number };
     return { ok: Boolean(data.ok), sent: Number(data.sent ?? 0) };
+  };
+
+  try {
+    const first = await attempt();
+    if (first.ok) return first;
+    await new Promise((r) => window.setTimeout(r, 2000));
+    return await attempt();
   } catch {
-    // Non-blocking: Firestore signaling still delivers to foreground peers
-    return { ok: false, sent: 0 };
+    try {
+      await new Promise((r) => window.setTimeout(r, 2000));
+      return await attempt();
+    } catch {
+      return { ok: false, sent: 0 };
+    }
   }
 }
 
 /**
- * Triggers a real W3C Web Push alert when sending a message to a peer whose app is closed.
+ * Triggers a real W3C Web Push alert when sending a message to a peer whose app is closed,
+ * with 1 automatic retry for transient server cold-starts.
  */
 export async function triggerRemoteMessagePush(
   authUser: User,
@@ -316,9 +354,9 @@ export async function triggerRemoteMessagePush(
     messageType?: 'text' | 'audio' | 'image' | 'video';
   }
 ): Promise<void> {
-  try {
+  const attempt = async (): Promise<boolean> => {
     const token = await authUser.getIdToken();
-    await fetch('/api/push/notify-message', {
+    const res = await fetch('/api/push/notify-message', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -326,7 +364,21 @@ export async function triggerRemoteMessagePush(
       },
       body: JSON.stringify(params),
     });
+    return res.ok;
+  };
+
+  try {
+    const ok = await attempt();
+    if (!ok) {
+      await new Promise((r) => window.setTimeout(r, 2000));
+      await attempt();
+    }
   } catch {
-    // Non-blocking
+    try {
+      await new Promise((r) => window.setTimeout(r, 2000));
+      await attempt();
+    } catch {
+      // Non-blocking
+    }
   }
 }

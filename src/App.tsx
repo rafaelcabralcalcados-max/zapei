@@ -83,7 +83,7 @@ import {
 } from './lib/webrtcService';
 import {
   enableRealBackgroundCallPush,
-  syncExistingPushSubscription,
+  syncExistingPushSubscriptionWithRetry,
   triggerRemoteCallPush,
 } from './lib/pushService';
 import {
@@ -647,7 +647,7 @@ export default function App() {
       const now = Date.now();
       if (!force && now - lastPushSyncMsRef.current < 45000) return;
       lastPushSyncMsRef.current = now;
-      void syncExistingPushSubscription(currentUser).catch(() => {});
+      void syncExistingPushSubscriptionWithRetry(currentUser).catch(() => {});
     };
     const clearBadge = () => {
       try {
