@@ -35,21 +35,70 @@ interface VapidKeys {
   privateKey: string;
 }
 
+function normalizeBase64Url(value: string): string {
+  return value
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .trim()
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function deriveVapidPublicKey(privateKey: string): string | null {
+  try {
+    const normalized = normalizeBase64Url(privateKey);
+    const keyBuf = Buffer.from(normalized, 'base64url');
+    if (keyBuf.length !== 32) return null;
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.setPrivateKey(keyBuf);
+    const derivedPublic = ecdh.getPublicKey().toString('base64url');
+    return derivedPublic.length === 87 ? derivedPublic : null;
+  } catch {
+    return null;
+  }
+}
+
+function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
+  const derivedPublic = deriveVapidPublicKey(privateKey);
+  if (!derivedPublic) return false;
+  return derivedPublic === normalizeBase64Url(publicKey);
+}
+
+function sanitizeVapidSubject(raw: string | undefined): string {
+  const cleaned = (raw || '').trim().replace(/^["']+|["']+$/g, '').trim();
+  if (cleaned.startsWith('mailto:') || cleaned.startsWith('https://')) {
+    return cleaned;
+  }
+  return 'mailto:contato@chatfi.app';
+}
+
 function loadOrCreateVapidKeys(): VapidKeys {
-  const cleanEnvKey = (value: string | undefined) =>
-    (value || '').trim().replace(/^["']+|["']+$/g, '').trim();
-  const envPublic = cleanEnvKey(process.env.VAPID_PUBLIC_KEY);
-  const envPrivate = cleanEnvKey(process.env.VAPID_PRIVATE_KEY);
-  if (envPublic && envPrivate) {
-    return {
-      publicKey: envPublic,
-      privateKey: envPrivate,
-    };
+  const envPublic = normalizeBase64Url(process.env.VAPID_PUBLIC_KEY || '');
+  const envPrivate = normalizeBase64Url(process.env.VAPID_PRIVATE_KEY || '');
+  if (envPrivate) {
+    const derivedPublic = deriveVapidPublicKey(envPrivate);
+    if (derivedPublic) {
+      if (envPublic && envPublic !== derivedPublic) {
+        console.warn(
+          '[push] VAPID_PUBLIC_KEY env var did not match VAPID_PRIVATE_KEY; auto-deriving the matching P-256 public key to prevent 403 rejections.'
+        );
+      }
+      return {
+        publicKey: derivedPublic,
+        privateKey: envPrivate,
+      };
+    }
+    console.warn(
+      '[push] VAPID_PRIVATE_KEY env var is not a valid 32-byte P-256 key; falling back to local VAPID keypair.'
+    );
   }
   if (fs.existsSync(vapidStorePath)) {
     try {
       const saved = JSON.parse(fs.readFileSync(vapidStorePath, 'utf-8')) as VapidKeys;
-      if (saved.publicKey && saved.privateKey) return saved;
+      if (saved.publicKey && saved.privateKey && isValidVapidKeyPair(saved.publicKey, saved.privateKey)) {
+        return saved;
+      }
     } catch {
       // regenerate below
     }
@@ -60,29 +109,98 @@ function loadOrCreateVapidKeys(): VapidKeys {
 }
 
 const vapidKeys = loadOrCreateVapidKeys();
-const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:contato@chatfi.app';
+const vapidPairValid = isValidVapidKeyPair(vapidKeys.publicKey, vapidKeys.privateKey);
+const vapidKeyHash = crypto
+  .createHash('sha256')
+  .update(vapidKeys.publicKey.replace(/=+$/g, '').trim())
+  .digest('hex')
+  .slice(0, 16);
+const vapidSubject = sanitizeVapidSubject(process.env.VAPID_SUBJECT);
 webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
 
-// --- Persistent Per-User Push Subscription Store ---
+// --- Persistent Per-User Push Subscription Store (Bound to Current VAPID Key Hash) ---
 const subsStorePath = path.resolve(__dirname, '.zapei-push-subs.json');
 
 type SubscriptionMap = Record<string, WebPushSubscription[]>;
 
+interface PersistedSubStore {
+  vapidKeyHash: string;
+  byUid: SubscriptionMap;
+  revokedHashes?: string[];
+}
+
+const revokedEndpointHashes = new Set<string>();
+
+function hashEndpoint(endpoint: string): string {
+  return crypto.createHash('sha256').update(endpoint).digest('hex').slice(0, 24);
+}
+
+function isEndpointRevoked(endpoint: string): boolean {
+  return revokedEndpointHashes.has(hashEndpoint(endpoint));
+}
+
 function loadSubscriptions(): SubscriptionMap {
   if (!fs.existsSync(subsStorePath)) return {};
   try {
-    return JSON.parse(fs.readFileSync(subsStorePath, 'utf-8')) as SubscriptionMap;
+    const parsed = JSON.parse(fs.readFileSync(subsStorePath, 'utf-8')) as
+      | PersistedSubStore
+      | SubscriptionMap;
+    // Discard legacy untagged files or subscriptions bound to a different VAPID key to prevent 403 mismatch loops
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !('vapidKeyHash' in parsed) ||
+      parsed.vapidKeyHash !== vapidKeyHash ||
+      !parsed.byUid ||
+      typeof parsed.byUid !== 'object'
+    ) {
+      return {};
+    }
+    if (Array.isArray(parsed.revokedHashes)) {
+      for (const h of parsed.revokedHashes.slice(-500)) {
+        if (typeof h === 'string' && h.length > 0) revokedEndpointHashes.add(h);
+      }
+    }
+    const clean: SubscriptionMap = {};
+    for (const [uid, list] of Object.entries(parsed.byUid)) {
+      if (!Array.isArray(list)) continue;
+      const valid = list.filter((s) => isValidPushSubscription(s) && !isEndpointRevoked(s.endpoint));
+      if (valid.length > 0) clean[uid] = valid;
+    }
+    return clean;
   } catch {
     return {};
   }
 }
 
 function saveSubscriptions(map: SubscriptionMap): void {
-  fs.writeFileSync(subsStorePath, JSON.stringify(map, null, 2), { mode: 0o600 });
+  const payload: PersistedSubStore = {
+    vapidKeyHash,
+    byUid: map,
+    revokedHashes: Array.from(revokedEndpointHashes).slice(-500),
+  };
+  fs.writeFileSync(subsStorePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
+}
+
+const VALID_UID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+
+function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
+  if (!sub || typeof sub !== 'object') return false;
+  const candidate = sub as Partial<WebPushSubscription>;
+  if (typeof candidate.endpoint !== 'string' || !candidate.endpoint.startsWith('https://')) {
+    return false;
+  }
+  if (
+    !candidate.keys ||
+    typeof candidate.keys.p256dh !== 'string' ||
+    typeof candidate.keys.auth !== 'string'
+  ) {
+    return false;
+  }
+  return candidate.endpoint.length <= 2000;
 }
 
 const subscriptionsByUid: SubscriptionMap = loadSubscriptions();
-const VALID_UID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
 
 // --- AES-256-GCM Encryption + Firestore REST Persistence (Survives Render / Cloud Run Restarts) ---
 const pushEncryptionKey = crypto.createHash('sha256').update(vapidKeys.privateKey).digest();
@@ -234,30 +352,13 @@ async function requireFirebaseAuth(
   }
 }
 
-function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
-  if (!sub || typeof sub !== 'object') return false;
-  const candidate = sub as Partial<WebPushSubscription>;
-  if (typeof candidate.endpoint !== 'string' || !candidate.endpoint.startsWith('https://')) {
-    return false;
-  }
-  if (
-    !candidate.keys ||
-    typeof candidate.keys.p256dh !== 'string' ||
-    typeof candidate.keys.auth !== 'string'
-  ) {
-    return false;
-  }
-  return candidate.endpoint.length <= 2000;
-}
-
 const firestoreHydratedAtByUid = new Map<string, number>();
-const revokedEndpoints = new Set<string>();
 
 function rememberRevokedEndpoint(endpoint: string): void {
-  if (revokedEndpoints.size > 1000) {
-    revokedEndpoints.clear();
+  if (revokedEndpointHashes.size > 1000) {
+    revokedEndpointHashes.clear();
   }
-  revokedEndpoints.add(endpoint);
+  revokedEndpointHashes.add(hashEndpoint(endpoint));
 }
 
 function mergeSubscriptions(
@@ -265,8 +366,12 @@ function mergeSubscriptions(
   remoteSubs: WebPushSubscription[]
 ): WebPushSubscription[] {
   const byEndpoint = new Map<string, WebPushSubscription>();
-  for (const s of remoteSubs) byEndpoint.set(s.endpoint, s);
-  for (const s of localSubs) byEndpoint.set(s.endpoint, s);
+  for (const s of remoteSubs) {
+    if (!isEndpointRevoked(s.endpoint)) byEndpoint.set(s.endpoint, s);
+  }
+  for (const s of localSubs) {
+    if (!isEndpointRevoked(s.endpoint)) byEndpoint.set(s.endpoint, s);
+  }
   return Array.from(byEndpoint.values()).slice(-6);
 }
 
@@ -281,7 +386,7 @@ async function dispatchPushToUser(
   },
   callerIdToken?: string
 ): Promise<{ sent: number; removed: number }> {
-  let subs = subscriptionsByUid[targetUid] || [];
+  let subs = (subscriptionsByUid[targetUid] || []).filter((s) => !isEndpointRevoked(s.endpoint));
   const lastHydrated = firestoreHydratedAtByUid.get(targetUid) || 0;
   const shouldHydrate =
     Boolean(callerIdToken) && (subs.length === 0 || Date.now() - lastHydrated > 15_000);
@@ -291,9 +396,12 @@ async function dispatchPushToUser(
     firestoreHydratedAtByUid.set(targetUid, Date.now());
     const restored = await fetchSubscriptionsFromFirestore(targetUid, callerIdToken);
     if (restored.length > 0) {
-      subs = mergeSubscriptions(subs, restored);
-      subscriptionsByUid[targetUid] = subs;
-      saveSubscriptions(subscriptionsByUid);
+      const merged = mergeSubscriptions(subs, restored);
+      if (merged.length !== subs.length) {
+        subs = merged;
+        subscriptionsByUid[targetUid] = subs;
+        saveSubscriptions(subscriptionsByUid);
+      }
     }
   }
   if (subs.length === 0) {
@@ -325,6 +433,10 @@ async function dispatchPushToUser(
         typeof err === 'object' && err !== null && 'statusCode' in err
           ? Number((err as { statusCode?: unknown }).statusCode)
           : 0;
+      const errBody =
+        typeof err === 'object' && err !== null && 'body' in err && typeof (err as { body?: unknown }).body === 'string'
+          ? (err as { body: string }).body.slice(0, 140).replace(/\s+/g, ' ')
+          : '';
       const host = (() => {
         try {
           return new URL(sub.endpoint).host;
@@ -332,14 +444,19 @@ async function dispatchPushToUser(
           return 'unknown';
         }
       })();
-      console.error(
-        `[push] Delivery failed (${statusCode || 'ERR'}) to ${host} for uid=${targetUid}:`,
-        err instanceof Error ? err.message : err
-      );
-      // Prune permanently expired/unsubscribed endpoints (404 / 410)
-      if (statusCode === 404 || statusCode === 410) {
+
+      // Prune permanently expired, revoked, or VAPID-key-mismatched endpoints (401 / 403 / 404 / 410)
+      // Marking as revoked triggers silent automatic re-subscription on the device's next /api/push/subscribe sync.
+      if (statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {
         rememberRevokedEndpoint(sub.endpoint);
+        console.warn(
+          `[push] Pruned stale/mismatched subscription (${statusCode}) on ${host} for uid=${targetUid}${errBody ? `: ${errBody}` : ''}`
+        );
       } else {
+        console.error(
+          `[push] Delivery failed (${statusCode || 'ERR'}) to ${host} for uid=${targetUid}:`,
+          errBody || (err instanceof Error ? err.message : err)
+        );
         validRemaining.push(sub);
       }
     }
@@ -367,11 +484,14 @@ async function startServer(): Promise<void> {
 
   // 1b. Non-sensitive push service health check (helps verify Render backend & VAPID env setup)
   app.get('/api/push/health', (_req, res) => {
-    const uids = Object.keys(subscriptionsByUid);
+    const uids = Object.keys(subscriptionsByUid).filter(
+      (u) => (subscriptionsByUid[u]?.length || 0) > 0
+    );
     const totalDevices = uids.reduce((acc, u) => acc + (subscriptionsByUid[u]?.length || 0), 0);
     res.json({
       ok: true,
       hasEnvVapid: Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY),
+      vapidPairValid,
       firestoreConfigured: Boolean(firebaseProjectId),
       cachedUsers: uids.length,
       cachedDevices: totalDevices,
@@ -387,7 +507,7 @@ async function startServer(): Promise<void> {
       res.status(400).json({ error: 'Inscrição Web Push inválida.' });
       return;
     }
-    if (revokedEndpoints.has(sub.endpoint)) {
+    if (isEndpointRevoked(sub.endpoint)) {
       res.status(200).json({ ok: false, staleEndpoint: true });
       return;
     }
@@ -400,7 +520,7 @@ async function startServer(): Promise<void> {
       }
     }
     const deduped = existing.filter(
-      (item) => item.endpoint !== sub.endpoint && !revokedEndpoints.has(item.endpoint)
+      (item) => item.endpoint !== sub.endpoint && !isEndpointRevoked(item.endpoint)
     );
     deduped.push(sub);
     // Keep up to 6 devices per user

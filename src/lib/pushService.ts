@@ -119,7 +119,12 @@ function subscriptionMatchesVapidKey(
     const rawKey = sub.options?.applicationServerKey;
     if (!rawKey) return false;
     const currentKeyB64 = uint8ArrayToBase64Url(new Uint8Array(rawKey));
-    return currentKeyB64 === serverPublicKey.replace(/=+$/g, '').trim();
+    const normalizedServerKey = serverPublicKey
+      .trim()
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
+    return currentKeyB64 === normalizedServerKey;
   } catch {
     return false;
   }
