@@ -113,6 +113,12 @@ import {
   type PolicyConsentRecord,
 } from './lib/policyConsent';
 import { formatBRL, getInitials } from './lib/gradeParser';
+import { calculateOrderSplit } from './lib/splitCalculator';
+import {
+  createAsaasSplitCharge,
+  fetchAsaasOrderStatus,
+  type CreateAsaasChargeResult,
+} from './lib/asaasService';
 import {
   blobToDataUrl,
   compressImageFileToBlob,
@@ -135,11 +141,13 @@ import type {
   LogisticsType,
   MinimumDeliveryPolicy,
   MixedOrder,
+  OrderSplitBreakdown,
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
   Product,
   ProductCategory,
+  SplitPaymentMethod,
   SubOrder,
   UserProfile,
 } from './types/zapei';
@@ -1016,6 +1024,7 @@ export default function App() {
           overrides.storefrontName ?? base?.storefrontName ?? `Vitrine ${base?.name ?? ''}`,
         storefrontPrivacy: overrides.storefrontPrivacy ?? base?.storefrontPrivacy ?? 'open',
         factoryName: overrides.factoryName ?? base?.factoryName ?? base?.name ?? '',
+        asaasWalletId: overrides.asaasWalletId ?? base?.asaasWalletId ?? '',
         factoryPolicy: overrides.factoryPolicy ?? base?.factoryPolicy,
         subscriptionStatus: overrides.subscriptionStatus ?? base?.subscriptionStatus ?? 'free',
         trialEndsAt: overrides.trialEndsAt ?? base?.trialEndsAt ?? 0,
@@ -1901,7 +1910,7 @@ export default function App() {
         amount: newFactoryCost,
       });
 
-      // Recompute parent order totals & Layer 2 payment
+      // Recompute parent order totals & Split breakdown & Layer 2 payment
       const parent = orders.find((o) => o.id === sub.parentOrderId);
       if (parent) {
         const mergedSubs = parent.subOrders.map((s) =>
@@ -1920,17 +1929,53 @@ export default function App() {
         const clampedDiscount = Math.min(parent.discountAmount, maxCommission);
         const finalBuyer = Math.max(totalFactory, totalBuyerSub - clampedDiscount);
 
+        const nextBreakdown = calculateOrderSplit({
+          orderTotal: finalBuyer,
+          factoryCostTotal: totalFactory,
+          paymentMethod: parent.paymentMethod || 'pix',
+          installments: parent.installments || 1,
+          isDirectManufacturerSale:
+            parent.factoryIds.length === 1 &&
+            parent.factoryIds[0] === parent.resellerId &&
+            Math.abs(finalBuyer - totalFactory) < 0.01,
+          subOrders: mergedSubs.map((s) => ({
+            id: s.id,
+            subOrderCode: s.subOrderCode,
+            factoryId: s.factoryId,
+            factoryName: s.factoryName,
+            factoryCost: s.factoryCost,
+          })),
+        });
+
+        const subSplit = nextBreakdown.subOrderSplits.find((sp) => sp.subOrderId === sub.id);
+        if (subSplit) {
+          await updateRealPayment(`pay_fr_${sub.id}`, {
+            netAmount: subSplit.factoryNetAmount,
+          }).catch(() => {});
+        }
+
         await updateRealOrder(parent.id, {
           factoryCostTotal: totalFactory,
           buyerSubtotal: totalBuyerSub,
           discountAmount: clampedDiscount,
           buyerFinalTotal: finalBuyer,
           status: newSubStatus,
+          buyerChargedTotal: nextBreakdown.buyerChargedTotal,
+          gatewayFee: nextBreakdown.gatewayFee,
+          platformFeeGross: nextBreakdown.platformGrossFee,
+          platformFeeNet: nextBreakdown.platformNetFee,
+          minimumFeeApplied: nextBreakdown.minimumRuleApplied,
+          splitFactoryNet: nextBreakdown.factoryNetTotal,
+          splitResellerNet: nextBreakdown.resellerNetTotal,
         });
         if (profile && parent.resellerId === profile.uid) {
           await updateRealPayment(`pay_rb_${parent.id}`, {
             amount: finalBuyer,
             costReference: totalFactory,
+            gatewayFee: nextBreakdown.gatewayFee,
+            platformFeeGross: nextBreakdown.platformGrossFee,
+            platformFeeNet: nextBreakdown.platformNetFee,
+            netAmount: nextBreakdown.resellerNetTotal,
           });
         }
       }
@@ -1954,6 +1999,16 @@ export default function App() {
         void updateRealPayment(layer2Pay.id, {
           amount: order.buyerFinalTotal,
           costReference: order.factoryCostTotal,
+          ...(typeof order.gatewayFee === 'number' ? { gatewayFee: order.gatewayFee } : {}),
+          ...(typeof order.platformFeeGross === 'number'
+            ? { platformFeeGross: order.platformFeeGross }
+            : {}),
+          ...(typeof order.platformFeeNet === 'number'
+            ? { platformFeeNet: order.platformFeeNet }
+            : {}),
+          ...(typeof order.splitResellerNet === 'number'
+            ? { netAmount: order.splitResellerNet }
+            : {}),
         }).catch(() => {});
       }
     }
@@ -1971,18 +2026,119 @@ export default function App() {
         Math.max(order.factoryCostTotal, order.buyerSubtotal - clampedDiscount).toFixed(2)
       );
 
+      const nextBreakdown = calculateOrderSplit({
+        orderTotal: finalTotal,
+        factoryCostTotal: order.factoryCostTotal,
+        paymentMethod: order.paymentMethod || 'pix',
+        installments: order.installments || 1,
+        isDirectManufacturerSale:
+          order.factoryIds.length === 1 &&
+          order.factoryIds[0] === order.resellerId &&
+          Math.abs(finalTotal - order.factoryCostTotal) < 0.01,
+        subOrders: order.subOrders.map((s) => ({
+          id: s.id,
+          subOrderCode: s.subOrderCode,
+          factoryId: s.factoryId,
+          factoryName: s.factoryName,
+          factoryCost: s.factoryCost,
+        })),
+      });
+
       await updateRealOrder(order.id, {
         discountMode: mode,
         discountValue: value,
         discountAmount: clampedDiscount,
         buyerFinalTotal: finalTotal,
+        buyerChargedTotal: nextBreakdown.buyerChargedTotal,
+        gatewayFee: nextBreakdown.gatewayFee,
+        platformFeeGross: nextBreakdown.platformGrossFee,
+        platformFeeNet: nextBreakdown.platformNetFee,
+        minimumFeeApplied: nextBreakdown.minimumRuleApplied,
+        splitFactoryNet: nextBreakdown.factoryNetTotal,
+        splitResellerNet: nextBreakdown.resellerNetTotal,
       });
       await updateRealPayment(`pay_rb_${order.id}`, {
         amount: finalTotal,
+        gatewayFee: nextBreakdown.gatewayFee,
+        platformFeeGross: nextBreakdown.platformGrossFee,
+        platformFeeNet: nextBreakdown.platformNetFee,
+        netAmount: nextBreakdown.resellerNetTotal,
       });
     },
     []
   );
+
+  const handleGenerateAsaasChargeForOrder = useCallback(
+    async (
+      order: MixedOrder,
+      paymentMethod: SplitPaymentMethod,
+      installments: number
+    ): Promise<CreateAsaasChargeResult> => {
+      const chargeResult = await createAsaasSplitCharge({
+        orderId: order.id,
+        paymentMethod,
+        installments,
+        customerInfo: {
+          name: order.buyerName,
+        },
+      });
+      const b = chargeResult.splitBreakdown;
+      await updateRealOrder(order.id, {
+        paymentMethod: b.paymentMethod,
+        installments: b.installments,
+        buyerChargedTotal: b.buyerChargedTotal,
+        gatewayFee: b.gatewayFee,
+        platformFeeGross: b.platformGrossFee,
+        platformFeeNet: b.platformNetFee,
+        minimumFeeApplied: b.minimumRuleApplied,
+        splitFactoryNet: b.factoryNetTotal,
+        splitResellerNet: b.resellerNetTotal,
+        asaasChargeId: chargeResult.chargeId,
+        asaasChargeStatus: chargeResult.status,
+        ...(chargeResult.invoiceUrl ? { asaasInvoiceUrl: chargeResult.invoiceUrl } : {}),
+        ...(chargeResult.pixCopyPaste ? { asaasPixPayload: chargeResult.pixCopyPaste } : {}),
+      });
+      await updateRealPayment(`pay_rb_${order.id}`, {
+        method: b.paymentMethod === 'credit_card' ? 'Cartão' : 'À vista',
+        gatewayFee: b.gatewayFee,
+        platformFeeGross: b.platformGrossFee,
+        platformFeeNet: b.platformNetFee,
+        netAmount: b.resellerNetTotal,
+        asaasChargeId: chargeResult.chargeId,
+        asaasChargeStatus: chargeResult.status,
+      }).catch(() => {});
+      return chargeResult;
+    },
+    []
+  );
+
+  const handleSyncAsaasOrderStatus = useCallback(async (order: MixedOrder) => {
+    const statusRes = await fetchAsaasOrderStatus(order.id);
+    if (!statusRes.found) {
+      showToast(`Nenhuma cobrança Asaas encontrada no servidor para ${order.orderCode}.`);
+      return;
+    }
+    await updateRealOrder(order.id, {
+      ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+      ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
+      ...(statusRes.invoiceUrl ? { asaasInvoiceUrl: statusRes.invoiceUrl } : {}),
+      ...(statusRes.pixCopyPaste ? { asaasPixPayload: statusRes.pixCopyPaste } : {}),
+    });
+    if (statusRes.mappedPaymentStatus) {
+      await updateRealPayment(`pay_rb_${order.id}`, {
+        status: statusRes.mappedPaymentStatus,
+        ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+        ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
+      }).catch(() => {});
+      for (const sub of order.subOrders) {
+        await updateRealPayment(`pay_fr_${sub.id}`, {
+          status: statusRes.mappedPaymentStatus,
+          ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+          ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
+        }).catch(() => {});
+      }
+    }
+  }, [showToast]);
 
   const handleConnectFactoryByPhone = useCallback(
     async (rawPhone: string): Promise<{ ok: boolean; message: string }> => {
@@ -3301,6 +3457,9 @@ export default function App() {
               onSavePolicy={async (factoryName, factoryPolicy: MinimumDeliveryPolicy) => {
                 await persistProfileUpdate({ factoryName, factoryPolicy });
               }}
+              onSaveWalletId={async (asaasWalletId: string) => {
+                await persistProfileUpdate({ asaasWalletId });
+              }}
               onSaveFavoriteGrade={async (grade: FavoriteGrade) => {
                 await persistProfileUpdate({
                   favoriteGrades: [...profile.favoriteGrades, grade],
@@ -3351,6 +3510,9 @@ export default function App() {
               onSaveStorefrontIdentity={async (storefrontName, storefrontPrivacy) => {
                 await persistProfileUpdate({ storefrontName, storefrontPrivacy });
               }}
+              onSaveWalletId={async (asaasWalletId: string) => {
+                await persistProfileUpdate({ asaasWalletId });
+              }}
               onConnectFactoryByPhone={handleConnectFactoryByPhone}
               onUpdateConnection={(
                 connectionId: string,
@@ -3396,6 +3558,8 @@ export default function App() {
                 });
                 await updateRealPayment(pay.id, { lastReminderSent: nowLabel });
               }}
+              onGenerateAsaasCharge={handleGenerateAsaasChargeForOrder}
+              onSyncAsaasStatus={handleSyncAsaasOrderStatus}
               onOpenMyStorefrontPreview={() => void openStorefrontByUid(profile.uid)}
               onOpenBilling={() => setShowBillingModal(true)}
             />
@@ -3506,6 +3670,9 @@ export default function App() {
             subOrders,
             buyerSubtotal,
             factoryCostTotal,
+            paymentMethod,
+            installments,
+            splitBreakdown,
           }) => {
             const firstSub = subOrders[0];
             const orderId = firstSub?.parentOrderId || `ord_${Date.now()}`;
@@ -3524,6 +3691,15 @@ export default function App() {
               buyerSubtotal,
               buyerFinalTotal: buyerSubtotal,
               factoryCostTotal,
+              paymentMethod,
+              installments,
+              buyerChargedTotal: splitBreakdown.buyerChargedTotal,
+              gatewayFee: splitBreakdown.gatewayFee,
+              platformFeeGross: splitBreakdown.platformGrossFee,
+              platformFeeNet: splitBreakdown.platformNetFee,
+              minimumFeeApplied: splitBreakdown.minimumRuleApplied,
+              splitFactoryNet: splitBreakdown.factoryNetTotal,
+              splitResellerNet: splitBreakdown.resellerNetTotal,
             });
 
             // Send real interactive order card directly to the storefront owner's chat
@@ -3539,13 +3715,49 @@ export default function App() {
                 otherUid: ownerUid,
                 otherName: storefrontName,
                 type: 'order_card',
-                text: `Novo pedido ${orderCode} enviado (${totalBoxes} caixas)`,
+                text: `Novo pedido ${orderCode} enviado (${totalBoxes} caixas · ${
+                  paymentMethod === 'credit_card' ? `Cartão ${installments}x` : 'Pix'
+                })`,
                 orderId,
                 orderCode,
-                orderSummary: `${totalBoxes} caixa(s) em ${subOrders.length} lote(s) de despacho`,
-                orderTotal: buyerSubtotal,
+                orderSummary: `${totalBoxes} caixa(s) · ${
+                  paymentMethod === 'credit_card'
+                    ? `Cartão ${installments}x de ${formatBRL(splitBreakdown.installmentValue)}`
+                    : `Pix ${formatBRL(splitBreakdown.buyerChargedTotal)}`
+                }`,
+                orderTotal: splitBreakdown.buyerChargedTotal,
                 orderStatusLabel: 'Aguardando conferência de estoque',
               });
+            }
+
+            try {
+              const chargeRes = await createAsaasSplitCharge({
+                orderId,
+                paymentMethod,
+                installments,
+                customerInfo: {
+                  name: profile.name,
+                  email: profile.email,
+                },
+              });
+              await updateRealOrder(orderId, {
+                asaasChargeId: chargeRes.chargeId,
+                asaasChargeStatus: chargeRes.status,
+                ...(chargeRes.invoiceUrl ? { asaasInvoiceUrl: chargeRes.invoiceUrl } : {}),
+                ...(chargeRes.pixCopyPaste ? { asaasPixPayload: chargeRes.pixCopyPaste } : {}),
+              });
+              await updateRealPayment(`pay_rb_${orderId}`, {
+                asaasChargeId: chargeRes.chargeId,
+                asaasChargeStatus: chargeRes.status,
+              }).catch(() => {});
+              return chargeRes;
+            } catch (err) {
+              showToast(
+                err instanceof Error
+                  ? `Pedido registrado. Cobrança Asaas pendente: ${err.message}`
+                  : 'Pedido registrado. Cobrança Asaas pendente de Wallet ID.'
+              );
+              return null;
             }
           }}
         />

@@ -339,6 +339,7 @@ export async function registerOrUpdateUserProfile(params: {
   storefrontName?: string;
   storefrontPrivacy?: 'open' | 'approved';
   factoryName?: string;
+  asaasWalletId?: string;
   factoryPolicy?: MinimumDeliveryPolicy;
   subscriptionStatus?: SubscriptionStatus;
   trialEndsAt?: number;
@@ -403,6 +404,15 @@ export async function registerOrUpdateUserProfile(params: {
   const cleanStatusMessage = sanitizeStatusMessage(
     params.statusMessage ?? (existingPubData?.statusMessage ? String(existingPubData.statusMessage) : '')
   ).slice(0, 160);
+  const resolvedWalletId = (
+    params.asaasWalletId !== undefined
+      ? params.asaasWalletId
+      : existingPubData?.asaasWalletId
+        ? String(existingPubData.asaasWalletId)
+        : ''
+  )
+    .trim()
+    .slice(0, 128);
   const nowMs = Date.now();
 
   const publicData: Record<string, unknown> = {
@@ -419,6 +429,7 @@ export async function registerOrUpdateUserProfile(params: {
     storefrontName: (params.storefrontName ?? `Vitrine ${params.displayName}`).slice(0, 80),
     storefrontPrivacy: params.storefrontPrivacy ?? 'open',
     factoryName: (params.factoryName ?? params.displayName).slice(0, 80),
+    asaasWalletId: resolvedWalletId,
     deliveryPolicyType: policy.type,
     deliveryPolicyValue: policy.value,
     deliveryPolicyPickup: policy.allowCounterPickup,
@@ -613,6 +624,7 @@ function buildUserProfileFromDocs(
     storefrontName: String(publicData.storefrontName ?? ''),
     storefrontPrivacy: (publicData.storefrontPrivacy as 'open' | 'approved') ?? 'open',
     factoryName: String(publicData.factoryName ?? ''),
+    asaasWalletId: publicData.asaasWalletId ? String(publicData.asaasWalletId) : '',
     factoryPolicy: {
       type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
       value: Number(publicData.deliveryPolicyValue ?? 1),
@@ -1832,6 +1844,23 @@ export function subscribeOrdersAndSubOrders(
       buyerSubtotal: Number(d.buyerSubtotal ?? 0),
       buyerFinalTotal: Number(d.buyerFinalTotal ?? 0),
       factoryCostTotal: Number(d.factoryCostTotal ?? 0),
+      paymentMethod:
+        d.paymentMethod === 'credit_card' || d.paymentMethod === 'pix'
+          ? d.paymentMethod
+          : undefined,
+      installments: typeof d.installments === 'number' ? d.installments : undefined,
+      buyerChargedTotal: typeof d.buyerChargedTotal === 'number' ? d.buyerChargedTotal : undefined,
+      gatewayFee: typeof d.gatewayFee === 'number' ? d.gatewayFee : undefined,
+      platformFeeGross: typeof d.platformFeeGross === 'number' ? d.platformFeeGross : undefined,
+      platformFeeNet: typeof d.platformFeeNet === 'number' ? d.platformFeeNet : undefined,
+      minimumFeeApplied:
+        typeof d.minimumFeeApplied === 'boolean' ? d.minimumFeeApplied : undefined,
+      splitFactoryNet: typeof d.splitFactoryNet === 'number' ? d.splitFactoryNet : undefined,
+      splitResellerNet: typeof d.splitResellerNet === 'number' ? d.splitResellerNet : undefined,
+      asaasChargeId: d.asaasChargeId ? String(d.asaasChargeId) : undefined,
+      asaasChargeStatus: d.asaasChargeStatus ? String(d.asaasChargeStatus) : undefined,
+      asaasInvoiceUrl: d.asaasInvoiceUrl ? String(d.asaasInvoiceUrl) : undefined,
+      asaasPixPayload: d.asaasPixPayload ? String(d.asaasPixPayload) : undefined,
     };
   };
 
@@ -1884,11 +1913,20 @@ export async function createRealMixedOrder(params: {
   buyerSubtotal: number;
   buyerFinalTotal: number;
   factoryCostTotal: number;
+  paymentMethod?: 'pix' | 'credit_card';
+  installments?: number;
+  buyerChargedTotal?: number;
+  gatewayFee?: number;
+  platformFeeGross?: number;
+  platformFeeNet?: number;
+  minimumFeeApplied?: boolean;
+  splitFactoryNet?: number;
+  splitResellerNet?: number;
 }): Promise<void> {
   const factoryIds = Array.from(new Set(params.subOrders.map((s) => s.factoryId)));
 
   try {
-    await setDoc(doc(db, 'orders', params.orderId), {
+    const orderDoc: Record<string, unknown> = {
       orderCode: params.orderCode,
       buyerId: params.buyerId,
       buyerName: params.buyerName.slice(0, 80),
@@ -1904,7 +1942,27 @@ export async function createRealMixedOrder(params: {
       factoryCostTotal: params.factoryCostTotal,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (params.paymentMethod) orderDoc.paymentMethod = params.paymentMethod;
+    if (typeof params.installments === 'number') orderDoc.installments = params.installments;
+    if (typeof params.buyerChargedTotal === 'number') {
+      orderDoc.buyerChargedTotal = params.buyerChargedTotal;
+    }
+    if (typeof params.gatewayFee === 'number') orderDoc.gatewayFee = params.gatewayFee;
+    if (typeof params.platformFeeGross === 'number') {
+      orderDoc.platformFeeGross = params.platformFeeGross;
+    }
+    if (typeof params.platformFeeNet === 'number') orderDoc.platformFeeNet = params.platformFeeNet;
+    if (typeof params.minimumFeeApplied === 'boolean') {
+      orderDoc.minimumFeeApplied = params.minimumFeeApplied;
+    }
+    if (typeof params.splitFactoryNet === 'number') {
+      orderDoc.splitFactoryNet = params.splitFactoryNet;
+    }
+    if (typeof params.splitResellerNet === 'number') {
+      orderDoc.splitResellerNet = params.splitResellerNet;
+    }
+    await setDoc(doc(db, 'orders', params.orderId), orderDoc);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `orders/${params.orderId}`);
   }
@@ -1945,7 +2003,7 @@ export async function createRealMixedOrder(params: {
   // Dual Layer 2: Reseller <-> Buyer
   const payBuyerId = `pay_rb_${params.orderId}`;
   try {
-    await setDoc(doc(db, 'payments', payBuyerId), {
+    const payBuyerDoc: Record<string, unknown> = {
       orderId: params.orderId,
       orderCode: params.orderCode,
       layer: 'reseller_buyer',
@@ -1955,12 +2013,23 @@ export async function createRealMixedOrder(params: {
       counterpartyName: params.buyerName.slice(0, 100),
       amount: params.buyerFinalTotal,
       costReference: params.factoryCostTotal,
-      method: 'À vista',
+      method: params.paymentMethod === 'credit_card' ? 'Cartão' : 'À vista',
       status: 'Aguardando',
       dueDate,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (typeof params.gatewayFee === 'number') payBuyerDoc.gatewayFee = params.gatewayFee;
+    if (typeof params.platformFeeGross === 'number') {
+      payBuyerDoc.platformFeeGross = params.platformFeeGross;
+    }
+    if (typeof params.platformFeeNet === 'number') {
+      payBuyerDoc.platformFeeNet = params.platformFeeNet;
+    }
+    if (typeof params.splitResellerNet === 'number') {
+      payBuyerDoc.netAmount = params.splitResellerNet;
+    }
+    await setDoc(doc(db, 'payments', payBuyerId), payBuyerDoc);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `payments/${payBuyerId}`);
   }
@@ -2001,6 +2070,19 @@ export async function updateRealOrder(
     buyerSubtotal: number;
     buyerFinalTotal: number;
     factoryCostTotal: number;
+    paymentMethod: 'pix' | 'credit_card';
+    installments: number;
+    buyerChargedTotal: number;
+    gatewayFee: number;
+    platformFeeGross: number;
+    platformFeeNet: number;
+    minimumFeeApplied: boolean;
+    splitFactoryNet: number;
+    splitResellerNet: number;
+    asaasChargeId: string;
+    asaasChargeStatus: string;
+    asaasInvoiceUrl: string;
+    asaasPixPayload: string;
   }>
 ): Promise<void> {
   try {
@@ -2070,6 +2152,12 @@ export function subscribePayments(
       counterpartyName: String(d.counterpartyName || ''),
       amount: Number(d.amount ?? 0),
       costReference: typeof d.costReference === 'number' ? d.costReference : undefined,
+      gatewayFee: typeof d.gatewayFee === 'number' ? d.gatewayFee : undefined,
+      platformFeeGross: typeof d.platformFeeGross === 'number' ? d.platformFeeGross : undefined,
+      platformFeeNet: typeof d.platformFeeNet === 'number' ? d.platformFeeNet : undefined,
+      netAmount: typeof d.netAmount === 'number' ? d.netAmount : undefined,
+      asaasChargeId: d.asaasChargeId ? String(d.asaasChargeId) : undefined,
+      asaasChargeStatus: d.asaasChargeStatus ? String(d.asaasChargeStatus) : undefined,
       method: (d.method as PaymentMethod) ?? 'À vista',
       status: (d.status as PaymentStatus) ?? 'Aguardando',
       dueDate: String(d.dueDate || ''),
@@ -2106,6 +2194,12 @@ export async function updateRealPayment(
   updates: Partial<{
     amount: number;
     costReference: number;
+    gatewayFee: number;
+    platformFeeGross: number;
+    platformFeeNet: number;
+    netAmount: number;
+    asaasChargeId: string;
+    asaasChargeStatus: string;
     method: PaymentMethod;
     status: PaymentStatus;
     lastReminderSent: string;

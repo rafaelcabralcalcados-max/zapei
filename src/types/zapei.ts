@@ -189,6 +189,50 @@ export interface SubOrder {
   updatedAt: string;
 }
 
+export type SplitPaymentMethod = 'pix' | 'credit_card';
+
+export interface AsaasSplitEntry {
+  walletId: string;
+  fixedValue: number;
+  role?: 'manufacturer' | 'reseller' | 'platform';
+  recipientUid?: string;
+  recipientLabel?: string;
+}
+
+export interface SubOrderSplitItem {
+  subOrderId: string;
+  subOrderCode: string;
+  factoryId: string;
+  factoryName: string;
+  grossFactoryCost: number;
+  factoryNetAmount: number;
+}
+
+export interface OrderSplitBreakdown {
+  orderTotal: number;
+  factoryCostTotal: number;
+  paymentMethod: SplitPaymentMethod;
+  installments: number;
+  isDirectManufacturerSale: boolean;
+  rawCommission85: number;
+  minimumRuleApplied: boolean;
+  belowPixMinThreshold: boolean;
+  gatewayFee: number;
+  platformGrossFee: number;
+  platformNetFee: number;
+  buyerChargedTotal: number;
+  cardFeePassedToBuyer: number;
+  cardBaseMdrRate: number;
+  cardInstallmentInterestRate: number;
+  cardFixedFee: number;
+  installmentValue: number;
+  distributableToSellers: number;
+  factoryNetTotal: number;
+  resellerNetTotal: number;
+  effectivePlatformRatePct: number;
+  subOrderSplits: SubOrderSplitItem[];
+}
+
 export interface MixedOrder {
   id: string;
   orderCode: string;
@@ -206,6 +250,19 @@ export interface MixedOrder {
   buyerSubtotal: number;
   buyerFinalTotal: number;
   factoryCostTotal: number;
+  paymentMethod?: SplitPaymentMethod;
+  installments?: number;
+  buyerChargedTotal?: number;
+  gatewayFee?: number;
+  platformFeeGross?: number;
+  platformFeeNet?: number;
+  minimumFeeApplied?: boolean;
+  splitFactoryNet?: number;
+  splitResellerNet?: number;
+  asaasChargeId?: string;
+  asaasChargeStatus?: string;
+  asaasInvoiceUrl?: string;
+  asaasPixPayload?: string;
 }
 
 export interface DualPaymentRecord {
@@ -220,6 +277,12 @@ export interface DualPaymentRecord {
   counterpartyName: string;
   amount: number;
   costReference?: number;
+  gatewayFee?: number;
+  platformFeeGross?: number;
+  platformFeeNet?: number;
+  netAmount?: number;
+  asaasChargeId?: string;
+  asaasChargeStatus?: string;
   method: PaymentMethod;
   status: PaymentStatus;
   dueDate: string;
@@ -252,6 +315,7 @@ export interface UserProfile {
   storefrontName: string;
   storefrontPrivacy: 'open' | 'approved';
   factoryName: string;
+  asaasWalletId?: string;
   factoryPolicy: MinimumDeliveryPolicy;
   favoriteGrades: FavoriteGrade[];
 }

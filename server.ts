@@ -10,6 +10,15 @@ import * as webpush from 'web-push';
 import type { PushSubscription as WebPushSubscription } from 'web-push';
 import { getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import {
+  buildAsaasSplitEntries,
+  calculateOrderSplit,
+} from './src/lib/splitCalculator.ts';
+import type {
+  AsaasSplitEntry,
+  OrderSplitBreakdown,
+  SplitPaymentMethod,
+} from './src/types/zapei.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -814,6 +823,727 @@ async function startServer(): Promise<void> {
       await fs.promises.rm(paths.dataPath, { force: true }).catch(() => {});
       await fs.promises.rm(paths.metaPath, { force: true }).catch(() => {});
       res.json({ ok: true });
+    }
+  );
+
+  // 7. Asaas Payment Split Charge Creation & Webhook Confirmation
+  const asaasLedgerPath = path.join(os.tmpdir(), 'chatfi-asaas-ledger.json');
+
+  interface AsaasLedgerRecord {
+    chargeId: string;
+    orderId: string;
+    orderCode: string;
+    buyerId: string;
+    resellerId: string;
+    factoryIds: string[];
+    mode: 'live' | 'preview';
+    asaasStatus: string;
+    mappedPaymentStatus: 'Aguardando' | 'Parcial' | 'Quitado' | 'Em Atraso';
+    lastWebhookEvent?: string;
+    invoiceUrl?: string;
+    pixQrCode?: string;
+    pixCopyPaste?: string;
+    splitBreakdown: OrderSplitBreakdown;
+    splitRecipients: AsaasSplitEntry[];
+    createdAtMs: number;
+    updatedAtMs: number;
+    confirmedAtMs?: number;
+  }
+
+  interface PersistedAsaasLedger {
+    chargesByOrderId: Record<string, AsaasLedgerRecord>;
+    orderIdByChargeId: Record<string, string>;
+    processedWebhookKeys: string[];
+  }
+
+  const loadAsaasLedger = (): PersistedAsaasLedger => {
+    try {
+      if (fs.existsSync(asaasLedgerPath)) {
+        const parsed = JSON.parse(
+          fs.readFileSync(asaasLedgerPath, 'utf-8')
+        ) as Partial<PersistedAsaasLedger>;
+        return {
+          chargesByOrderId:
+            parsed.chargesByOrderId && typeof parsed.chargesByOrderId === 'object'
+              ? parsed.chargesByOrderId
+              : {},
+          orderIdByChargeId:
+            parsed.orderIdByChargeId && typeof parsed.orderIdByChargeId === 'object'
+              ? parsed.orderIdByChargeId
+              : {},
+          processedWebhookKeys: Array.isArray(parsed.processedWebhookKeys)
+            ? parsed.processedWebhookKeys.slice(-1000)
+            : [],
+        };
+      }
+    } catch {
+      // fallback to clean ledger
+    }
+    return { chargesByOrderId: {}, orderIdByChargeId: {}, processedWebhookKeys: [] };
+  };
+
+  const asaasLedger = loadAsaasLedger();
+
+  const saveAsaasLedger = (): void => {
+    try {
+      asaasLedger.processedWebhookKeys = asaasLedger.processedWebhookKeys.slice(-1000);
+      fs.writeFileSync(asaasLedgerPath, JSON.stringify(asaasLedger, null, 2), { mode: 0o600 });
+    } catch (err) {
+      console.error('[asaas] Failed to persist ledger:', err);
+    }
+  };
+
+  type FirestoreRestValue = {
+    stringValue?: string;
+    integerValue?: string;
+    doubleValue?: number;
+    booleanValue?: boolean;
+    arrayValue?: { values?: FirestoreRestValue[] };
+    mapValue?: { fields?: Record<string, FirestoreRestValue> };
+  };
+
+  const decodeFirestoreValue = (val: FirestoreRestValue | undefined): unknown => {
+    if (!val || typeof val !== 'object') return undefined;
+    if ('stringValue' in val) return val.stringValue ?? '';
+    if ('booleanValue' in val) return Boolean(val.booleanValue);
+    if ('doubleValue' in val) return Number(val.doubleValue ?? 0);
+    if ('integerValue' in val) return Number(val.integerValue ?? 0);
+    if ('arrayValue' in val) {
+      return (val.arrayValue?.values || []).map((v) => decodeFirestoreValue(v));
+    }
+    if ('mapValue' in val) {
+      const obj: Record<string, unknown> = {};
+      const fields = val.mapValue?.fields || {};
+      for (const [k, v] of Object.entries(fields)) {
+        obj[k] = decodeFirestoreValue(v);
+      }
+      return obj;
+    }
+    return undefined;
+  };
+
+  const decodeFirestoreFields = (
+    fields: Record<string, FirestoreRestValue> | undefined
+  ): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    if (!fields) return out;
+    for (const [k, v] of Object.entries(fields)) {
+      out[k] = decodeFirestoreValue(v);
+    }
+    return out;
+  };
+
+  const firestoreRestGetDoc = async (
+    collectionPath: string,
+    docId: string,
+    idToken: string
+  ): Promise<Record<string, unknown> | null> => {
+    if (!firebaseProjectId || !VALID_UID_REGEX.test(docId)) return null;
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseProjectId
+    )}/databases/${encodeURIComponent(
+      firebaseDatabaseId
+    )}/documents/${collectionPath}/${encodeURIComponent(docId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      fields?: Record<string, FirestoreRestValue>;
+    };
+    return decodeFirestoreFields(json.fields);
+  };
+
+  const firestoreRestQuerySubOrdersForActor = async (
+    parentOrderId: string,
+    actorField: 'buyerId' | 'resellerId',
+    actorUid: string,
+    idToken: string
+  ): Promise<
+    Array<{
+      id: string;
+      subOrderCode: string;
+      factoryId: string;
+      factoryName: string;
+      factoryCost: number;
+    }>
+  > => {
+    if (!firebaseProjectId) return [];
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseProjectId
+    )}/databases/${encodeURIComponent(firebaseDatabaseId)}/documents:runQuery`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: 'sub_orders' }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: actorField },
+              op: 'EQUAL',
+              value: { stringValue: actorUid },
+            },
+          },
+          limit: 200,
+        },
+      }),
+    });
+    if (!res.ok) return [];
+    const rows = (await res.json()) as Array<{
+      document?: {
+        name?: string;
+        fields?: Record<string, FirestoreRestValue>;
+      };
+    }>;
+    const out: Array<{
+      id: string;
+      subOrderCode: string;
+      factoryId: string;
+      factoryName: string;
+      factoryCost: number;
+    }> = [];
+    for (const row of rows) {
+      if (!row.document?.fields || !row.document.name) continue;
+      const d = decodeFirestoreFields(row.document.fields);
+      if (String(d.parentOrderId || '') !== parentOrderId) continue;
+      const docId = row.document.name.split('/').pop() || '';
+      out.push({
+        id: docId,
+        subOrderCode: String(d.subOrderCode || ''),
+        factoryId: String(d.factoryId || ''),
+        factoryName: String(d.factoryName || 'Fábrica'),
+        factoryCost: Number(d.factoryCost || 0),
+      });
+    }
+    return out;
+  };
+
+  const getAsaasBaseUrl = (): string => {
+    const custom = (process.env.ASAAS_BASE_URL || '').trim().replace(/\/+$/g, '');
+    if (custom.startsWith('https://')) return custom;
+    const env = (process.env.ASAAS_ENV || 'sandbox').trim().toLowerCase();
+    return env === 'production'
+      ? 'https://api.asaas.com/v3'
+      : 'https://api-sandbox.asaas.com/v3';
+  };
+
+  const mapAsaasEventToStatus = (
+    event: string
+  ): 'Aguardando' | 'Parcial' | 'Quitado' | 'Em Atraso' => {
+    switch (event) {
+      case 'PAYMENT_CONFIRMED':
+      case 'PAYMENT_RECEIVED':
+      case 'PAYMENT_ANTICIPATED':
+        return 'Quitado';
+      case 'PAYMENT_OVERDUE':
+        return 'Em Atraso';
+      case 'PAYMENT_PARTIALLY_REFUNDED':
+        return 'Parcial';
+      default:
+        return 'Aguardando';
+    }
+  };
+
+  app.post(
+    '/api/payments/asaas/create-charge',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const idToken = req.idToken || '';
+
+      const orderId =
+        typeof req.body?.orderId === 'string' ? req.body.orderId.trim() : '';
+      const paymentMethod: SplitPaymentMethod =
+        req.body?.paymentMethod === 'credit_card' ? 'credit_card' : 'pix';
+      const rawInstallments = Number(req.body?.installments ?? 1);
+      const installments =
+        paymentMethod === 'credit_card'
+          ? Math.min(12, Math.max(1, Math.round(Number.isFinite(rawInstallments) ? rawInstallments : 1)))
+          : 1;
+
+      if (!VALID_UID_REGEX.test(orderId)) {
+        res.status(400).json({ error: 'ID do pedido inválido.' });
+        return;
+      }
+
+      const orderData = await firestoreRestGetDoc('orders', orderId, idToken);
+      if (!orderData) {
+        res.status(404).json({ error: 'Pedido não encontrado no Firestore.' });
+        return;
+      }
+
+      const buyerId = String(orderData.buyerId || '');
+      const resellerId = String(orderData.resellerId || '');
+      const factoryIds = Array.isArray(orderData.factoryIds)
+        ? orderData.factoryIds.map((id) => String(id))
+        : [];
+
+      if (actorUid !== buyerId && actorUid !== resellerId) {
+        res.status(403).json({ error: 'Sem permissão para gerar cobrança deste pedido.' });
+        return;
+      }
+
+      const orderTotal = Number(orderData.buyerFinalTotal ?? orderData.buyerSubtotal ?? 0);
+      const factoryCostTotal = Number(orderData.factoryCostTotal ?? 0);
+      if (!Number.isFinite(orderTotal) || orderTotal <= 0) {
+        res.status(400).json({ error: 'Valor do pedido inválido para cobrança.' });
+        return;
+      }
+
+      const actorRoleField = actorUid === buyerId ? 'buyerId' : 'resellerId';
+      let subOrders = await firestoreRestQuerySubOrdersForActor(
+        orderId,
+        actorRoleField,
+        actorUid,
+        idToken
+      );
+
+      if (subOrders.length === 0 && factoryIds.length > 0) {
+        subOrders = [
+          {
+            id: `sub_${orderId}_0`,
+            subOrderCode: `${String(orderData.orderCode || '')}-A`,
+            factoryId: factoryIds[0],
+            factoryName: 'Fábrica',
+            factoryCost: factoryCostTotal,
+          },
+        ];
+      }
+
+      const isDirectManufacturerSale =
+        factoryIds.length === 1 &&
+        factoryIds[0] === resellerId &&
+        Math.abs(orderTotal - factoryCostTotal) < 0.01;
+
+      const splitBreakdown = calculateOrderSplit({
+        orderTotal,
+        factoryCostTotal,
+        paymentMethod,
+        installments,
+        isDirectManufacturerSale,
+        subOrders,
+      });
+
+      // Fetch Asaas Wallet IDs from user profiles
+      const distinctFactoryIds = Array.from(
+        new Set(subOrders.map((s) => s.factoryId).filter((id) => VALID_UID_REGEX.test(id)))
+      );
+      const [resellerDoc, ...factoryDocs] = await Promise.all([
+        VALID_UID_REGEX.test(resellerId)
+          ? firestoreRestGetDoc('users', resellerId, idToken)
+          : Promise.resolve(null),
+        ...distinctFactoryIds.map((fid) => firestoreRestGetDoc('users', fid, idToken)),
+      ]);
+
+      const factoryWalletMap: Record<string, string | undefined> = {};
+      distinctFactoryIds.forEach((fid, idx) => {
+        const docData = factoryDocs[idx];
+        factoryWalletMap[fid] = docData?.asaasWalletId
+          ? String(docData.asaasWalletId).trim()
+          : undefined;
+      });
+
+      const resellerWalletId = resellerDoc?.asaasWalletId
+        ? String(resellerDoc.asaasWalletId).trim()
+        : undefined;
+      const resellerName = String(
+        orderData.storefrontName || resellerDoc?.storefrontName || resellerDoc?.displayName || 'Revendedor'
+      );
+
+      const { asaasApiSplits, detailedSplits, missingWallets } = buildAsaasSplitEntries({
+        breakdown: splitBreakdown,
+        resellerId,
+        resellerName,
+        resellerWalletId,
+        factoryWalletMap,
+        platformWalletId: process.env.ASAAS_PLATFORM_WALLET_ID,
+        includePlatformWalletInSplitArray:
+          process.env.ASAAS_INCLUDE_PLATFORM_WALLET_IN_SPLIT === 'true',
+      });
+
+      const due = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const dueDate = due.toISOString().slice(0, 10);
+      const orderCode = String(orderData.orderCode || orderId);
+      const asaasApiKey = (process.env.ASAAS_API_KEY || '').trim();
+
+      const baseAsaasPayload = {
+        billingType: (paymentMethod === 'credit_card' ? 'CREDIT_CARD' : 'PIX') as
+          | 'PIX'
+          | 'CREDIT_CARD',
+        value: splitBreakdown.buyerChargedTotal,
+        dueDate,
+        description: `Pedido ChatFi ${orderCode}`,
+        externalReference: orderId,
+        ...(paymentMethod === 'credit_card' && splitBreakdown.installments > 1
+          ? {
+              installmentCount: splitBreakdown.installments,
+              totalValue: splitBreakdown.buyerChargedTotal,
+            }
+          : {}),
+        split: asaasApiSplits,
+      };
+
+      if (!asaasApiKey) {
+        const previewChargeId = `asaas_preview_${orderId}`;
+        const record: AsaasLedgerRecord = {
+          chargeId: previewChargeId,
+          orderId,
+          orderCode,
+          buyerId,
+          resellerId,
+          factoryIds,
+          mode: 'preview',
+          asaasStatus: 'PENDING_GATEWAY_KEY',
+          mappedPaymentStatus: 'Aguardando',
+          splitBreakdown,
+          splitRecipients: detailedSplits,
+          createdAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+        };
+        asaasLedger.chargesByOrderId[orderId] = record;
+        asaasLedger.orderIdByChargeId[previewChargeId] = orderId;
+        saveAsaasLedger();
+
+        res.json({
+          ok: true,
+          mode: 'preview',
+          asaasConfigured: false,
+          chargeId: previewChargeId,
+          status: 'PENDING_GATEWAY_KEY',
+          mappedPaymentStatus: 'Aguardando',
+          missingWallets,
+          message:
+            'Split calculado e payload Asaas pronto. Adicione ASAAS_API_KEY nas variáveis do servidor para emitir cobranças reais no Asaas.',
+          splitBreakdown,
+          splitRecipients: detailedSplits,
+          asaasPayload: baseAsaasPayload,
+        });
+        return;
+      }
+
+      if (missingWallets.length > 0) {
+        res.status(422).json({
+          error: `Wallet ID Asaas não configurado para: ${missingWallets
+            .map((w) => `${w.label} (${w.role === 'manufacturer' ? 'Fabricante' : 'Revendedor'})`)
+            .join(', ')}. Peça para configurarem no painel comercial.`,
+          missingWallets,
+        });
+        return;
+      }
+
+      const asaasBaseUrl = getAsaasBaseUrl();
+      const customerInfo =
+        req.body?.customerInfo && typeof req.body.customerInfo === 'object'
+          ? (req.body.customerInfo as Record<string, unknown>)
+          : {};
+      const customerName = String(
+        customerInfo.name || orderData.buyerName || 'Cliente ChatFi'
+      ).slice(0, 80);
+      const customerCpfCnpj = String(customerInfo.cpfCnpj || '').replace(/\D/g, '').slice(0, 14);
+      const customerEmail = String(customerInfo.email || '').trim().slice(0, 120);
+      const customerPhone = String(customerInfo.phone || '').replace(/\D/g, '').slice(0, 15);
+
+      try {
+        let asaasCustomerId = '';
+        if (customerCpfCnpj) {
+          const findRes = await fetch(
+            `${asaasBaseUrl}/customers?cpfCnpj=${encodeURIComponent(customerCpfCnpj)}`,
+            {
+              headers: {
+                access_token: asaasApiKey,
+                'User-Agent': 'ChatFi/1.0',
+              },
+            }
+          );
+          if (findRes.ok) {
+            const found = (await findRes.json()) as { data?: Array<{ id?: string }> };
+            asaasCustomerId = String(found.data?.[0]?.id || '');
+          }
+        }
+        if (!asaasCustomerId) {
+          const createCustRes = await fetch(`${asaasBaseUrl}/customers`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              access_token: asaasApiKey,
+              'User-Agent': 'ChatFi/1.0',
+            },
+            body: JSON.stringify({
+              name: customerName,
+              ...(customerCpfCnpj ? { cpfCnpj: customerCpfCnpj } : {}),
+              ...(customerEmail ? { email: customerEmail } : {}),
+              ...(customerPhone ? { mobilePhone: customerPhone } : {}),
+              externalReference: buyerId,
+            }),
+          });
+          const custJson = (await createCustRes.json().catch(() => ({}))) as {
+            id?: string;
+            errors?: Array<{ description?: string }>;
+          };
+          if (!createCustRes.ok || !custJson.id) {
+            res.status(400).json({
+              error:
+                custJson.errors?.[0]?.description ||
+                'Não foi possível criar/localizar o cliente no Asaas (informe CPF/CNPJ válido).',
+            });
+            return;
+          }
+          asaasCustomerId = custJson.id;
+        }
+
+        const chargeRes = await fetch(`${asaasBaseUrl}/payments`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            access_token: asaasApiKey,
+            'User-Agent': 'ChatFi/1.0',
+          },
+          body: JSON.stringify({
+            customer: asaasCustomerId,
+            ...baseAsaasPayload,
+          }),
+        });
+
+        const chargeJson = (await chargeRes.json().catch(() => ({}))) as {
+          id?: string;
+          status?: string;
+          invoiceUrl?: string;
+          errors?: Array<{ description?: string }>;
+        };
+        if (!chargeRes.ok || !chargeJson.id) {
+          res.status(chargeRes.status || 400).json({
+            error:
+              chargeJson.errors?.[0]?.description ||
+              'Erro ao gerar cobrança com Split no Asaas.',
+          });
+          return;
+        }
+
+        let pixQrCode = '';
+        let pixCopyPaste = '';
+        if (paymentMethod === 'pix') {
+          const pixRes = await fetch(`${asaasBaseUrl}/payments/${encodeURIComponent(chargeJson.id)}/pixQrCode`, {
+            headers: {
+              access_token: asaasApiKey,
+              'User-Agent': 'ChatFi/1.0',
+            },
+          });
+          if (pixRes.ok) {
+            const pixData = (await pixRes.json().catch(() => ({}))) as {
+              encodedImage?: string;
+              payload?: string;
+            };
+            pixQrCode = pixData.encodedImage
+              ? `data:image/png;base64,${pixData.encodedImage}`
+              : '';
+            pixCopyPaste = String(pixData.payload || '');
+          }
+        }
+
+        const record: AsaasLedgerRecord = {
+          chargeId: chargeJson.id,
+          orderId,
+          orderCode,
+          buyerId,
+          resellerId,
+          factoryIds,
+          mode: 'live',
+          asaasStatus: String(chargeJson.status || 'PENDING'),
+          mappedPaymentStatus: 'Aguardando',
+          invoiceUrl: chargeJson.invoiceUrl ? String(chargeJson.invoiceUrl) : undefined,
+          pixQrCode: pixQrCode || undefined,
+          pixCopyPaste: pixCopyPaste || undefined,
+          splitBreakdown,
+          splitRecipients: detailedSplits,
+          createdAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+        };
+        asaasLedger.chargesByOrderId[orderId] = record;
+        asaasLedger.orderIdByChargeId[chargeJson.id] = orderId;
+        saveAsaasLedger();
+
+        res.json({
+          ok: true,
+          mode: 'live',
+          asaasConfigured: true,
+          chargeId: chargeJson.id,
+          status: record.asaasStatus,
+          mappedPaymentStatus: 'Aguardando',
+          invoiceUrl: record.invoiceUrl,
+          pixQrCode: record.pixQrCode,
+          pixCopyPaste: record.pixCopyPaste,
+          splitBreakdown,
+          splitRecipients: detailedSplits,
+          asaasPayload: baseAsaasPayload,
+        });
+      } catch (err) {
+        console.error('[asaas] Create charge error:', err);
+        res.status(502).json({ error: 'Falha de comunicação com a API do Asaas.' });
+      }
+    }
+  );
+
+  app.post('/api/webhooks/asaas', async (req: Request, res: Response) => {
+    const expectedToken = (process.env.ASAAS_WEBHOOK_TOKEN || '').trim();
+    if (!expectedToken) {
+      res.status(503).json({
+        error: 'Webhook Asaas indisponível: ASAAS_WEBHOOK_TOKEN não configurado no servidor.',
+      });
+      return;
+    }
+
+    const receivedToken =
+      typeof req.headers['asaas-access-token'] === 'string'
+        ? req.headers['asaas-access-token'].trim()
+        : '';
+
+    const expectedBuf = Buffer.from(expectedToken, 'utf8');
+    const receivedBuf = Buffer.from(receivedToken, 'utf8');
+    if (
+      expectedBuf.length !== receivedBuf.length ||
+      !crypto.timingSafeEqual(expectedBuf, receivedBuf)
+    ) {
+      res.status(401).json({ error: 'Token de webhook Asaas inválido.' });
+      return;
+    }
+
+    const event = typeof req.body?.event === 'string' ? req.body.event.trim().slice(0, 60) : '';
+    const payment =
+      req.body?.payment && typeof req.body.payment === 'object'
+        ? (req.body.payment as Record<string, unknown>)
+        : null;
+
+    if (!event || !payment || typeof payment.id !== 'string') {
+      res.status(400).json({ error: 'Payload de webhook Asaas inválido.' });
+      return;
+    }
+
+    const chargeId = String(payment.id).slice(0, 128);
+    const externalReference =
+      typeof payment.externalReference === 'string'
+        ? payment.externalReference.trim().slice(0, 128)
+        : '';
+    const dedupKey = `${event}:${chargeId}`;
+    if (asaasLedger.processedWebhookKeys.includes(dedupKey)) {
+      res.json({ received: true, deduplicated: true, chargeId, event });
+      return;
+    }
+
+    asaasLedger.processedWebhookKeys.push(dedupKey);
+    const orderId = asaasLedger.orderIdByChargeId[chargeId] || externalReference;
+    const mappedPaymentStatus = mapAsaasEventToStatus(event);
+    const existingRecord = orderId ? asaasLedger.chargesByOrderId[orderId] : undefined;
+
+    if (existingRecord) {
+      existingRecord.asaasStatus = String(payment.status || event).slice(0, 40);
+      existingRecord.mappedPaymentStatus = mappedPaymentStatus;
+      existingRecord.lastWebhookEvent = event;
+      existingRecord.updatedAtMs = Date.now();
+      if (mappedPaymentStatus === 'Quitado') {
+        existingRecord.confirmedAtMs = Date.now();
+      }
+      saveAsaasLedger();
+
+      if (mappedPaymentStatus === 'Quitado') {
+        const recipients = Array.from(
+          new Set([existingRecord.resellerId, ...existingRecord.factoryIds])
+        ).filter(Boolean);
+        for (const uid of recipients) {
+          void dispatchPushToUser(
+            uid,
+            {
+              type: 'new_message',
+              senderId: 'chatfi-asaas',
+              senderName: 'Pagamentos ChatFi',
+              body: `Pagamento confirmado (${existingRecord.orderCode})! Split liberado via Asaas.`,
+              messageType: 'text',
+              messageId: `asaas-${chargeId}-${Date.now()}`,
+            },
+            { ttl: 3600, urgency: 'high' }
+          ).catch(() => {});
+        }
+      }
+    } else {
+      saveAsaasLedger();
+    }
+
+    console.log(
+      `[asaas-webhook] event=${event} chargeId=${chargeId} orderId=${orderId || 'unknown'} status=${mappedPaymentStatus}`
+    );
+
+    res.json({
+      received: true,
+      chargeId,
+      orderId: orderId || null,
+      event,
+      mappedPaymentStatus,
+    });
+  });
+
+  app.get(
+    '/api/payments/asaas/status/:orderId',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const idToken = req.idToken || '';
+      const orderId = typeof req.params?.orderId === 'string' ? req.params.orderId.trim() : '';
+
+      if (!VALID_UID_REGEX.test(orderId)) {
+        res.status(400).json({ error: 'ID do pedido inválido.' });
+        return;
+      }
+
+      const record = asaasLedger.chargesByOrderId[orderId];
+      if (!record) {
+        const orderDoc = await firestoreRestGetDoc('orders', orderId, idToken);
+        if (!orderDoc) {
+          res.status(404).json({ error: 'Pedido não encontrado.' });
+          return;
+        }
+        const factoryIds = Array.isArray(orderDoc.factoryIds)
+          ? orderDoc.factoryIds.map((x) => String(x))
+          : [];
+        if (
+          orderDoc.buyerId !== actorUid &&
+          orderDoc.resellerId !== actorUid &&
+          !factoryIds.includes(actorUid)
+        ) {
+          res.status(403).json({ error: 'Sem permissão para consultar este pedido.' });
+          return;
+        }
+        res.json({ ok: true, found: false, orderId });
+        return;
+      }
+
+      if (
+        record.buyerId !== actorUid &&
+        record.resellerId !== actorUid &&
+        !record.factoryIds.includes(actorUid)
+      ) {
+        res.status(403).json({ error: 'Sem permissão para consultar esta cobrança.' });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        found: true,
+        orderId,
+        chargeId: record.chargeId,
+        asaasStatus: record.asaasStatus,
+        mappedPaymentStatus: record.mappedPaymentStatus,
+        invoiceUrl: record.invoiceUrl,
+        pixCopyPaste: record.pixCopyPaste,
+        pixQrCode: record.pixQrCode,
+        splitBreakdown: record.splitBreakdown,
+        splitRecipients: record.splitRecipients,
+        lastWebhookEvent: record.lastWebhookEvent,
+        confirmedAtMs: record.confirmedAtMs,
+      });
     }
   );
 

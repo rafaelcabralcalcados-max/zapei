@@ -3,9 +3,13 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
+  CreditCard,
+  ExternalLink,
   Minus,
   Package,
   Plus,
+  QrCode,
   ShoppingBag,
   Store,
   Trash2,
@@ -16,17 +20,27 @@ import type {
   FactoryConnection,
   MinimumDeliveryPolicy,
   MixedOrder,
+  OrderSplitBreakdown,
   Product,
   ProductCategory,
+  SplitPaymentMethod,
   SubOrder,
   SubscriptionStatus,
 } from '../types/zapei';
+import type { CreateAsaasChargeResult } from '../lib/asaasService';
 import {
   computeResellerPrice,
   formatBRL,
   getTotalPairsFromGrade,
 } from '../lib/gradeParser';
+import {
+  calculateOrderSplit,
+  getAsaasCreditCardRates,
+  MINIMUM_FEE_THRESHOLD_BRL,
+  roundBRL,
+} from '../lib/splitCalculator';
 import { GradeVisualGrid } from './GradeVisualGrid';
+import { SplitBreakdownCard } from './SplitBreakdownCard';
 
 export interface PublicStorefrontOwner {
   uid: string;
@@ -62,7 +76,10 @@ interface PublicStorefrontViewProps {
     subOrders: SubOrder[];
     buyerSubtotal: number;
     factoryCostTotal: number;
-  }) => Promise<void>;
+    paymentMethod: SplitPaymentMethod;
+    installments: number;
+    splitBreakdown: OrderSplitBreakdown;
+  }) => Promise<CreateAsaasChargeResult | null>;
 }
 
 const CATEGORIES: Array<'Todos' | ProductCategory> = [
@@ -86,8 +103,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<'Todos' | ProductCategory>('Todos');
   const [activeSubView, setActiveSubView] = useState<'catalog' | 'cart' | 'orders'>('catalog');
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [paymentMethod, setPaymentMethod] = useState<SplitPaymentMethod>('pix');
+  const [installments, setInstallments] = useState<number>(1);
   const [submitting, setSubmitting] = useState(false);
   const [orderNotice, setOrderNotice] = useState('');
+  const [lastChargeResult, setLastChargeResult] = useState<CreateAsaasChargeResult | null>(null);
 
   const isStorefrontAvailable =
     owner.hasStorefront && owner.subscriptionStatus !== 'expired';
@@ -247,6 +267,32 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const grandTotalBuyer = groupedCart.reduce((acc, g) => acc + g.buyerSubtotal, 0);
   const grandTotalFactory = groupedCart.reduce((acc, g) => acc + g.factoryCost, 0);
 
+  const cartBreakdown = useMemo(
+    () =>
+      calculateOrderSplit({
+        orderTotal: grandTotalBuyer,
+        factoryCostTotal: grandTotalFactory,
+        paymentMethod,
+        installments,
+        isDirectManufacturerSale: owner.commercialMode === 'manufacturer',
+        subOrders: groupedCart.map((g, idx) => ({
+          id: `cart_${idx}`,
+          subOrderCode: g.lotLabel,
+          factoryId: g.lotGroupKey,
+          factoryName: g.lotLabel,
+          factoryCost: g.factoryCost,
+        })),
+      }),
+    [
+      grandTotalBuyer,
+      grandTotalFactory,
+      paymentMethod,
+      installments,
+      owner.commercialMode,
+      groupedCart,
+    ]
+  );
+
   const myBuyerOrders = useMemo(
     () => orders.filter((o) => o.buyerId === myUid && o.resellerId === owner.uid),
     [orders, myUid, owner.uid]
@@ -293,17 +339,23 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         updatedAt: 'Agora',
       }));
 
-      await onCheckoutMixedOrder({
+      const chargeResult = await onCheckoutMixedOrder({
         ownerUid: owner.uid,
         storefrontName: owner.storefrontName || owner.displayName,
         subOrders,
         buyerSubtotal: grandTotalBuyer,
         factoryCostTotal: grandTotalFactory,
+        paymentMethod,
+        installments,
+        splitBreakdown: cartBreakdown,
       });
 
+      setLastChargeResult(chargeResult);
       setCart([]);
       setOrderNotice(
-        `Pedido enviado com sucesso! O cartão interativo foi encaminhado no chat de ${owner.storefrontName || owner.displayName}.`
+        `Pedido enviado com sucesso! O cartão interativo e o detalhamento de pagamento (${
+          paymentMethod === 'credit_card' ? `Cartão ${installments}x` : 'Pix'
+        }) foram registrados.`
       );
       setActiveSubView('orders');
     } finally {
@@ -473,6 +525,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               Envio ({listing.lotLabel}): {listing.deliveryPolicy.label} ·{' '}
                               {listing.product.stockBoxes} cx em estoque
                             </p>
+                            {listing.publicPrice < MINIMUM_FEE_THRESHOLD_BRL && (
+                              <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-900">
+                                Pedidos abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)} no Pix
+                                aplicam a tarifa mínima de plataforma (R$ 6,99 bruto).
+                              </p>
+                            )}
                           </div>
 
                           {inCart ? (
@@ -612,25 +670,165 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     </div>
                   ))}
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-semibold text-slate-700">
-                        Total Estimado do Pedido ({totalCartBoxes} caixas)
-                      </span>
-                      <span className="font-mono text-xl font-bold text-[#0E7A34] tabular-nums">
+                  {/* Payment Method Selection (Pix vs Credit Card 1x..12x Buyer Pass-Through) */}
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">
+                        Forma de Pagamento (Split Asaas)
+                      </h3>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        Escolha Pix (sem juros) ou Cartão de Crédito à vista / parcelado em até 12x com repasse transparente das taxas do cartão.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentMethod('pix');
+                          setInstallments(1);
+                        }}
+                        className={`flex items-center justify-between rounded-xl border p-3.5 text-left transition ${
+                          paymentMethod === 'pix'
+                            ? 'border-[#0E7A34] bg-emerald-50/70 ring-1 ring-[#0E7A34]'
+                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <QrCode
+                            className={`h-5 w-5 ${
+                              paymentMethod === 'pix' ? 'text-[#0E7A34]' : 'text-slate-500'
+                            }`}
+                          />
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">Pix Instantâneo</p>
+                            <p className="text-[11px] text-slate-500">
+                              Sem juros · Confirmação rápida
+                            </p>
+                          </div>
+                        </div>
+                        <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
+                          {formatBRL(grandTotalBuyer)}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('credit_card')}
+                        className={`flex items-center justify-between rounded-xl border p-3.5 text-left transition ${
+                          paymentMethod === 'credit_card'
+                            ? 'border-[#0D2B3E] bg-slate-50 ring-1 ring-[#0D2B3E]'
+                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <CreditCard
+                            className={`h-5 w-5 ${
+                              paymentMethod === 'credit_card'
+                                ? 'text-[#0D2B3E]'
+                                : 'text-slate-500'
+                            }`}
+                          />
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">
+                              Cartão de Crédito
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              À vista ou 2x a 12x (taxas repassadas)
+                            </p>
+                          </div>
+                        </div>
+                        <span className="font-mono text-xs font-bold text-[#0D2B3E] tabular-nums">
+                          {installments}x
+                        </span>
+                      </button>
+                    </div>
+
+                    {paymentMethod === 'credit_card' && (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Parcelamento no Cartão de Crédito
+                        </label>
+                        <select
+                          value={installments}
+                          onChange={(e) => setInstallments(Number(e.target.value) || 1)}
+                          className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-xs font-semibold text-slate-900"
+                        >
+                          {Array.from({ length: 12 }, (_, idx) => idx + 1).map((n) => {
+                            const rates = getAsaasCreditCardRates(n);
+                            const gross = roundBRL(
+                              (grandTotalBuyer + rates.fixedFee) / (1 - rates.totalPercentRate)
+                            );
+                            const perInst = roundBRL(gross / n);
+                            return (
+                              <option key={n} value={n}>
+                                {n === 1
+                                  ? `1x à vista de ${formatBRL(gross)} (total ${formatBRL(gross)})`
+                                  : `${n}x de ${formatBRL(perInst)} (total ${formatBRL(gross)})`}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <p className="text-[11px] text-slate-500">
+                          As tarifas de processamento e juros de parcelamento do cartão são repassadas integralmente ao comprador, preservando o repasse líquido do Fabricante, Revendedor e ChatFi.
+                        </p>
+                      </div>
+                    )}
+
+                    <SplitBreakdownCard
+                      breakdown={cartBreakdown}
+                      title="Resumo do Pedido, Taxas e Divisão Transparente (Split)"
+                      factoryLabel="Repasse ao Fabricante (Produção)"
+                      resellerLabel={
+                        owner.commercialMode === 'manufacturer'
+                          ? 'Venda direta da fábrica'
+                          : 'Retido / Liberado para o Lojista'
+                      }
+                    />
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Subtotal dos produtos ({totalCartBoxes} caixas)</span>
+                      <span className="font-mono font-semibold text-slate-700 tabular-nums">
                         {formatBRL(grandTotalBuyer)}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Ao confirmar, seu pedido entra em conferência de estoque e um cartão interativo é enviado automaticamente na conversa.
+                    {paymentMethod === 'credit_card' && cartBreakdown.cardFeePassedToBuyer > 0 && (
+                      <div className="flex items-center justify-between text-xs text-[#F97316]">
+                        <span>Taxas e juros do cartão ({installments}x)</span>
+                        <span className="font-mono font-semibold tabular-nums">
+                          +{formatBRL(cartBreakdown.cardFeePassedToBuyer)}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                      <span className="text-sm font-bold text-slate-900">
+                        Total Final a Pagar
+                      </span>
+                      <div className="text-right">
+                        <span className="font-mono text-xl font-bold text-[#0E7A34] tabular-nums">
+                          {formatBRL(cartBreakdown.buyerChargedTotal)}
+                        </span>
+                        {paymentMethod === 'credit_card' && installments > 1 && (
+                          <span className="block font-mono text-[11px] text-slate-500 tabular-nums">
+                            em {installments}x de {formatBRL(cartBreakdown.installmentValue)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Ao confirmar, seu pedido entra em conferência de estoque, a cobrança Asaas com Split é preparada e um cartão interativo é enviado na conversa.
                     </p>
                     <button
                       type="button"
                       onClick={() => void handleCheckout()}
                       disabled={submitting}
-                      className="mt-4 h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+                      className="mt-2 h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
                     >
-                      {submitting ? 'Enviando pedido...' : 'Enviar Pedido para Conferência'}
+                      {submitting
+                        ? 'Enviando pedido e calculando Split...'
+                        : `Finalizar Pedido · ${formatBRL(cartBreakdown.buyerChargedTotal)}`}
                     </button>
                   </div>
                 </>
@@ -639,68 +837,188 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
           ) : (
             /* Buyer Orders View (anonymous lots only) */
             <div className="space-y-4">
+              {lastChargeResult && (
+                <div className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">
+                        {lastChargeResult.mode === 'live'
+                          ? 'Cobrança Asaas Emitida com Split'
+                          : 'Resumo de Split Asaas Preparado'}
+                      </h3>
+                      <p className="font-mono text-[11px] text-slate-500">
+                        Cobrança: {lastChargeResult.chargeId} · Status: {lastChargeResult.status}
+                      </p>
+                    </div>
+                    <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                      {formatBRL(lastChargeResult.splitBreakdown.buyerChargedTotal)}
+                    </span>
+                  </div>
+
+                  {lastChargeResult.message && (
+                    <p className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700">
+                      {lastChargeResult.message}
+                    </p>
+                  )}
+
+                  {lastChargeResult.pixQrCode && (
+                    <div className="flex justify-center rounded-xl border border-slate-100 bg-white p-3">
+                      <img
+                        src={lastChargeResult.pixQrCode}
+                        alt="QR Code Pix Asaas"
+                        className="h-44 w-44 object-contain"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
+                    {lastChargeResult.pixCopyPaste && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard
+                            ?.writeText(lastChargeResult.pixCopyPaste || '')
+                            .then(() => setOrderNotice('Código Pix Copia e Cola copiado!'));
+                        }}
+                        className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27]"
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copiar Pix Copia e Cola
+                      </button>
+                    )}
+                    {lastChargeResult.invoiceUrl && (
+                      <a
+                        href={lastChargeResult.invoiceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57]"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Abrir Pagamento Asaas
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {myBuyerOrders.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-xs text-slate-500">
                   Você ainda não fez pedidos nesta vitrine.
                 </div>
               ) : (
-                myBuyerOrders.map((order) => (
-                  <div
-                    key={order.id}
-                    className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3"
-                  >
-                    <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                      <div>
-                        <h3 className="text-sm font-bold text-slate-900">
-                          Pedido {order.orderCode}
-                        </h3>
-                        <p className="text-xs text-slate-500">
-                          Realizado em {order.createdAt}
-                        </p>
+                myBuyerOrders.map((order) => {
+                  const orderBreakdown = calculateOrderSplit({
+                    orderTotal: order.buyerFinalTotal,
+                    factoryCostTotal: order.factoryCostTotal,
+                    paymentMethod: order.paymentMethod || 'pix',
+                    installments: order.installments || 1,
+                    isDirectManufacturerSale: owner.commercialMode === 'manufacturer',
+                  });
+
+                  return (
+                    <div
+                      key={order.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3"
+                    >
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-900">
+                            Pedido {order.orderCode}
+                          </h3>
+                          <p className="text-xs text-slate-500">
+                            Realizado em {order.createdAt} ·{' '}
+                            {order.paymentMethod === 'credit_card'
+                              ? `Cartão ${order.installments || 1}x`
+                              : 'Pix'}
+                            {order.asaasChargeStatus ? ` · Asaas: ${order.asaasChargeStatus}` : ''}
+                          </p>
+                        </div>
+                        <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                          {formatBRL(order.buyerChargedTotal ?? order.buyerFinalTotal)}
+                        </span>
                       </div>
-                      <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
-                        {formatBRL(order.buyerFinalTotal)}
-                      </span>
-                    </div>
 
-                    {order.discountAmount > 0 && (
-                      <p className="text-xs font-semibold text-[#0E7A34]">
-                        Desconto aplicado: -{formatBRL(order.discountAmount)}
-                      </p>
-                    )}
+                      {order.discountAmount > 0 && (
+                        <p className="text-xs font-semibold text-[#0E7A34]">
+                          Desconto aplicado: -{formatBRL(order.discountAmount)}
+                        </p>
+                      )}
 
-                    <div className="space-y-2">
-                      {order.subOrders.map((sub) => (
-                        <div
-                          key={sub.id}
-                          className="rounded-xl bg-slate-50 p-3 text-xs space-y-1"
-                        >
-                          <div className="flex items-center justify-between font-semibold text-slate-800">
-                            <span>{sub.anonymousGroupLabel}</span>
-                            <span>
-                              {sub.status === 'pending_inquiry'
-                                ? 'Em conferência de estoque'
-                                : sub.status === 'partial_confirmed'
-                                  ? 'Confirmado parcialmente'
-                                  : sub.status === 'confirmed'
-                                    ? 'Estoque confirmado'
-                                    : sub.status === 'logistics_sent'
-                                      ? 'Preparando despacho'
-                                      : sub.status === 'dispatched'
-                                        ? 'Despachado'
-                                        : sub.status}
-                            </span>
-                          </div>
-                          {sub.status === 'dispatched' && sub.receiptNote && (
-                            <p className="text-[#0E7A34]">
-                              Comprovante: {sub.receiptNote}
-                            </p>
+                      <SplitBreakdownCard
+                        compact
+                        breakdown={orderBreakdown}
+                        title="Detalhamento do Pagamento & Split"
+                        factoryLabel="Repasse ao Fabricante (Produção)"
+                        resellerLabel={
+                          owner.commercialMode === 'manufacturer'
+                            ? 'Venda direta da fábrica'
+                            : 'Retido / Liberado para o Lojista'
+                        }
+                      />
+
+                      {(order.asaasPixPayload || order.asaasInvoiceUrl) && (
+                        <div className="flex flex-wrap gap-2">
+                          {order.asaasPixPayload && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void navigator.clipboard
+                                  ?.writeText(order.asaasPixPayload || '')
+                                  .then(() => setOrderNotice('Código Pix copiado!'));
+                              }}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-semibold text-[#0E7A34]"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                              Copiar Pix
+                            </button>
+                          )}
+                          {order.asaasInvoiceUrl && (
+                            <a
+                              href={order.asaasInvoiceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-[#0D2B3E]"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Fatura Asaas
+                            </a>
                           )}
                         </div>
-                      ))}
+                      )}
+
+                      <div className="space-y-2">
+                        {order.subOrders.map((sub) => (
+                          <div
+                            key={sub.id}
+                            className="rounded-xl bg-slate-50 p-3 text-xs space-y-1"
+                          >
+                            <div className="flex items-center justify-between font-semibold text-slate-800">
+                              <span>{sub.anonymousGroupLabel}</span>
+                              <span>
+                                {sub.status === 'pending_inquiry'
+                                  ? 'Em conferência de estoque'
+                                  : sub.status === 'partial_confirmed'
+                                    ? 'Confirmado parcialmente'
+                                    : sub.status === 'confirmed'
+                                      ? 'Estoque confirmado'
+                                      : sub.status === 'logistics_sent'
+                                        ? 'Preparando despacho'
+                                        : sub.status === 'dispatched'
+                                          ? 'Despachado'
+                                          : sub.status}
+                              </span>
+                            </div>
+                            {sub.status === 'dispatched' && sub.receiptNote && (
+                              <p className="text-[#0E7A34]">
+                                Comprovante: {sub.receiptNote}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}

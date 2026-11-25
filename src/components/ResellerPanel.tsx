@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Check,
+  Copy,
   CreditCard,
+  ExternalLink,
   Eye,
   Image as ImageIcon,
   Layers,
@@ -10,11 +12,14 @@ import {
   Lock,
   PauseCircle,
   PlayCircle,
+  QrCode,
   Receipt,
+  RefreshCw,
   Send,
   Settings2,
   Store,
   Truck,
+  Wallet,
   X,
 } from 'lucide-react';
 import type {
@@ -27,11 +32,15 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  SplitPaymentMethod,
   SubOrder,
   UserProfile,
 } from '../types/zapei';
+import type { CreateAsaasChargeResult } from '../lib/asaasService';
 import { computeResellerPrice, formatBRL } from '../lib/gradeParser';
+import { calculateOrderSplit } from '../lib/splitCalculator';
 import { GradeVisualGrid } from './GradeVisualGrid';
+import { SplitBreakdownCard } from './SplitBreakdownCard';
 
 interface ResellerPanelProps {
   profile: UserProfile;
@@ -43,6 +52,7 @@ interface ResellerPanelProps {
     storefrontName: string,
     storefrontPrivacy: 'open' | 'approved'
   ) => Promise<void>;
+  onSaveWalletId: (walletId: string) => Promise<void>;
   onConnectFactoryByPhone: (phone: string) => Promise<{ ok: boolean; message: string }>;
   onUpdateConnection: (
     connectionId: string,
@@ -70,6 +80,12 @@ interface ResellerPanelProps {
     updates: { method?: PaymentMethod; status?: PaymentStatus }
   ) => Promise<void>;
   onSendBillingReminder: (payment: DualPaymentRecord) => Promise<void>;
+  onGenerateAsaasCharge?: (
+    order: MixedOrder,
+    paymentMethod: SplitPaymentMethod,
+    installments: number
+  ) => Promise<CreateAsaasChargeResult>;
+  onSyncAsaasStatus?: (order: MixedOrder) => Promise<void>;
   onOpenMyStorefrontPreview: () => void;
   onOpenBilling: () => void;
 }
@@ -91,39 +107,61 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   orders,
   payments,
   onSaveStorefrontIdentity,
+  onSaveWalletId,
   onConnectFactoryByPhone,
   onUpdateConnection,
   onApplyPunctualDiscount,
   onSubmitLogistics,
   onUpdatePayment,
   onSendBillingReminder,
+  onGenerateAsaasCharge,
+  onSyncAsaasStatus,
   onOpenMyStorefrontPreview,
   onOpenBilling,
 }) => {
   const [activeTab, setActiveTab] = useState<ResellerTab>('connections');
   const [feedback, setFeedback] = useState('');
 
-  // R01 Identity state
+  // R01 Identity & Asaas Wallet state
   const [storefrontName, setStorefrontName] = useState(
     profile.storefrontName || `Vitrine ${profile.name}`
   );
   const [storefrontPrivacy, setStorefrontPrivacy] = useState<'open' | 'approved'>(
     profile.storefrontPrivacy
   );
+  const [walletIdDraft, setWalletIdDraft] = useState(profile.asaasWalletId || '');
+  const [savingWallet, setSavingWallet] = useState(false);
 
   useEffect(() => {
     setStorefrontName(profile.storefrontName || `Vitrine ${profile.name}`);
   }, [profile.storefrontName, profile.name]);
 
-  // R02 Connect factory by phone
+  useEffect(() => {
+    setWalletIdDraft(profile.asaasWalletId || '');
+  }, [profile.asaasWalletId]);
+
+  // R02 Connect factory by phone & Margin Split Simulator state
   const [factoryPhone, setFactoryPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const [simCategoryMap, setSimCategoryMap] = useState<Record<string, ProductCategory>>({});
+  const [simBaseCostMap, setSimBaseCostMap] = useState<Record<string, string>>({});
+  const [simMethodMap, setSimMethodMap] = useState<Record<string, SplitPaymentMethod>>({});
+  const [simInstMap, setSimInstMap] = useState<Record<string, number>>({});
 
-  // R04 Discount drafts keyed by orderId
+  // R04 Discount & Asaas Charge drafts keyed by orderId
   const [discountModeMap, setDiscountModeMap] = useState<
     Record<string, 'fixed' | 'percent'>
   >({});
   const [discountValueMap, setDiscountValueMap] = useState<Record<string, string>>({});
+  const [orderPayMethodMap, setOrderPayMethodMap] = useState<
+    Record<string, SplitPaymentMethod>
+  >({});
+  const [orderInstMap, setOrderInstMap] = useState<Record<string, number>>({});
+  const [chargeLoadingId, setChargeLoadingId] = useState<string | null>(null);
+  const [syncLoadingId, setSyncLoadingId] = useState<string | null>(null);
+  const [chargeResultsByOrder, setChargeResultsByOrder] = useState<
+    Record<string, CreateAsaasChargeResult>
+  >({});
 
   // R05 Logistics drafts keyed by subOrderId
   const [logTypeMap, setLogTypeMap] = useState<Record<string, LogisticsType>>({});
@@ -189,6 +227,17 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       if (res.ok) setFactoryPhone('');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleSaveWalletSubmit = async () => {
+    setSavingWallet(true);
+    setFeedback('');
+    try {
+      await onSaveWalletId(walletIdDraft.trim());
+      setFeedback('Wallet ID Asaas do revendedor salvo para receber o Split automático.');
+    } finally {
+      setSavingWallet(false);
     }
   };
 
@@ -443,6 +492,97 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       );
                     })}
                   </div>
+
+                  {/* Live Pricing & Split Simulator for this factory's margins */}
+                  {(() => {
+                    const simCat = simCategoryMap[conn.id] ?? 'Calçados';
+                    const sampleFactoryProduct = products.find(
+                      (p) => p.factoryId === conn.factoryId && p.category === simCat
+                    );
+                    const defaultBase = sampleFactoryProduct?.factoryPrice ?? 55;
+                    const simBaseRaw =
+                      simBaseCostMap[conn.id] !== undefined
+                        ? Number.parseFloat(simBaseCostMap[conn.id].replace(',', '.')) || 0
+                        : defaultBase;
+                    const simMargin = conn.margins[simCat] ?? { mode: 'fixed', value: 100 };
+                    const simPublicPrice = computeResellerPrice(simBaseRaw, simMargin);
+                    const simMethod = simMethodMap[conn.id] ?? 'pix';
+                    const simInst = simInstMap[conn.id] ?? 1;
+                    const simBreakdown = calculateOrderSplit({
+                      orderTotal: simPublicPrice,
+                      factoryCostTotal: simBaseRaw,
+                      paymentMethod: simMethod,
+                      installments: simInst,
+                      isDirectManufacturerSale: false,
+                    });
+                    return (
+                      <div className="mt-4 space-y-2.5 border-t border-slate-100 pt-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-slate-800">
+                            Simulador de Precificação na Vitrine ({simCat})
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select
+                              value={simCat}
+                              onChange={(e) =>
+                                setSimCategoryMap((p) => ({
+                                  ...p,
+                                  [conn.id]: e.target.value as ProductCategory,
+                                }))
+                              }
+                              className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
+                            >
+                              {CATEGORIES.map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                              <span className="text-slate-500">Custo Fábrica R$</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="any"
+                                value={
+                                  simBaseCostMap[conn.id] !== undefined
+                                    ? simBaseCostMap[conn.id]
+                                    : String(defaultBase)
+                                }
+                                onChange={(e) =>
+                                  setSimBaseCostMap((p) => ({
+                                    ...p,
+                                    [conn.id]: e.target.value,
+                                  }))
+                                }
+                                className="w-16 bg-transparent font-mono font-bold text-slate-900 focus:outline-none tabular-nums"
+                              />
+                            </div>
+                            <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
+                              Vitrine: {formatBRL(simPublicPrice)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {simPublicPrice > 0 && (
+                          <SplitBreakdownCard
+                            compact
+                            breakdown={simBreakdown}
+                            title={`Split previsto na venda de 1 cx (${simCat})`}
+                            factoryLabel={`Vai para ${conn.factoryName}`}
+                            resellerLabel="Fica retido/liberado para você"
+                            showMethodToggle
+                            onChangeMethod={(m) =>
+                              setSimMethodMap((p) => ({ ...p, [conn.id]: m }))
+                            }
+                            onChangeInstallments={(n) =>
+                              setSimInstMap((p) => ({ ...p, [conn.id]: n }))
+                            }
+                          />
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -506,6 +646,19 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           </span>
                         </div>
                       </div>
+
+                      <SplitBreakdownCard
+                        compact
+                        breakdown={calculateOrderSplit({
+                          orderTotal: publicPrice,
+                          factoryCostTotal: product.factoryPrice,
+                          paymentMethod: 'pix',
+                          isDirectManufacturerSale: false,
+                        })}
+                        title="Precificação & Split (1 caixa no Pix)"
+                        factoryLabel={`Vai para ${connection.factoryName}`}
+                        resellerLabel="Fica retido/liberado para você"
+                      />
 
                       <GradeVisualGrid gradeRaw={product.gradeRaw} compact />
 
@@ -656,6 +809,189 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                     </div>
                   </div>
 
+                  {/* Split Breakdown & Asaas Payment Issuance */}
+                  {(() => {
+                    const selectedMethod =
+                      orderPayMethodMap[order.id] ?? order.paymentMethod ?? 'pix';
+                    const selectedInst =
+                      orderInstMap[order.id] ?? order.installments ?? 1;
+                    const liveBreakdown = calculateOrderSplit({
+                      orderTotal: order.buyerFinalTotal,
+                      factoryCostTotal: order.factoryCostTotal,
+                      paymentMethod: selectedMethod,
+                      installments: selectedInst,
+                      isDirectManufacturerSale:
+                        order.factoryIds.length === 1 &&
+                        order.factoryIds[0] === order.resellerId &&
+                        Math.abs(order.buyerFinalTotal - order.factoryCostTotal) < 0.01,
+                      subOrders: order.subOrders.map((s) => ({
+                        id: s.id,
+                        subOrderCode: s.subOrderCode,
+                        factoryId: s.factoryId,
+                        factoryName: s.factoryName,
+                        factoryCost: s.factoryCost,
+                      })),
+                    });
+                    const chargeRes = chargeResultsByOrder[order.id];
+                    const resolvedChargeId = chargeRes?.chargeId || order.asaasChargeId;
+                    const resolvedStatus = chargeRes?.status || order.asaasChargeStatus;
+                    const resolvedInvoiceUrl = chargeRes?.invoiceUrl || order.asaasInvoiceUrl;
+                    const resolvedPixPayload =
+                      chargeRes?.pixCopyPaste || order.asaasPixPayload;
+
+                    return (
+                      <div className="space-y-3">
+                        <SplitBreakdownCard
+                          breakdown={liveBreakdown}
+                          title={`Resumo de Split & Taxas — Pedido ${order.orderCode}`}
+                          factoryLabel="Quanto cai para o(s) Fabricante(s)"
+                          resellerLabel="Quanto fica retido/liberado para você (Revendedor)"
+                          showMethodToggle
+                          onChangeMethod={(m) =>
+                            setOrderPayMethodMap((p) => ({ ...p, [order.id]: m }))
+                          }
+                          onChangeInstallments={(n) =>
+                            setOrderInstMap((p) => ({ ...p, [order.id]: n }))
+                          }
+                        />
+
+                        <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="space-y-0.5">
+                              <p className="text-xs font-bold text-slate-900">
+                                Cobrança Asaas com Split Automático
+                              </p>
+                              <p className="text-[11px] font-mono text-slate-500">
+                                {resolvedChargeId
+                                  ? `ID: ${resolvedChargeId} · Status: ${resolvedStatus || 'PENDING'}`
+                                  : 'Nenhuma cobrança emitida ainda para este pedido'}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              {onGenerateAsaasCharge && (
+                                <button
+                                  type="button"
+                                  disabled={chargeLoadingId === order.id}
+                                  onClick={async () => {
+                                    setChargeLoadingId(order.id);
+                                    setFeedback('');
+                                    try {
+                                      const res = await onGenerateAsaasCharge(
+                                        order,
+                                        selectedMethod,
+                                        selectedInst
+                                      );
+                                      setChargeResultsByOrder((p) => ({
+                                        ...p,
+                                        [order.id]: res,
+                                      }));
+                                      setFeedback(
+                                        res.mode === 'live'
+                                          ? `Cobrança Asaas (${res.chargeId}) emitida com split para o pedido ${order.orderCode}!`
+                                          : `Payload de split Asaas preparado (${res.chargeId}). Configure ASAAS_API_KEY para emissão real.`
+                                      );
+                                    } catch (err) {
+                                      setFeedback(
+                                        err instanceof Error
+                                          ? err.message
+                                          : 'Falha ao gerar cobrança Asaas.'
+                                      );
+                                    } finally {
+                                      setChargeLoadingId(null);
+                                    }
+                                  }}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[#0E7A34] px-3 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+                                >
+                                  {selectedMethod === 'pix' ? (
+                                    <QrCode className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <CreditCard className="h-3.5 w-3.5" />
+                                  )}
+                                  {chargeLoadingId === order.id
+                                    ? 'Gerando...'
+                                    : resolvedChargeId
+                                      ? 'Regerar Cobrança Asaas'
+                                      : 'Gerar Cobrança Asaas (Split)'}
+                                </button>
+                              )}
+
+                              {onSyncAsaasStatus && resolvedChargeId && (
+                                <button
+                                  type="button"
+                                  disabled={syncLoadingId === order.id}
+                                  onClick={async () => {
+                                    setSyncLoadingId(order.id);
+                                    try {
+                                      await onSyncAsaasStatus(order);
+                                      setFeedback(
+                                        `Status Asaas do pedido ${order.orderCode} sincronizado.`
+                                      );
+                                    } catch (err) {
+                                      setFeedback(
+                                        err instanceof Error
+                                          ? err.message
+                                          : 'Falha ao consultar status Asaas.'
+                                      );
+                                    } finally {
+                                      setSyncLoadingId(null);
+                                    }
+                                  }}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                                >
+                                  <RefreshCw
+                                    className={`h-3.5 w-3.5 ${
+                                      syncLoadingId === order.id ? 'animate-spin' : ''
+                                    }`}
+                                  />
+                                  Sincronizar Webhook
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {chargeRes?.missingWallets && chargeRes.missingWallets.length > 0 && (
+                            <p className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                              Wallet ID pendente para:{' '}
+                              {chargeRes.missingWallets.map((w) => w.label).join(', ')}. Cadastre
+                              na aba Vitrine/Financeiro antes de emitir no modo produção.
+                            </p>
+                          )}
+
+                          {(resolvedPixPayload || resolvedInvoiceUrl) && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              {resolvedPixPayload && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void navigator.clipboard
+                                      ?.writeText(resolvedPixPayload)
+                                      .then(() => setFeedback('Código Pix Copia e Cola copiado!'));
+                                  }}
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-[#0E7A34] hover:bg-emerald-100"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                  Copiar Pix Copia e Cola
+                                </button>
+                              )}
+                              {resolvedInvoiceUrl && (
+                                <a
+                                  href={resolvedInvoiceUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-[11px] font-semibold text-[#0D2B3E] hover:bg-slate-100"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                  Abrir Fatura Asaas
+                                </a>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Sub-orders & Post-Confirmation Logistics (R05) */}
                   <div className="space-y-3">
                     {order.subOrders.map((sub) => {
@@ -798,6 +1134,37 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       {/* TAB 4: DUAL FINANCE (R06) */}
       {activeTab === 'finance' && (
         <div className="space-y-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-[#0E7A34]" />
+                <span className="text-xs font-bold text-slate-900">
+                  Wallet ID Asaas do Revendedor (Split Automático)
+                </span>
+              </div>
+              <span className="text-[11px] font-mono text-slate-500">
+                {profile.asaasWalletId ? 'Configurada' : 'Pendente'}
+              </span>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={walletIdDraft}
+                onChange={(e) => setWalletIdDraft(e.target.value)}
+                placeholder="Ex: c9b8a7d6-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={savingWallet}
+                onClick={() => void handleSaveWalletSubmit()}
+                className="h-10 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+              >
+                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <span className="text-xs font-semibold text-slate-500">
@@ -850,6 +1217,17 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       <p className="font-mono text-xs text-slate-500 tabular-nums">
                         Vencimento: {pay.dueDate} · Total:{' '}
                         <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
+                        {typeof pay.netAmount === 'number' && (
+                          <>
+                            {' '}
+                            · Líquido Split:{' '}
+                            <strong className="text-[#0E7A34]">{formatBRL(pay.netAmount)}</strong>
+                          </>
+                        )}
+                        {typeof pay.platformFeeGross === 'number' && (
+                          <> · Taxa ChatFi: {formatBRL(pay.platformFeeGross)}</>
+                        )}
+                        {pay.asaasChargeStatus && <> · Asaas: {pay.asaasChargeStatus}</>}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -1003,6 +1381,29 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
           >
             Salvar Configurações da Vitrine
           </button>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2">
+            <label className="block text-xs font-semibold text-slate-700">
+              Wallet ID Asaas do Revendedor (Split automático)
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={walletIdDraft}
+                onChange={(e) => setWalletIdDraft(e.target.value)}
+                placeholder="Ex: c9b8a7d6-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={savingWallet}
+                onClick={() => void handleSaveWalletSubmit()}
+                className="h-10 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50"
+              >
+                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
+              </button>
+            </div>
+          </div>
         </form>
       )}
     </div>

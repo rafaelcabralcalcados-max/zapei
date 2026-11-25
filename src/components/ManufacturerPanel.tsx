@@ -14,6 +14,7 @@ import {
   Settings2,
   Truck,
   Upload,
+  Wallet,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -24,6 +25,7 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  SplitPaymentMethod,
   SubOrder,
   UserProfile,
 } from '../types/zapei';
@@ -33,8 +35,14 @@ import {
   parseGradeString,
   runImageModerationFilter,
 } from '../lib/gradeParser';
+import {
+  calculateOrderSplit,
+  MINIMUM_FEE_THRESHOLD_BRL,
+  PIX_MIN_GROSS_BRL,
+} from '../lib/splitCalculator';
 import { compressImageFileToDataUrl } from '../lib/phoneUtils';
 import { GradeVisualGrid } from './GradeVisualGrid';
+import { SplitBreakdownCard } from './SplitBreakdownCard';
 
 interface ManufacturerPanelProps {
   profile: UserProfile;
@@ -42,6 +50,7 @@ interface ManufacturerPanelProps {
   subOrders: SubOrder[];
   payments: DualPaymentRecord[];
   onSavePolicy: (factoryName: string, policy: MinimumDeliveryPolicy) => Promise<void>;
+  onSaveWalletId: (walletId: string) => Promise<void>;
   onSaveFavoriteGrade: (grade: FavoriteGrade) => Promise<void>;
   onCreateProduct: (params: {
     name: string;
@@ -85,6 +94,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   subOrders,
   payments,
   onSavePolicy,
+  onSaveWalletId,
   onSaveFavoriteGrade,
   onCreateProduct,
   onUpdateStock,
@@ -96,17 +106,23 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   const [activeTab, setActiveTab] = useState<FactoryTab>('catalog');
   const [feedback, setFeedback] = useState('');
 
-  // F01 Policy form state
+  // F01 Policy & Asaas Wallet state
   const [factoryName, setFactoryName] = useState(profile.factoryName || profile.name);
   const [policyType, setPolicyType] = useState<MinimumDeliveryPolicy['type']>(
     profile.factoryPolicy.type
   );
   const [policyValue, setPolicyValue] = useState(String(profile.factoryPolicy.value));
   const [allowPickup, setAllowPickup] = useState(profile.factoryPolicy.allowCounterPickup);
+  const [walletIdDraft, setWalletIdDraft] = useState(profile.asaasWalletId || '');
+  const [savingWallet, setSavingWallet] = useState(false);
 
   useEffect(() => {
     setFactoryName(profile.factoryName || profile.name);
   }, [profile.factoryName, profile.name]);
+
+  useEffect(() => {
+    setWalletIdDraft(profile.asaasWalletId || '');
+  }, [profile.asaasWalletId]);
 
   // F02 Fast Product Form state
   const [prodName, setProdName] = useState('');
@@ -120,6 +136,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   const [moderationWarning, setModerationWarning] = useState('');
   const [favLabel, setFavLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [pricingSimMethod, setPricingSimMethod] = useState<SplitPaymentMethod>('pix');
+  const [pricingSimInstallments, setPricingSimInstallments] = useState(1);
 
   const productPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -178,6 +196,34 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
     .reduce((acc, p) => acc + p.amount, 0);
 
   const isPaused = profile.subscriptionStatus === 'expired';
+
+  const parsedDraftPrice = useMemo(() => {
+    const val = Number.parseFloat(prodPrice.replace(',', '.'));
+    return Number.isFinite(val) && val > 0 ? val : 0;
+  }, [prodPrice]);
+
+  const draftSplitPreview = useMemo(
+    () =>
+      calculateOrderSplit({
+        orderTotal: parsedDraftPrice,
+        factoryCostTotal: parsedDraftPrice,
+        paymentMethod: pricingSimMethod,
+        installments: pricingSimInstallments,
+        isDirectManufacturerSale: true,
+      }),
+    [parsedDraftPrice, pricingSimMethod, pricingSimInstallments]
+  );
+
+  const handleSaveWalletSubmit = async () => {
+    setSavingWallet(true);
+    setFeedback('');
+    try {
+      await onSaveWalletId(walletIdDraft.trim());
+      setFeedback('Wallet ID Asaas do fabricante salvo para recebimento automático via Split.');
+    } finally {
+      setSavingWallet(false);
+    }
+  };
 
   const handleProductPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -536,6 +582,18 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               </div>
             </div>
 
+            {parsedDraftPrice > 0 && (
+              <SplitBreakdownCard
+                breakdown={draftSplitPreview}
+                title="Simulação de Precificação & Split (1 caixa venda direta)"
+                factoryLabel="Quanto cai líquido para sua Fábrica"
+                hideResellerIfDirect
+                showMethodToggle
+                onChangeMethod={setPricingSimMethod}
+                onChangeInstallments={setPricingSimInstallments}
+              />
+            )}
+
             {/* Comma-Separated Grade Input + Favorites + Visual Preview */}
             <div>
               <label className="block text-xs font-semibold text-slate-700">
@@ -653,6 +711,38 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 
                       <GradeVisualGrid gradeRaw={product.gradeRaw} compact />
 
+                      {(() => {
+                        const pixPreview = calculateOrderSplit({
+                          orderTotal: product.factoryPrice,
+                          factoryCostTotal: product.factoryPrice,
+                          paymentMethod: 'pix',
+                          isDirectManufacturerSale: true,
+                        });
+                        return (
+                          <div
+                            className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-mono tabular-nums ${
+                              pixPreview.belowPixMinThreshold
+                                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                : 'border-slate-200 bg-slate-50 text-slate-600'
+                            }`}
+                          >
+                            {pixPreview.belowPixMinThreshold ? (
+                              <>
+                                <strong>Abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}:</strong> 1 cx
+                                no Pix aplica tarifa mínima de {formatBRL(PIX_MIN_GROSS_BRL)} · Líquido
+                                fábrica: <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong>
+                              </>
+                            ) : (
+                              <>
+                                Repasse líquido fábrica (1 cx venda direta Pix):{' '}
+                                <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong> (taxa
+                                plataforma {formatBRL(pixPreview.platformGrossFee)})
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-medium text-slate-600">
@@ -746,9 +836,23 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         Recebido em {sub.updatedAt} · Marque cada item como Disponível ou Esgotado
                       </p>
                     </div>
-                    <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
-                      Custo Fábrica: {formatBRL(sub.factoryCost)}
-                    </span>
+                    <div className="text-right font-mono tabular-nums">
+                      <span className="block text-sm font-bold text-[#0E7A34]">
+                        Custo Fábrica: {formatBRL(sub.factoryCost)}
+                      </span>
+                      <span className="block text-[11px] text-slate-500">
+                        Líquido estimado no Split (Pix):{' '}
+                        {formatBRL(
+                          calculateOrderSplit({
+                            orderTotal: sub.buyerSubtotal > 0 ? sub.buyerSubtotal : sub.factoryCost,
+                            factoryCostTotal: sub.factoryCost,
+                            paymentMethod: 'pix',
+                            isDirectManufacturerSale:
+                              Math.abs((sub.buyerSubtotal || sub.factoryCost) - sub.factoryCost) < 0.01,
+                          }).factoryNetTotal
+                        )}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-2.5">
@@ -955,6 +1059,37 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       {/* TAB 4: LAYER 1 FINANCE (F06) */}
       {activeTab === 'finance' && (
         <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-[#0E7A34]" />
+                <span className="text-xs font-bold text-slate-900">
+                  Wallet ID Asaas do Fabricante (Split Automático)
+                </span>
+              </div>
+              <span className="text-[11px] font-mono text-slate-500">
+                {profile.asaasWalletId ? 'Configurada' : 'Pendente'}
+              </span>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={walletIdDraft}
+                onChange={(e) => setWalletIdDraft(e.target.value)}
+                placeholder="Ex: f2a9d6a0-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={savingWallet}
+                onClick={() => void handleSaveWalletSubmit()}
+                className="h-10 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+              >
+                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <span className="text-xs font-semibold text-slate-500">
@@ -990,8 +1125,18 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       {pay.subOrderCode || pay.orderCode} · {pay.counterpartyName}
                     </p>
                     <p className="font-mono text-xs text-slate-500 tabular-nums">
-                      Vencimento: {pay.dueDate} · Valor:{' '}
+                      Vencimento: {pay.dueDate} · Valor bruto:{' '}
                       <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
+                      {typeof pay.netAmount === 'number' && (
+                        <>
+                          {' '}
+                          · Líquido Split:{' '}
+                          <strong className="text-[#0E7A34]">{formatBRL(pay.netAmount)}</strong>
+                        </>
+                      )}
+                      {pay.asaasChargeStatus && (
+                        <> · Asaas: {pay.asaasChargeStatus}</>
+                      )}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1110,6 +1255,29 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           >
             Salvar Política de Entrega
           </button>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2">
+            <label className="block text-xs font-semibold text-slate-700">
+              Wallet ID Asaas do Fabricante (Split automático de produção)
+            </label>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={walletIdDraft}
+                onChange={(e) => setWalletIdDraft(e.target.value)}
+                placeholder="Ex: f2a9d6a0-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={savingWallet}
+                onClick={() => void handleSaveWalletSubmit()}
+                className="h-10 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50"
+              >
+                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
+              </button>
+            </div>
+          </div>
         </form>
       )}
     </div>
