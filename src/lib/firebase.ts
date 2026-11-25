@@ -112,6 +112,8 @@ function initPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
 export const auth: Auth = getAuth(app);
 export const db: Firestore = initPersistentFirestore(app);
 export const storage: FirebaseStorage = getStorage(app);
+storage.maxUploadRetryTime = 8000;
+storage.maxOperationRetryTime = 8000;
 
 export enum OperationType {
   CREATE = 'create',
@@ -1376,9 +1378,11 @@ export async function sendRealChatMessage(params: {
   orderStatusLabel?: string;
   customMessageId?: string;
 }): Promise<string> {
+  const safeMyName = (params.myName || '').trim().slice(0, 80) || 'Usuário';
+  const safeOtherName = (params.otherName || '').trim().slice(0, 80) || 'Contato';
   const [userA, userB] = [params.myUid, params.otherUid].sort();
-  const userAName = userA === params.myUid ? params.myName : params.otherName;
-  const userBName = userB === params.myUid ? params.myName : params.otherName;
+  const userAName = userA === params.myUid ? safeMyName : safeOtherName;
+  const userBName = userB === params.myUid ? safeMyName : safeOtherName;
   const chatId = `${userA}__${userB}`;
   const chatRef = doc(db, 'chats', chatId);
   let chatExists = false;
@@ -1392,9 +1396,9 @@ export async function sendRealChatMessage(params: {
   try {
     if (chatExists) {
       await updateDoc(chatRef, {
-        userAName: userAName.slice(0, 80),
-        userBName: userBName.slice(0, 80),
-        lastMessage: params.text.slice(0, 400),
+        userAName,
+        userBName,
+        lastMessage: (params.text || '').slice(0, 400),
         lastSenderId: params.myUid,
         updatedAt: serverTimestamp(),
       });
@@ -1402,9 +1406,9 @@ export async function sendRealChatMessage(params: {
       await setDoc(chatRef, {
         userA,
         userB,
-        userAName: userAName.slice(0, 80),
-        userBName: userBName.slice(0, 80),
-        lastMessage: params.text.slice(0, 400),
+        userAName,
+        userBName,
+        lastMessage: (params.text || '').slice(0, 400),
         lastSenderId: params.myUid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -1423,9 +1427,9 @@ export async function sendRealChatMessage(params: {
     userA,
     userB,
     senderId: params.myUid,
-    senderName: params.myName.slice(0, 80),
+    senderName: safeMyName,
     type: params.type,
-    text: params.text.slice(0, 1000),
+    text: ((params.text || '').trim() || 'Mensagem').slice(0, 1000),
     createdAt: serverTimestamp(),
   };
   if (typeof params.mediaUrl === 'string' && params.mediaUrl.length > 0) {

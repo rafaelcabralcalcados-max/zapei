@@ -40,7 +40,6 @@ import {
 } from '../lib/localMediaCache';
 import {
   IMAGE_JPEG_QUALITY,
-  MAX_AUDIO_SECONDS,
   MAX_IMAGE_WIDTH,
   MAX_VIDEO_BYTES,
   type MediaResolveResult,
@@ -459,6 +458,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const audioChunksRef = useRef<Blob[]>([]);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const recordTimerRef = useRef<number | null>(null);
+  const recordStartMsRef = useRef<number>(0);
+  const isStoppingRecordingRef = useRef<boolean>(false);
+  const selectedMimeTypeRef = useRef<string>('audio/webm');
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
@@ -740,8 +742,10 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   };
 
   const startRealRecording = async () => {
+    if (recording || sending) return;
     setMediaError('');
     setShowEmojiPicker(false);
+    isStoppingRecordingRef.current = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -754,38 +758,65 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       audioChunksRef.current = [];
 
       const candidateMimeTypes = [
-        'audio/mp4;codecs=mp4a.40.2',
-        'audio/mp4',
         'audio/webm;codecs=opus',
         'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4;codecs=mp4a.40.2',
+        'audio/mp4',
+        'audio/aac',
       ];
       const mimeType =
         typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function'
           ? candidateMimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) ?? ''
           : '';
 
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 })
-        : new MediaRecorder(stream);
+      let recorder: MediaRecorder;
+      if (mimeType) {
+        try {
+          recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 24000 });
+        } catch {
+          try {
+            recorder = new MediaRecorder(stream, { mimeType });
+          } catch {
+            recorder = new MediaRecorder(stream);
+          }
+        }
+      } else {
+        recorder = new MediaRecorder(stream);
+      }
+
+      selectedMimeTypeRef.current = recorder.mimeType || mimeType || 'audio/webm';
 
       recorder.ondataavailable = (ev) => {
-        if (ev.data.size > 0) audioChunksRef.current.push(ev.data);
+        if (ev.data && ev.data.size > 0) {
+          audioChunksRef.current.push(ev.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        if (recordTimerRef.current) {
+          window.clearInterval(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
+        recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+        recordStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        isStoppingRecordingRef.current = false;
+        setRecording(false);
+        setRecordSeconds(0);
+        setMediaError('Erro durante a gravação de áudio. Tente novamente.');
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(500);
+      recordStartMsRef.current = Date.now();
       setRecording(true);
       setRecordSeconds(0);
 
       recordTimerRef.current = window.setInterval(() => {
-        setRecordSeconds((s) => {
-          if (s >= MAX_AUDIO_SECONDS) {
-            void stopAndSendRecording();
-            return s;
-          }
-          return s + 1;
-        });
-      }, 1000);
+        const elapsed = Math.max(0, Math.floor((Date.now() - recordStartMsRef.current) / 1000));
+        setRecordSeconds(elapsed);
+      }, 500);
     } catch {
       setMediaError('Microfone indisponível. Autorize o acesso em Configurações > Privacidade e Permissões.');
     }
@@ -796,9 +827,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       window.clearInterval(recordTimerRef.current);
       recordTimerRef.current = null;
     }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.onstop = null;
-      mediaRecorderRef.current.stop();
+    const recorder = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    isStoppingRecordingRef.current = false;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      try {
+        recorder.stop();
+      } catch {
+        // Ignore already stopped recorder
+      }
     }
     recordStreamRef.current?.getTracks().forEach((t) => t.stop());
     recordStreamRef.current = null;
@@ -807,43 +845,102 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setRecordSeconds(0);
   };
 
-  const stopAndSendRecording = async () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state === 'inactive') return;
+  const sendCapturedAudioBlob = async (blob: Blob, durationLabel: string) => {
+    if (blob.size === 0) {
+      setMediaError('Não foi possível capturar o áudio. Verifique o microfone e grave por pelo menos 1 segundo.');
+      return;
+    }
+    setSending(true);
+    try {
+      await onSendAudio(blob, durationLabel);
+    } catch (err) {
+      setMediaError(
+        err instanceof Error ? err.message : 'Erro ao enviar mensagem de voz.'
+      );
+    } finally {
+      setSending(false);
+    }
+  };
 
-    const finalSeconds = Math.max(1, recordSeconds);
-    const durationLabel = `${Math.floor(finalSeconds / 60)}:${(finalSeconds % 60)
-      .toString()
-      .padStart(2, '0')}`;
+  const stopAndSendRecording = async () => {
+    if (isStoppingRecordingRef.current) return;
+    const recorder = mediaRecorderRef.current;
 
     if (recordTimerRef.current) {
       window.clearInterval(recordTimerRef.current);
       recordTimerRef.current = null;
     }
 
-    recorder.onstop = async () => {
-      const blob = new Blob(audioChunksRef.current, {
-        type: recorder.mimeType || 'audio/webm',
+    const elapsedFromClock = recordStartMsRef.current
+      ? Math.round((Date.now() - recordStartMsRef.current) / 1000)
+      : 0;
+    const finalSeconds = Math.max(1, recordSeconds, elapsedFromClock);
+    const durationLabel = `${Math.floor(finalSeconds / 60)}:${(finalSeconds % 60)
+      .toString()
+      .padStart(2, '0')}`;
+
+    if (!recorder) {
+      setRecording(false);
+      setRecordSeconds(0);
+      setMediaError('Gravação não encontrada. Tente gravar novamente.');
+      return;
+    }
+
+    if (recorder.state === 'inactive') {
+      mediaRecorderRef.current = null;
+      recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recordStreamRef.current = null;
+      setRecording(false);
+      setRecordSeconds(0);
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      const fallbackBlob = new Blob(chunks, {
+        type: recorder.mimeType || selectedMimeTypeRef.current || 'audio/webm',
       });
+      await sendCapturedAudioBlob(fallbackBlob, durationLabel);
+      return;
+    }
+
+    isStoppingRecordingRef.current = true;
+    recorder.onstop = async () => {
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      mediaRecorderRef.current = null;
+      isStoppingRecordingRef.current = false;
       recordStreamRef.current?.getTracks().forEach((t) => t.stop());
       recordStreamRef.current = null;
       setRecording(false);
       setRecordSeconds(0);
 
-      if (blob.size === 0) return;
-      setSending(true);
-      try {
-        await onSendAudio(blob, durationLabel);
-      } catch (err) {
-        setMediaError(
-          err instanceof Error ? err.message : 'Erro ao enviar mensagem de voz.'
-        );
-      } finally {
-        setSending(false);
-      }
+      const blob = new Blob(chunks, {
+        type: recorder.mimeType || selectedMimeTypeRef.current || 'audio/webm',
+      });
+      await sendCapturedAudioBlob(blob, durationLabel);
     };
 
-    recorder.stop();
+    try {
+      if (typeof recorder.requestData === 'function') {
+        try {
+          recorder.requestData();
+        } catch {
+          // Some browsers throw if requestData is called right before stop
+        }
+      }
+      recorder.stop();
+    } catch {
+      mediaRecorderRef.current = null;
+      isStoppingRecordingRef.current = false;
+      recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recordStreamRef.current = null;
+      setRecording(false);
+      setRecordSeconds(0);
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      const fallbackBlob = new Blob(chunks, {
+        type: recorder.mimeType || selectedMimeTypeRef.current || 'audio/webm',
+      });
+      await sendCapturedAudioBlob(fallbackBlob, durationLabel);
+    }
   };
 
   const preparePendingVideo = async (file: File) => {
@@ -1595,7 +1692,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               </span>
               <span className="shrink-0 font-mono text-xs font-bold text-red-800 tabular-nums">
                 {Math.floor(recordSeconds / 60)}:
-                {(recordSeconds % 60).toString().padStart(2, '0')} / 3:00
+                {(recordSeconds % 60).toString().padStart(2, '0')}
               </span>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -1692,11 +1789,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 type="button"
                 onClick={() => void startRealRecording()}
                 disabled={sending}
-                title="Gravar mensagem de voz (até 3 min)"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-50 sm:h-11 sm:w-11"
-                aria-label="Gravar áudio"
+                title={sending ? 'Enviando...' : 'Gravar mensagem de voz'}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-70 sm:h-11 sm:w-11"
+                aria-label={sending ? 'Enviando áudio' : 'Gravar áudio'}
               >
-                <Mic className="h-5 w-5" />
+                {sending ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Mic className="h-5 w-5" />
+                )}
               </button>
             )}
           </form>

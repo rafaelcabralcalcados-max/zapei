@@ -2,6 +2,7 @@ import type { User } from 'firebase/auth';
 import { deleteObject, getBlob, getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import type { ChatMessage } from '../types/zapei';
 import {
+  auth,
   getDeterministicChatId,
   markChatMessageMediaDelivered,
   sendRealChatMessage,
@@ -33,13 +34,31 @@ import { triggerRemoteMessagePush } from './pushService';
 
 export const MAX_IMAGE_WIDTH = 1280;
 export const IMAGE_JPEG_QUALITY = 0.8;
-export const MAX_AUDIO_SECONDS = 180; // 3 minutes
 export const MAX_VIDEO_BYTES = 25 * 1024 * 1024; // 25 MB
+export const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // 25 MB
 export const TRANSIT_RETENTION_DAYS = 14;
 export const TRANSIT_RETENTION_MS = TRANSIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 // Safe Firestore fallback ceiling for small photos/short audios if Firebase Storage is unavailable
 const INLINE_FALLBACK_MAX_BYTES = 330 * 1024;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(label));
+    }, ms);
+    promise.then(
+      (val) => {
+        window.clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 export interface SendTransitMediaParams {
   myUid: string;
@@ -81,6 +100,9 @@ export async function sendMediaWithTransitBridge(
   if (mediaType === 'video' && blob.size > MAX_VIDEO_BYTES) {
     throw new Error('O vídeo ultrapassa o limite de 25 MB. Escolha um vídeo menor.');
   }
+  if (blob.size > MAX_MEDIA_BYTES) {
+    throw new Error('O arquivo ultrapassa o limite máximo de 25 MB.');
+  }
 
   const mimeType = params.mimeType || blob.type || (
     mediaType === 'image'
@@ -119,29 +141,67 @@ export async function sendMediaWithTransitBridge(
 
   try {
     const storageRef = ref(storage, transitPath);
-    await uploadBytes(storageRef, blob, {
-      contentType: mimeType,
-      customMetadata: {
-        chatId,
-        messageId,
-        senderId: myUid,
-        recipientId,
-        expiresAtMs: String(expiresAtMs),
-      },
-    });
-    downloadUrl = await getDownloadURL(storageRef);
+    const timeoutMs = mediaType === 'video' ? 45000 : 10000;
+    downloadUrl = await withTimeout(
+      (async () => {
+        await uploadBytes(storageRef, blob, {
+          contentType: mimeType,
+          customMetadata: {
+            chatId,
+            messageId,
+            senderId: myUid,
+            recipientId,
+            expiresAtMs: String(expiresAtMs),
+          },
+        });
+        return getDownloadURL(storageRef);
+      })(),
+      timeoutMs,
+      'Firebase Storage upload timeout'
+    );
     usedStorageTransit = true;
   } catch (uploadError) {
-    // Graceful fallback for small photos/audios if Firebase Storage isn't enabled yet in console
+    // Graceful fallback 1: Inline Firestore data URL for small photos/audios
     if (blob.size <= INLINE_FALLBACK_MAX_BYTES) {
       downloadUrl = await blobToDataUrl(blob);
       storedTransitPath = undefined;
       usedStorageTransit = false;
     } else {
-      console.error('[Zapei Media Transit] Firebase Storage upload failed:', uploadError);
-      throw new Error(
-        'Não foi possível enviar esta mídia grande. Verifique sua conexão e se o Firebase Storage está ativado no projeto.'
-      );
+      // Graceful fallback 2: Authenticated same-origin transit bridge for long audios / videos
+      const activeUser = authUser || auth.currentUser;
+      if (activeUser) {
+        try {
+          const token = await activeUser.getIdToken();
+          const res = await fetch(
+            `/api/media/transit/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': mimeType,
+              },
+              body: blob,
+            }
+          );
+          if (res.ok) {
+            const payload = (await res.json()) as { url?: string };
+            if (payload.url) {
+              downloadUrl = payload.url;
+              storedTransitPath = undefined;
+              usedStorageTransit = true;
+            }
+          }
+        } catch (serverErr) {
+          console.error('[Zapei Media Transit] Server transit fallback failed:', serverErr);
+        }
+      }
+
+      if (!downloadUrl) {
+        console.error('[Zapei Media Transit] Firebase Storage upload failed:', uploadError);
+        throw new Error(
+          'Não foi possível enviar esta mídia agora. Verifique sua conexão com a internet e tente novamente.'
+        );
+      }
     }
   }
 
@@ -232,7 +292,17 @@ async function downloadTransitBlob(msg: ChatMessage): Promise<Blob | null> {
     }
   }
 
-  // 3. Fallback: direct fetch of download URL
+  // 3. Fallback: direct fetch of download URL or authenticated same-origin transit endpoint
+  if (msg.mediaUrl && msg.mediaUrl.startsWith('/api/media/transit/')) {
+    const token = await auth.currentUser?.getIdToken().catch(() => '');
+    if (!token) return null;
+    const response = await fetch(msg.mediaUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return null;
+    return await response.blob();
+  }
+
   if (msg.mediaUrl && (msg.mediaUrl.startsWith('https://') || msg.mediaUrl.startsWith('http://'))) {
     const response = await fetch(msg.mediaUrl);
     if (!response.ok) return null;
@@ -362,12 +432,25 @@ export async function receiveAndDeliverTransitMedia(params: {
         await markChatMessageMediaDelivered(msg.chatId, msg.id);
       }
 
-      // 3) Automatically delete temporary file from Firebase Storage transit_media/
+      // 3) Automatically delete temporary file from Firebase Storage transit_media/ or server transit
       if (msg.mediaTransitPath) {
         try {
           await deleteObject(ref(storage, msg.mediaTransitPath));
         } catch {
           // Ignore storage/object-not-found or transient errors
+        }
+      }
+      if (msg.mediaUrl && msg.mediaUrl.startsWith('/api/media/transit/')) {
+        try {
+          const token = await auth.currentUser?.getIdToken().catch(() => '');
+          if (token) {
+            await fetch(msg.mediaUrl, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${token}` },
+            });
+          }
+        } catch {
+          // Ignore cleanup errors
         }
       }
 

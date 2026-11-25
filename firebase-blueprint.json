@@ -258,7 +258,7 @@
     },
     "ChatMessage": {
       "title": "ChatMessage",
-      "description": "Real chat message supporting text, audio (up to 3 min), compressed photo, video (up to 25 MB), order card, or billing reminder with WhatsApp-style local-first transit delivery.",
+      "description": "Real chat message supporting text, audio, compressed photo, video (up to 25 MB), order card, or billing reminder with WhatsApp-style local-first transit delivery.",
       "type": "object",
       "properties": {
         "chatId": { "type": "string", "minLength": 1, "maxLength": 260 },

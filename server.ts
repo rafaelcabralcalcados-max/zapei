@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import fs from 'fs';
 import http from 'http';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as webpush from 'web-push';
@@ -697,6 +698,122 @@ async function startServer(): Promise<void> {
       );
 
       res.json({ ok: true, ...result });
+    }
+  );
+
+  // 6. Authenticated temporary media transit bridge fallback (up to 25 MB, 14-day TTL)
+  const transitRootDir = path.join(os.tmpdir(), 'chatfi-transit');
+  const VALID_CHAT_ID_REGEX = /^[a-zA-Z0-9_-]{3,260}$/;
+  const VALID_MESSAGE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+  const MAX_TRANSIT_BYTES = 25 * 1024 * 1024;
+  const TRANSIT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+  const resolveAuthorizedTransitFile = (
+    chatId: string,
+    messageId: string,
+    uid: string
+  ): { dataPath: string; metaPath: string } | null => {
+    if (!VALID_CHAT_ID_REGEX.test(chatId) || !VALID_MESSAGE_ID_REGEX.test(messageId)) {
+      return null;
+    }
+    const parts = chatId.split('__');
+    if (parts.length !== 2 || (parts[0] !== uid && parts[1] !== uid)) {
+      return null;
+    }
+    const safeDir = path.join(transitRootDir, chatId);
+    return {
+      dataPath: path.join(safeDir, `${messageId}.bin`),
+      metaPath: path.join(safeDir, `${messageId}.json`),
+    };
+  };
+
+  app.post(
+    '/api/media/transit/:chatId/:messageId',
+    requireFirebaseAuth,
+    express.raw({ type: '*/*', limit: '26mb' }),
+    async (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const { chatId = '', messageId = '' } = req.params;
+      const paths = resolveAuthorizedTransitFile(chatId, messageId, uid);
+      if (!paths) {
+        res.status(403).json({ error: 'Acesso negado ao trânsito de mídia.' });
+        return;
+      }
+      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (buf.length === 0 || buf.length > MAX_TRANSIT_BYTES) {
+        res.status(400).json({ error: 'Arquivo de mídia inválido ou maior que 25 MB.' });
+        return;
+      }
+      const contentType =
+        typeof req.headers['content-type'] === 'string' && req.headers['content-type'].trim()
+          ? req.headers['content-type'].slice(0, 80)
+          : 'application/octet-stream';
+      try {
+        await fs.promises.mkdir(path.dirname(paths.dataPath), { recursive: true });
+        await fs.promises.writeFile(paths.dataPath, buf);
+        await fs.promises.writeFile(
+          paths.metaPath,
+          JSON.stringify({
+            mimeType: contentType,
+            expiresAtMs: Date.now() + TRANSIT_TTL_MS,
+            senderId: uid,
+          })
+        );
+        res.json({
+          ok: true,
+          url: `/api/media/transit/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}`,
+        });
+      } catch (err) {
+        console.error('[media-transit] Upload failed:', err);
+        res.status(500).json({ error: 'Falha ao armazenar mídia em trânsito.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/media/transit/:chatId/:messageId',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const { chatId = '', messageId = '' } = req.params;
+      const paths = resolveAuthorizedTransitFile(chatId, messageId, uid);
+      if (!paths) {
+        res.status(403).json({ error: 'Acesso negado ao trânsito de mídia.' });
+        return;
+      }
+      try {
+        const metaRaw = await fs.promises.readFile(paths.metaPath, 'utf-8');
+        const meta = JSON.parse(metaRaw) as { mimeType?: string; expiresAtMs?: number };
+        if (meta.expiresAtMs && Date.now() > meta.expiresAtMs) {
+          await fs.promises.rm(paths.dataPath, { force: true }).catch(() => {});
+          await fs.promises.rm(paths.metaPath, { force: true }).catch(() => {});
+          res.status(404).json({ error: 'Mídia expirada.' });
+          return;
+        }
+        const data = await fs.promises.readFile(paths.dataPath);
+        res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.send(data);
+      } catch {
+        res.status(404).json({ error: 'Mídia não encontrada ou já entregue.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/media/transit/:chatId/:messageId',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const { chatId = '', messageId = '' } = req.params;
+      const paths = resolveAuthorizedTransitFile(chatId, messageId, uid);
+      if (!paths) {
+        res.status(403).json({ error: 'Acesso negado ao trânsito de mídia.' });
+        return;
+      }
+      await fs.promises.rm(paths.dataPath, { force: true }).catch(() => {});
+      await fs.promises.rm(paths.metaPath, { force: true }).catch(() => {});
+      res.json({ ok: true });
     }
   );
 
