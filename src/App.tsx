@@ -117,6 +117,7 @@ import { calculateOrderSplit } from './lib/splitCalculator';
 import {
   createAsaasSplitCharge,
   fetchAsaasOrderStatus,
+  type AsaasOrderStatusResult,
   type CreateAsaasChargeResult,
 } from './lib/asaasService';
 import {
@@ -232,6 +233,9 @@ export default function App() {
   const [showBillingModal, setShowBillingModal] = useState(false);
   const [activeStorefrontOwner, setActiveStorefrontOwner] =
     useState<PublicStorefrontOwner | null>(null);
+  const [activeStorefrontInitialTab, setActiveStorefrontInitialTab] = useState<
+    'catalog' | 'cart' | 'orders'
+  >('catalog');
   const [toastMessage, setToastMessage] = useState('');
 
   // Real-time Firestore Collections
@@ -1779,12 +1783,16 @@ export default function App() {
   );
 
   const openStorefrontByUid = useCallback(
-    async (uid: string) => {
+    async (
+      uid: string,
+      initialTab: 'catalog' | 'cart' | 'orders' = 'catalog'
+    ) => {
       const owner = await fetchPublicUserStorefront(uid);
       if (!owner) {
         showToast('Vitrine não encontrada.');
         return;
       }
+      setActiveStorefrontInitialTab(initialTab);
       setActiveStorefrontOwner(owner);
     },
     [showToast]
@@ -2079,7 +2087,8 @@ export default function App() {
         paymentMethod,
         installments,
         customerInfo: {
-          name: order.buyerName,
+          name: order.buyerName || profile?.name,
+          email: profile?.email,
         },
       });
       const b = chargeResult.splitBreakdown;
@@ -2098,47 +2107,80 @@ export default function App() {
         ...(chargeResult.invoiceUrl ? { asaasInvoiceUrl: chargeResult.invoiceUrl } : {}),
         ...(chargeResult.pixCopyPaste ? { asaasPixPayload: chargeResult.pixCopyPaste } : {}),
       });
-      await updateRealPayment(`pay_rb_${order.id}`, {
-        method: b.paymentMethod === 'credit_card' ? 'Cartão' : 'À vista',
-        gatewayFee: b.gatewayFee,
-        platformFeeGross: b.platformGrossFee,
-        platformFeeNet: b.platformNetFee,
-        netAmount: b.resellerNetTotal,
-        asaasChargeId: chargeResult.chargeId,
-        asaasChargeStatus: chargeResult.status,
-      }).catch(() => {});
-      return chargeResult;
-    },
-    []
-  );
-
-  const handleSyncAsaasOrderStatus = useCallback(async (order: MixedOrder) => {
-    const statusRes = await fetchAsaasOrderStatus(order.id);
-    if (!statusRes.found) {
-      showToast(`Nenhuma cobrança Asaas encontrada no servidor para ${order.orderCode}.`);
-      return;
-    }
-    await updateRealOrder(order.id, {
-      ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
-      ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
-      ...(statusRes.invoiceUrl ? { asaasInvoiceUrl: statusRes.invoiceUrl } : {}),
-      ...(statusRes.pixCopyPaste ? { asaasPixPayload: statusRes.pixCopyPaste } : {}),
-    });
-    if (statusRes.mappedPaymentStatus) {
-      await updateRealPayment(`pay_rb_${order.id}`, {
-        status: statusRes.mappedPaymentStatus,
-        ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
-        ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
-      }).catch(() => {});
-      for (const sub of order.subOrders) {
-        await updateRealPayment(`pay_fr_${sub.id}`, {
-          status: statusRes.mappedPaymentStatus,
-          ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
-          ...(statusRes.asaasStatus ? { asaasChargeStatus: statusRes.asaasStatus } : {}),
+      if (profile?.uid === order.resellerId) {
+        await updateRealPayment(`pay_rb_${order.id}`, {
+          method: b.paymentMethod === 'credit_card' ? 'Cartão' : 'À vista',
+          gatewayFee: b.gatewayFee,
+          platformFeeGross: b.platformGrossFee,
+          platformFeeNet: b.platformNetFee,
+          netAmount: b.resellerNetTotal,
+          asaasChargeId: chargeResult.chargeId,
+          asaasChargeStatus: chargeResult.status,
+        }).catch(() => {});
+        for (const sub of order.subOrders) {
+          await updateRealPayment(`pay_fr_${sub.id}`, {
+            asaasChargeId: chargeResult.chargeId,
+            asaasChargeStatus: chargeResult.status,
+          }).catch(() => {});
+        }
+      } else if (profile?.uid === order.buyerId) {
+        await updateRealPayment(`pay_rb_${order.id}`, {
+          asaasChargeId: chargeResult.chargeId,
+          asaasChargeStatus: chargeResult.status,
         }).catch(() => {});
       }
-    }
-  }, [showToast]);
+      return chargeResult;
+    },
+    [profile?.uid, profile?.name, profile?.email]
+  );
+
+  const handleSyncAsaasOrderStatus = useCallback(
+    async (order: MixedOrder): Promise<AsaasOrderStatusResult | null> => {
+      const statusRes = await fetchAsaasOrderStatus(order.id);
+      if (!statusRes.found) {
+        showToast(`Nenhuma cobrança Asaas encontrada no servidor para ${order.orderCode}.`);
+        return statusRes;
+      }
+      const nextAsaasStatus = statusRes.asaasStatus || statusRes.mappedPaymentStatus;
+      if (profile?.uid === order.buyerId || profile?.uid === order.resellerId) {
+        await updateRealOrder(order.id, {
+          ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+          ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
+          ...(statusRes.invoiceUrl ? { asaasInvoiceUrl: statusRes.invoiceUrl } : {}),
+          ...(statusRes.pixCopyPaste ? { asaasPixPayload: statusRes.pixCopyPaste } : {}),
+        }).catch(() => {});
+      }
+      if (profile?.uid === order.resellerId) {
+        await updateRealPayment(`pay_rb_${order.id}`, {
+          ...(statusRes.mappedPaymentStatus ? { status: statusRes.mappedPaymentStatus } : {}),
+          ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+          ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
+        }).catch(() => {});
+        for (const sub of order.subOrders) {
+          await updateRealPayment(`pay_fr_${sub.id}`, {
+            ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+            ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
+          }).catch(() => {});
+        }
+      } else if (profile?.uid === order.buyerId) {
+        await updateRealPayment(`pay_rb_${order.id}`, {
+          ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+          ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
+        }).catch(() => {});
+      } else if (profile?.uid && order.factoryIds.includes(profile.uid)) {
+        for (const sub of order.subOrders) {
+          if (sub.factoryId !== profile.uid) continue;
+          await updateRealPayment(`pay_fr_${sub.id}`, {
+            ...(statusRes.mappedPaymentStatus ? { status: statusRes.mappedPaymentStatus } : {}),
+            ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
+            ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
+          }).catch(() => {});
+        }
+      }
+      return statusRes;
+    },
+    [profile?.uid, showToast]
+  );
 
   const handleConnectFactoryByPhone = useCallback(
     async (rawPhone: string): Promise<{ ok: boolean; message: string }> => {
@@ -3294,7 +3336,7 @@ export default function App() {
                       if (profile.commercialMode !== 'buyer') {
                         setActiveTab('commercial');
                       } else if (selectedPeer.hasStorefront) {
-                        void openStorefrontByUid(selectedPeer.uid);
+                        void openStorefrontByUid(selectedPeer.uid, 'orders');
                       }
                     }}
                   />
@@ -3453,6 +3495,7 @@ export default function App() {
               profile={profile}
               products={products}
               subOrders={allSubOrders}
+              orders={orders}
               payments={payments}
               onSavePolicy={async (factoryName, factoryPolicy: MinimumDeliveryPolicy) => {
                 await persistProfileUpdate({ factoryName, factoryPolicy });
@@ -3460,6 +3503,7 @@ export default function App() {
               onSaveWalletId={async (asaasWalletId: string) => {
                 await persistProfileUpdate({ asaasWalletId });
               }}
+              onSyncAsaasStatus={handleSyncAsaasOrderStatus}
               onSaveFavoriteGrade={async (grade: FavoriteGrade) => {
                 await persistProfileUpdate({
                   favoriteGrades: [...profile.favoriteGrades, grade],
@@ -3606,6 +3650,9 @@ export default function App() {
                 }
               }}
               onSelectMode={(mode) => void handleSelectCommercialMode(mode)}
+              onSaveWalletId={async (asaasWalletId: string) => {
+                await persistProfileUpdate({ asaasWalletId });
+              }}
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenCommercialPanel={() => setActiveTab('commercial')}
               onNotify={showToast}
@@ -3663,7 +3710,13 @@ export default function App() {
           products={products}
           connections={connections}
           orders={orders}
-          onClose={() => setActiveStorefrontOwner(null)}
+          initialSubView={activeStorefrontInitialTab}
+          onClose={() => {
+            setActiveStorefrontOwner(null);
+            setActiveStorefrontInitialTab('catalog');
+          }}
+          onGenerateOrderCharge={handleGenerateAsaasChargeForOrder}
+          onSyncOrderStatus={handleSyncAsaasOrderStatus}
           onCheckoutMixedOrder={async ({
             ownerUid,
             storefrontName,

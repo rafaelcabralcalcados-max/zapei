@@ -5,22 +5,24 @@ import {
   Camera,
   CheckCircle2,
   ClipboardCheck,
+  Clock,
   CreditCard,
   Factory,
   Minus,
   Package,
   Plus,
   Receipt,
+  RefreshCw,
   Settings2,
   Truck,
   Upload,
-  Wallet,
   XCircle,
 } from 'lucide-react';
 import type {
   DualPaymentRecord,
   FavoriteGrade,
   MinimumDeliveryPolicy,
+  MixedOrder,
   PaymentMethod,
   PaymentStatus,
   Product,
@@ -41,16 +43,20 @@ import {
   PIX_MIN_GROSS_BRL,
 } from '../lib/splitCalculator';
 import { compressImageFileToDataUrl } from '../lib/phoneUtils';
+import { formatAsaasStatusLabel, type AsaasOrderStatusResult } from '../lib/asaasService';
 import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
+import { WalletIdSplitCard } from './WalletIdSplitCard';
 
 interface ManufacturerPanelProps {
   profile: UserProfile;
   products: Product[];
   subOrders: SubOrder[];
+  orders?: MixedOrder[];
   payments: DualPaymentRecord[];
   onSavePolicy: (factoryName: string, policy: MinimumDeliveryPolicy) => Promise<void>;
   onSaveWalletId: (walletId: string) => Promise<void>;
+  onSyncAsaasStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
   onSaveFavoriteGrade: (grade: FavoriteGrade) => Promise<void>;
   onCreateProduct: (params: {
     name: string;
@@ -92,9 +98,11 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   profile,
   products,
   subOrders,
+  orders = [],
   payments,
   onSavePolicy,
   onSaveWalletId,
+  onSyncAsaasStatus,
   onSaveFavoriteGrade,
   onCreateProduct,
   onUpdateStock,
@@ -105,24 +113,19 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<FactoryTab>('catalog');
   const [feedback, setFeedback] = useState('');
+  const [syncingPayId, setSyncingPayId] = useState<string | null>(null);
 
-  // F01 Policy & Asaas Wallet state
+  // F01 Policy state
   const [factoryName, setFactoryName] = useState(profile.factoryName || profile.name);
   const [policyType, setPolicyType] = useState<MinimumDeliveryPolicy['type']>(
     profile.factoryPolicy.type
   );
   const [policyValue, setPolicyValue] = useState(String(profile.factoryPolicy.value));
   const [allowPickup, setAllowPickup] = useState(profile.factoryPolicy.allowCounterPickup);
-  const [walletIdDraft, setWalletIdDraft] = useState(profile.asaasWalletId || '');
-  const [savingWallet, setSavingWallet] = useState(false);
 
   useEffect(() => {
     setFactoryName(profile.factoryName || profile.name);
   }, [profile.factoryName, profile.name]);
-
-  useEffect(() => {
-    setWalletIdDraft(profile.asaasWalletId || '');
-  }, [profile.asaasWalletId]);
 
   // F02 Fast Product Form state
   const [prodName, setProdName] = useState('');
@@ -213,17 +216,6 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       }),
     [parsedDraftPrice, pricingSimMethod, pricingSimInstallments]
   );
-
-  const handleSaveWalletSubmit = async () => {
-    setSavingWallet(true);
-    setFeedback('');
-    try {
-      await onSaveWalletId(walletIdDraft.trim());
-      setFeedback('Wallet ID Asaas do fabricante salvo para recebimento automático via Split.');
-    } finally {
-      setSavingWallet(false);
-    }
-  };
 
   const handleProductPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -441,6 +433,16 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               </button>
             );
           })}
+        </div>
+
+        {/* Prominent Top Asaas Wallet ID Configuration */}
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <WalletIdSplitCard
+            compact
+            currentWalletId={profile.asaasWalletId}
+            onSaveWalletId={onSaveWalletId}
+            roleHint="Receba automaticamente sua cota de produção via Split Asaas."
+          />
         </div>
       </div>
 
@@ -1059,36 +1061,11 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       {/* TAB 4: LAYER 1 FINANCE (F06) */}
       {activeTab === 'finance' && (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Wallet className="h-4 w-4 text-[#0E7A34]" />
-                <span className="text-xs font-bold text-slate-900">
-                  Wallet ID Asaas do Fabricante (Split Automático)
-                </span>
-              </div>
-              <span className="text-[11px] font-mono text-slate-500">
-                {profile.asaasWalletId ? 'Configurada' : 'Pendente'}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={walletIdDraft}
-                onChange={(e) => setWalletIdDraft(e.target.value)}
-                placeholder="Ex: f2a9d6a0-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingWallet}
-                onClick={() => void handleSaveWalletSubmit()}
-                className="h-10 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
-              >
-                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
-              </button>
-            </div>
-          </div>
+          <WalletIdSplitCard
+            currentWalletId={profile.asaasWalletId}
+            onSaveWalletId={onSaveWalletId}
+            roleHint="Informe a Wallet ID da conta Asaas da fábrica para receber o Split automático."
+          />
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1115,68 +1092,152 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             </div>
           ) : (
             <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              {myPayments.map((pay) => (
-                <div
-                  key={pay.id}
-                  className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div>
-                    <p className="text-sm font-bold text-slate-900">
-                      {pay.subOrderCode || pay.orderCode} · {pay.counterpartyName}
-                    </p>
-                    <p className="font-mono text-xs text-slate-500 tabular-nums">
-                      Vencimento: {pay.dueDate} · Valor bruto:{' '}
-                      <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
-                      {typeof pay.netAmount === 'number' && (
-                        <>
-                          {' '}
-                          · Líquido Split:{' '}
-                          <strong className="text-[#0E7A34]">{formatBRL(pay.netAmount)}</strong>
-                        </>
+              {myPayments.map((pay) => {
+                const linkedOrder = orders.find((o) => o.id === pay.orderId);
+                const splitPreview = linkedOrder
+                  ? calculateOrderSplit({
+                      orderTotal: linkedOrder.buyerFinalTotal,
+                      factoryCostTotal: linkedOrder.factoryCostTotal,
+                      paymentMethod: linkedOrder.paymentMethod || 'pix',
+                      installments: linkedOrder.installments || 1,
+                      isDirectManufacturerSale:
+                        linkedOrder.factoryIds.length === 1 &&
+                        linkedOrder.factoryIds[0] === linkedOrder.resellerId &&
+                        Math.abs(linkedOrder.buyerFinalTotal - linkedOrder.factoryCostTotal) < 0.01,
+                    })
+                  : null;
+                const factoryNet =
+                  typeof pay.netAmount === 'number'
+                    ? pay.netAmount
+                    : splitPreview?.factoryNetTotal ?? pay.amount;
+                const resellerNet =
+                  linkedOrder?.splitResellerNet ?? splitPreview?.resellerNetTotal;
+                const statusInfo = formatAsaasStatusLabel(
+                  linkedOrder?.asaasChargeStatus || pay.asaasChargeStatus || pay.status
+                );
+
+                return (
+                  <div
+                    key={pay.id}
+                    className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-bold text-slate-900">
+                          {pay.subOrderCode || pay.orderCode} · {pay.counterpartyName}
+                        </p>
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-bold ${
+                            statusInfo.tone === 'confirmed'
+                              ? 'bg-emerald-100 text-[#0E7A34]'
+                              : statusInfo.tone === 'overdue'
+                                ? 'bg-red-100 text-red-700'
+                                : statusInfo.tone === 'partial'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          {statusInfo.tone === 'confirmed' ? (
+                            <CheckCircle2 className="h-3 w-3" />
+                          ) : (
+                            <Clock className="h-3 w-3" />
+                          )}
+                          Asaas: {statusInfo.shortLabel}
+                        </span>
+                      </div>
+
+                      <p className="font-mono text-xs text-slate-500 tabular-nums">
+                        Vencimento: {pay.dueDate} · Valor Bruto:{' '}
+                        <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
+                      </p>
+
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] tabular-nums">
+                        <span className="text-[#0D2B3E]">
+                          Líquido Fabricante: <strong>{formatBRL(factoryNet)}</strong>
+                        </span>
+                        {typeof resellerNet === 'number' && resellerNet > 0 && (
+                          <span className="text-[#0E7A34]">
+                            Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                          </span>
+                        )}
+                        {typeof (pay.platformFeeGross ?? splitPreview?.platformGrossFee) ===
+                          'number' && (
+                          <span className="text-slate-600">
+                            Taxa ChatFi:{' '}
+                            <strong>
+                              {formatBRL(
+                                (pay.platformFeeGross ?? splitPreview?.platformGrossFee) || 0
+                              )}
+                            </strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {onSyncAsaasStatus && linkedOrder && (
+                        <button
+                          type="button"
+                          disabled={syncingPayId === pay.id}
+                          onClick={async () => {
+                            setSyncingPayId(pay.id);
+                            try {
+                              await onSyncAsaasStatus(linkedOrder);
+                              setFeedback(
+                                `Status Asaas de ${pay.subOrderCode || pay.orderCode} atualizado.`
+                              );
+                            } finally {
+                              setSyncingPayId(null);
+                            }
+                          }}
+                          className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                        >
+                          <RefreshCw
+                            className={`h-3.5 w-3.5 ${
+                              syncingPayId === pay.id ? 'animate-spin' : ''
+                            }`}
+                          />
+                          Verificar Asaas
+                        </button>
                       )}
-                      {pay.asaasChargeStatus && (
-                        <> · Asaas: {pay.asaasChargeStatus}</>
-                      )}
-                    </p>
+                      <select
+                        value={pay.method}
+                        onChange={(e) =>
+                          void onUpdatePayment(pay.id, {
+                            method: e.target.value as PaymentMethod,
+                          })
+                        }
+                        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700"
+                      >
+                        {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
+                          (m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          )
+                        )}
+                      </select>
+                      <select
+                        value={pay.status}
+                        onChange={(e) =>
+                          void onUpdatePayment(pay.id, {
+                            status: e.target.value as PaymentStatus,
+                          })
+                        }
+                        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800"
+                      >
+                        {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
+                          (s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          )
+                        )}
+                      </select>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={pay.method}
-                      onChange={(e) =>
-                        void onUpdatePayment(pay.id, {
-                          method: e.target.value as PaymentMethod,
-                        })
-                      }
-                      className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700"
-                    >
-                      {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
-                        (m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        )
-                      )}
-                    </select>
-                    <select
-                      value={pay.status}
-                      onChange={(e) =>
-                        void onUpdatePayment(pay.id, {
-                          status: e.target.value as PaymentStatus,
-                        })
-                      }
-                      className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800"
-                    >
-                      {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
-                        (s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        )
-                      )}
-                    </select>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1256,27 +1317,12 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             Salvar Política de Entrega
           </button>
 
-          <div className="border-t border-slate-100 pt-4 space-y-2">
-            <label className="block text-xs font-semibold text-slate-700">
-              Wallet ID Asaas do Fabricante (Split automático de produção)
-            </label>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={walletIdDraft}
-                onChange={(e) => setWalletIdDraft(e.target.value)}
-                placeholder="Ex: f2a9d6a0-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingWallet}
-                onClick={() => void handleSaveWalletSubmit()}
-                className="h-10 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50"
-              >
-                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
-              </button>
-            </div>
+          <div className="border-t border-slate-100 pt-4">
+            <WalletIdSplitCard
+              compact
+              currentWalletId={profile.asaasWalletId}
+              onSaveWalletId={onSaveWalletId}
+            />
           </div>
         </form>
       )}

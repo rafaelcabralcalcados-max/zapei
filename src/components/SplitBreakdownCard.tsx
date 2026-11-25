@@ -1,7 +1,8 @@
 import React from 'react';
-import { AlertTriangle, CreditCard, Info, QrCode, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, CreditCard, Info, QrCode, ShieldCheck } from 'lucide-react';
 import type { OrderSplitBreakdown, SplitPaymentMethod } from '../types/zapei';
 import { formatBRL } from '../lib/gradeParser';
+import { formatAsaasStatusLabel } from '../lib/asaasService';
 import {
   CARD_MIN_THRESHOLD_BRL,
   MINIMUM_FEE_THRESHOLD_BRL,
@@ -17,6 +18,8 @@ interface SplitBreakdownCardProps {
   resellerLabel?: string;
   hideResellerIfDirect?: boolean;
   showMethodToggle?: boolean;
+  asaasChargeStatus?: string;
+  asaasChargeId?: string;
   onChangeMethod?: (method: SplitPaymentMethod) => void;
   onChangeInstallments?: (installments: number) => void;
 }
@@ -29,12 +32,18 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
   resellerLabel = 'Revendedor (retido / liberado)',
   hideResellerIfDirect = false,
   showMethodToggle = false,
+  asaasChargeStatus,
+  asaasChargeId,
   onChangeMethod,
   onChangeInstallments,
 }) => {
   const showMinimumWarning =
     breakdown.orderTotal > 0 &&
     (breakdown.belowPixMinThreshold || breakdown.minimumRuleApplied);
+  const chargeStatusInfo =
+    asaasChargeStatus || asaasChargeId
+      ? formatAsaasStatusLabel(asaasChargeStatus)
+      : null;
 
   return (
     <div
@@ -47,6 +56,29 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
           <ShieldCheck className="h-4 w-4 shrink-0 text-[#0E7A34]" />
           <h4 className="text-xs font-bold text-slate-900">{title}</h4>
         </div>
+
+        {chargeStatusInfo && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-bold ${
+              chargeStatusInfo.tone === 'confirmed'
+                ? 'bg-emerald-100 text-[#0E7A34]'
+                : chargeStatusInfo.tone === 'overdue'
+                  ? 'bg-red-100 text-red-700'
+                  : chargeStatusInfo.tone === 'partial'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-slate-200/80 text-slate-700'
+            }`}
+          >
+            {chargeStatusInfo.tone === 'confirmed' ? (
+              <CheckCircle2 className="h-3 w-3" />
+            ) : chargeStatusInfo.tone === 'overdue' ? (
+              <AlertTriangle className="h-3 w-3" />
+            ) : (
+              <Clock className="h-3 w-3" />
+            )}
+            Asaas: {chargeStatusInfo.shortLabel}
+          </span>
+        )}
 
         {showMethodToggle && onChangeMethod && (
           <div className="flex items-center gap-1.5">

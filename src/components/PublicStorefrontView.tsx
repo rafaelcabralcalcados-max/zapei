@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   ExternalLink,
@@ -10,6 +11,8 @@ import {
   Package,
   Plus,
   QrCode,
+  RefreshCw,
+  ShieldCheck,
   ShoppingBag,
   Store,
   Trash2,
@@ -27,7 +30,11 @@ import type {
   SubOrder,
   SubscriptionStatus,
 } from '../types/zapei';
-import type { CreateAsaasChargeResult } from '../lib/asaasService';
+import {
+  formatAsaasStatusLabel,
+  type AsaasOrderStatusResult,
+  type CreateAsaasChargeResult,
+} from '../lib/asaasService';
 import {
   computeResellerPrice,
   formatBRL,
@@ -39,6 +46,11 @@ import {
   MINIMUM_FEE_THRESHOLD_BRL,
   roundBRL,
 } from '../lib/splitCalculator';
+import {
+  AsaasChargeModal,
+  toAsaasChargeModalData,
+  type AsaasChargeModalData,
+} from './AsaasChargeModal';
 import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 
@@ -69,6 +81,7 @@ interface PublicStorefrontViewProps {
   products: Product[];
   connections: FactoryConnection[];
   orders: MixedOrder[];
+  initialSubView?: 'catalog' | 'cart' | 'orders';
   onClose: () => void;
   onCheckoutMixedOrder: (params: {
     ownerUid: string;
@@ -80,6 +93,12 @@ interface PublicStorefrontViewProps {
     installments: number;
     splitBreakdown: OrderSplitBreakdown;
   }) => Promise<CreateAsaasChargeResult | null>;
+  onGenerateOrderCharge?: (
+    order: MixedOrder,
+    paymentMethod: SplitPaymentMethod,
+    installments: number
+  ) => Promise<CreateAsaasChargeResult>;
+  onSyncOrderStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
 }
 
 const CATEGORIES: Array<'Todos' | ProductCategory> = [
@@ -97,17 +116,37 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   products,
   connections,
   orders,
+  initialSubView = 'catalog',
   onClose,
   onCheckoutMixedOrder,
+  onGenerateOrderCharge,
+  onSyncOrderStatus,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<'Todos' | ProductCategory>('Todos');
-  const [activeSubView, setActiveSubView] = useState<'catalog' | 'cart' | 'orders'>('catalog');
+  const [activeSubView, setActiveSubView] = useState<'catalog' | 'cart' | 'orders'>(
+    initialSubView
+  );
   const [cart, setCart] = useState<CartItem[]>([]);
   const [paymentMethod, setPaymentMethod] = useState<SplitPaymentMethod>('pix');
   const [installments, setInstallments] = useState<number>(1);
   const [submitting, setSubmitting] = useState(false);
   const [orderNotice, setOrderNotice] = useState('');
   const [lastChargeResult, setLastChargeResult] = useState<CreateAsaasChargeResult | null>(null);
+  const [orderPayMethodMap, setOrderPayMethodMap] = useState<
+    Record<string, SplitPaymentMethod>
+  >({});
+  const [orderInstMap, setOrderInstMap] = useState<Record<string, number>>({});
+  const [orderChargeLoadingId, setOrderChargeLoadingId] = useState<string | null>(null);
+  const [orderSyncLoadingId, setOrderSyncLoadingId] = useState<string | null>(null);
+  const [chargeResultsByOrder, setChargeResultsByOrder] = useState<
+    Record<string, CreateAsaasChargeResult>
+  >({});
+  const [activeModalCharge, setActiveModalCharge] =
+    useState<AsaasChargeModalData | null>(null);
+
+  useEffect(() => {
+    setActiveSubView(initialSubView);
+  }, [owner.uid, initialSubView]);
 
   const isStorefrontAvailable =
     owner.hasStorefront && owner.subscriptionStatus !== 'expired';
@@ -351,6 +390,17 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
       });
 
       setLastChargeResult(chargeResult);
+      if (chargeResult) {
+        setChargeResultsByOrder((prev) => ({ ...prev, [orderId]: chargeResult }));
+        setActiveModalCharge(
+          toAsaasChargeModalData(
+            chargeResult,
+            subOrders[0]?.subOrderCode.split('-')[0] || `#${orderNum}`,
+            orderId,
+            owner.commercialMode === 'manufacturer'
+          )
+        );
+      }
       setCart([]);
       setOrderNotice(
         `Pedido enviado com sucesso! O cartão interativo e o detalhamento de pagamento (${
@@ -844,10 +894,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       <h3 className="text-sm font-bold text-slate-900">
                         {lastChargeResult.mode === 'live'
                           ? 'Cobrança Asaas Emitida com Split'
-                          : 'Resumo de Split Asaas Preparado'}
+                          : 'Cobrança Asaas Preparada com Split'}
                       </h3>
                       <p className="font-mono text-[11px] text-slate-500">
-                        Cobrança: {lastChargeResult.chargeId} · Status: {lastChargeResult.status}
+                        Cobrança: {lastChargeResult.chargeId} · Status:{' '}
+                        {formatAsaasStatusLabel(lastChargeResult.status).label}
                       </p>
                     </div>
                     <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
@@ -878,12 +929,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         onClick={() => {
                           void navigator.clipboard
                             ?.writeText(lastChargeResult.pixCopyPaste || '')
-                            .then(() => setOrderNotice('Código Pix Copia e Cola copiado!'));
+                            .then(() => setOrderNotice('Código Pix copiado!'));
                         }}
                         className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27]"
                       >
                         <Copy className="h-4 w-4" />
-                        Copiar Pix Copia e Cola
+                        Copiar Código Pix
                       </button>
                     )}
                     {lastChargeResult.invoiceUrl && (
@@ -894,7 +945,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57]"
                       >
                         <ExternalLink className="h-4 w-4" />
-                        Abrir Pagamento Asaas
+                        Abrir Fatura / Pagar com Cartão
                       </a>
                     )}
                   </div>
@@ -907,35 +958,84 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 </div>
               ) : (
                 myBuyerOrders.map((order) => {
+                  const selectedMethod =
+                    orderPayMethodMap[order.id] ?? order.paymentMethod ?? 'pix';
+                  const selectedInst =
+                    orderInstMap[order.id] ?? order.installments ?? 1;
+                  const isDirectMfg = owner.commercialMode === 'manufacturer';
                   const orderBreakdown = calculateOrderSplit({
                     orderTotal: order.buyerFinalTotal,
                     factoryCostTotal: order.factoryCostTotal,
-                    paymentMethod: order.paymentMethod || 'pix',
-                    installments: order.installments || 1,
-                    isDirectManufacturerSale: owner.commercialMode === 'manufacturer',
+                    paymentMethod: selectedMethod,
+                    installments: selectedInst,
+                    isDirectManufacturerSale: isDirectMfg,
                   });
+                  const cachedCharge = chargeResultsByOrder[order.id];
+                  const activeChargeId = cachedCharge?.chargeId || order.asaasChargeId;
+                  const activeChargeStatus =
+                    cachedCharge?.status || order.asaasChargeStatus;
+                  const activeInvoiceUrl =
+                    cachedCharge?.invoiceUrl || order.asaasInvoiceUrl;
+                  const activePixPayload =
+                    cachedCharge?.pixCopyPaste || order.asaasPixPayload;
+                  const activePixQrCode = cachedCharge?.pixQrCode;
+                  const statusInfo = formatAsaasStatusLabel(activeChargeStatus);
+                  const isOrderConfirmed = order.subOrders.some((s) =>
+                    ['confirmed', 'partial_confirmed', 'logistics_sent', 'dispatched'].includes(
+                      s.status
+                    )
+                  );
+                  const canPayOrder =
+                    order.status !== 'cancelled' && order.status !== 'completed';
 
                   return (
                     <div
                       key={order.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3"
+                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4"
                     >
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
                         <div>
-                          <h3 className="text-sm font-bold text-slate-900">
-                            Pedido {order.orderCode}
-                          </h3>
-                          <p className="text-xs text-slate-500">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-bold text-slate-900">
+                              Pedido {order.orderCode}
+                            </h3>
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-bold ${
+                                statusInfo.tone === 'confirmed'
+                                  ? 'bg-emerald-100 text-[#0E7A34]'
+                                  : statusInfo.tone === 'overdue'
+                                    ? 'bg-red-100 text-red-700'
+                                    : statusInfo.tone === 'partial'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {statusInfo.tone === 'confirmed' ? (
+                                <CheckCircle2 className="h-3 w-3" />
+                              ) : (
+                                <Clock className="h-3 w-3" />
+                              )}
+                              Asaas: {statusInfo.shortLabel}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 text-xs text-slate-500">
                             Realizado em {order.createdAt} ·{' '}
-                            {order.paymentMethod === 'credit_card'
-                              ? `Cartão ${order.installments || 1}x`
-                              : 'Pix'}
-                            {order.asaasChargeStatus ? ` · Asaas: ${order.asaasChargeStatus}` : ''}
+                            {selectedMethod === 'credit_card'
+                              ? `Cartão ${selectedInst}x`
+                              : 'Pix à vista'}
+                            {isOrderConfirmed ? ' · Pedido Confirmado' : ''}
                           </p>
                         </div>
-                        <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
-                          {formatBRL(order.buyerChargedTotal ?? order.buyerFinalTotal)}
-                        </span>
+                        <div className="text-right">
+                          <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                            {formatBRL(orderBreakdown.buyerChargedTotal)}
+                          </span>
+                          {selectedMethod === 'credit_card' && selectedInst > 1 && (
+                            <span className="block font-mono text-[11px] text-slate-500 tabular-nums">
+                              {selectedInst}x de {formatBRL(orderBreakdown.installmentValue)}
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {order.discountAmount > 0 && (
@@ -944,47 +1044,265 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         </p>
                       )}
 
-                      <SplitBreakdownCard
-                        compact
-                        breakdown={orderBreakdown}
-                        title="Detalhamento do Pagamento & Split"
-                        factoryLabel="Repasse ao Fabricante (Produção)"
-                        resellerLabel={
-                          owner.commercialMode === 'manufacturer'
-                            ? 'Venda direta da fábrica'
-                            : 'Retido / Liberado para o Lojista'
-                        }
-                      />
+                      {/* Checkout e Pagamento no Pedido (Comprador) */}
+                      {canPayOrder && (
+                        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <ShieldCheck className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                              <div>
+                                <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                                  Pagamento Seguro (Pix ou Cartão)
+                                </h4>
+                                <p className="text-[11px] text-slate-600">
+                                  {isOrderConfirmed
+                                    ? 'Pedido confirmado — escolha a forma de pagamento e gere sua cobrança.'
+                                    : 'Selecione Pix à vista ou Cartão em até 12x e gere sua cobrança Asaas.'}
+                                </p>
+                              </div>
+                            </div>
+                            <span className="font-mono text-sm font-extrabold text-[#0E7A34] tabular-nums">
+                              {formatBRL(orderBreakdown.buyerChargedTotal)}
+                            </span>
+                          </div>
 
-                      {(order.asaasPixPayload || order.asaasInvoiceUrl) && (
-                        <div className="flex flex-wrap gap-2">
-                          {order.asaasPixPayload && (
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                             <button
                               type="button"
                               onClick={() => {
-                                void navigator.clipboard
-                                  ?.writeText(order.asaasPixPayload || '')
-                                  .then(() => setOrderNotice('Código Pix copiado!'));
+                                setOrderPayMethodMap((p) => ({ ...p, [order.id]: 'pix' }));
+                                setOrderInstMap((p) => ({ ...p, [order.id]: 1 }));
                               }}
-                              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-semibold text-[#0E7A34]"
+                              className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+                                selectedMethod === 'pix'
+                                  ? 'border-[#0E7A34] bg-white ring-1 ring-[#0E7A34]'
+                                  : 'border-slate-200 bg-white/80 hover:bg-white'
+                              }`}
                             >
-                              <Copy className="h-3.5 w-3.5" />
-                              Copiar Pix
+                              <div className="flex items-center gap-2">
+                                <QrCode
+                                  className={`h-4 w-4 ${
+                                    selectedMethod === 'pix' ? 'text-[#0E7A34]' : 'text-slate-500'
+                                  }`}
+                                />
+                                <div>
+                                  <span className="block text-xs font-bold text-slate-900">
+                                    Pix à vista
+                                  </span>
+                                  <span className="block text-[10px] text-slate-500">
+                                    Sem juros · QR Code imediato
+                                  </span>
+                                </div>
+                              </div>
+                              <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
+                                {formatBRL(order.buyerFinalTotal)}
+                              </span>
                             </button>
-                          )}
-                          {order.asaasInvoiceUrl && (
-                            <a
-                              href={order.asaasInvoiceUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-[#0D2B3E]"
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOrderPayMethodMap((p) => ({ ...p, [order.id]: 'credit_card' }))
+                              }
+                              className={`flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+                                selectedMethod === 'credit_card'
+                                  ? 'border-[#0D2B3E] bg-white ring-1 ring-[#0D2B3E]'
+                                  : 'border-slate-200 bg-white/80 hover:bg-white'
+                              }`}
                             >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              Fatura Asaas
-                            </a>
+                              <div className="flex items-center gap-2">
+                                <CreditCard
+                                  className={`h-4 w-4 ${
+                                    selectedMethod === 'credit_card'
+                                      ? 'text-[#0D2B3E]'
+                                      : 'text-slate-500'
+                                  }`}
+                                />
+                                <div>
+                                  <span className="block text-xs font-bold text-slate-900">
+                                    Cartão em até 12x
+                                  </span>
+                                  <span className="block text-[10px] text-slate-500">
+                                    Taxas transparentes no total
+                                  </span>
+                                </div>
+                              </div>
+                              <span className="font-mono text-xs font-bold text-[#0D2B3E] tabular-nums">
+                                {selectedInst}x
+                              </span>
+                            </button>
+                          </div>
+
+                          {selectedMethod === 'credit_card' && (
+                            <div className="space-y-1.5">
+                              <label className="block text-[11px] font-semibold text-slate-700">
+                                Escolha as parcelas (1x a 12x):
+                              </label>
+                              <select
+                                value={selectedInst}
+                                onChange={(e) =>
+                                  setOrderInstMap((p) => ({
+                                    ...p,
+                                    [order.id]: Number(e.target.value) || 1,
+                                  }))
+                                }
+                                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-xs font-semibold text-slate-900"
+                              >
+                                {Array.from({ length: 12 }, (_, idx) => idx + 1).map((n) => {
+                                  const rates = getAsaasCreditCardRates(n);
+                                  const gross = roundBRL(
+                                    (order.buyerFinalTotal + rates.fixedFee) /
+                                      (1 - rates.totalPercentRate)
+                                  );
+                                  const perInst = roundBRL(gross / n);
+                                  return (
+                                    <option key={n} value={n}>
+                                      {n === 1
+                                        ? `1x à vista de ${formatBRL(gross)}`
+                                        : `${n}x de ${formatBRL(perInst)} (total ${formatBRL(gross)})`}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </div>
                           )}
-                        </div>
+
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            {onGenerateOrderCharge && (
+                              <button
+                                type="button"
+                                disabled={orderChargeLoadingId === order.id}
+                                onClick={async () => {
+                                  setOrderChargeLoadingId(order.id);
+                                  setOrderNotice('');
+                                  try {
+                                    const res = await onGenerateOrderCharge(
+                                      order,
+                                      selectedMethod,
+                                      selectedInst
+                                    );
+                                    setChargeResultsByOrder((p) => ({ ...p, [order.id]: res }));
+                                    setLastChargeResult(res);
+                                    setActiveModalCharge(
+                                      toAsaasChargeModalData(
+                                        res,
+                                        order.orderCode,
+                                        order.id,
+                                        isDirectMfg
+                                      )
+                                    );
+                                  } catch (err) {
+                                    setOrderNotice(
+                                      err instanceof Error
+                                        ? err.message
+                                        : 'Não foi possível gerar a cobrança Asaas.'
+                                    );
+                                  } finally {
+                                    setOrderChargeLoadingId(null);
+                                  }
+                                }}
+                                className="inline-flex h-11 flex-1 min-w-[190px] items-center justify-center gap-2 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-50"
+                              >
+                                {selectedMethod === 'pix' ? (
+                                  <QrCode className="h-4 w-4" />
+                                ) : (
+                                  <CreditCard className="h-4 w-4" />
+                                )}
+                                {orderChargeLoadingId === order.id
+                                  ? 'Gerando Cobrança Asaas...'
+                                  : 'Gerar Cobrança Asaas'}
+                              </button>
+                            )}
+
+                            {activeChargeId && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (cachedCharge) {
+                                    setActiveModalCharge(
+                                      toAsaasChargeModalData(
+                                        cachedCharge,
+                                        order.orderCode,
+                                        order.id,
+                                        isDirectMfg
+                                      )
+                                    );
+                                  } else {
+                                    setActiveModalCharge({
+                                      orderId: order.id,
+                                      orderCode: order.orderCode,
+                                      mode: activeInvoiceUrl ? 'live' : 'preview',
+                                      chargeId: activeChargeId,
+                                      asaasStatus: activeChargeStatus,
+                                      invoiceUrl: activeInvoiceUrl,
+                                      pixQrCode: activePixQrCode,
+                                      pixCopyPaste: activePixPayload,
+                                      splitBreakdown: orderBreakdown,
+                                      hideResellerShare: isDirectMfg,
+                                    });
+                                  }
+                                }}
+                                className="inline-flex h-11 items-center justify-center gap-1.5 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57]"
+                              >
+                                <QrCode className="h-4 w-4" />
+                                QR Code Pix / Fatura
+                              </button>
+                            )}
+
+                            {onSyncOrderStatus && activeChargeId && (
+                              <button
+                                type="button"
+                                disabled={orderSyncLoadingId === order.id}
+                                onClick={async () => {
+                                  setOrderSyncLoadingId(order.id);
+                                  try {
+                                    const res = await onSyncOrderStatus(order);
+                                    if (res?.found) {
+                                      const fmt = formatAsaasStatusLabel(
+                                        res.asaasStatus || res.mappedPaymentStatus
+                                      );
+                                      setOrderNotice(
+                                        `Status Asaas do pedido ${order.orderCode}: ${fmt.label}`
+                                      );
+                                    }
+                                  } catch (err) {
+                                    setOrderNotice(
+                                      err instanceof Error
+                                        ? err.message
+                                        : 'Falha ao verificar status Asaas.'
+                                    );
+                                  } finally {
+                                    setOrderSyncLoadingId(null);
+                                  }
+                                }}
+                                className="inline-flex h-11 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                              >
+                                <RefreshCw
+                                  className={`h-3.5 w-3.5 ${
+                                    orderSyncLoadingId === order.id ? 'animate-spin' : ''
+                                  }`}
+                                />
+                                Já paguei / Verificar Status
+                              </button>
+                            )}
+                          </div>
+                        </section>
                       )}
+
+                      <SplitBreakdownCard
+                        compact
+                        breakdown={orderBreakdown}
+                        title="Extrato do Split & Transparência Asaas"
+                        factoryLabel="Líquido Fabricante (Produção)"
+                        resellerLabel={
+                          isDirectMfg
+                            ? 'Venda direta da fábrica'
+                            : 'Líquido Revendedor (Loja)'
+                        }
+                        hideResellerIfDirect={isDirectMfg}
+                        asaasChargeStatus={activeChargeStatus}
+                        asaasChargeId={activeChargeId}
+                      />
 
                       <div className="space-y-2">
                         {order.subOrders.map((sub) => (
@@ -1024,6 +1342,18 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
           )}
         </div>
       </div>
+
+      <AsaasChargeModal
+        isOpen={Boolean(activeModalCharge)}
+        data={activeModalCharge}
+        onClose={() => setActiveModalCharge(null)}
+        onVerifyStatus={async (orderId) => {
+          const order = myBuyerOrders.find((o) => o.id === orderId);
+          if (!order || !onSyncOrderStatus) return null;
+          return onSyncOrderStatus(order);
+        }}
+        onCopySuccess={(msg) => setOrderNotice(msg)}
+      />
     </div>
   );
 };

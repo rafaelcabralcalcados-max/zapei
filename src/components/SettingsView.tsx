@@ -21,6 +21,7 @@ import { CustomSoundsCard } from './CustomSoundsCard';
 import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
 import { PWAInstallButton } from './PWAInstallButton';
 import { StorageManagerCard } from './StorageManagerCard';
+import { WalletIdSplitCard } from './WalletIdSplitCard';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 
 interface SettingsViewProps {
@@ -37,6 +38,7 @@ interface SettingsViewProps {
     showLastSeen: boolean;
   }) => Promise<void>;
   onSelectMode: (mode: CommercialMode) => void;
+  onSaveWalletId?: (walletId: string) => Promise<void>;
   onOpenBilling: () => void;
   onOpenCommercialPanel: () => void;
   onNotify?: (message: string) => void;
@@ -54,6 +56,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onPreviewAvatar,
   onUpdatePresencePrivacy,
   onSelectMode,
+  onSaveWalletId,
   onOpenBilling,
   onOpenCommercialPanel,
   onNotify,
@@ -464,14 +467,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         {profile.commercialMode !== 'buyer' && (
-          <button
-            type="button"
-            onClick={onOpenCommercialPanel}
-            className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
-          >
-            Abrir Painel{' '}
-            {profile.commercialMode === 'manufacturer' ? 'do Fabricante' : 'do Revendedor'}
-          </button>
+          <div className="space-y-4 pt-1">
+            {onSaveWalletId && (
+              <WalletIdSplitCard
+                currentWalletId={profile.asaasWalletId}
+                onSaveWalletId={onSaveWalletId}
+                roleHint={
+                  profile.commercialMode === 'manufacturer'
+                    ? 'Receba automaticamente sua cota de produção via Split Asaas nos pedidos.'
+                    : 'Receba automaticamente sua comissão de vendas via Split Asaas nos pedidos.'
+                }
+              />
+            )}
+
+            <button
+              type="button"
+              onClick={onOpenCommercialPanel}
+              className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
+            >
+              Abrir Painel{' '}
+              {profile.commercialMode === 'manufacturer' ? 'do Fabricante' : 'do Revendedor'}
+            </button>
+          </div>
         )}
       </section>
 

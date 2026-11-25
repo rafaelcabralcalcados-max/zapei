@@ -102,3 +102,64 @@ export async function fetchAsaasOrderStatus(
   }
   return data as AsaasOrderStatusResult;
 }
+
+export interface FormattedAsaasStatus {
+  label: string;
+  shortLabel: string;
+  tone: 'pending' | 'confirmed' | 'partial' | 'overdue';
+}
+
+export function formatAsaasStatusLabel(rawStatus?: string): FormattedAsaasStatus {
+  const normalized = (rawStatus || '').trim().toUpperCase();
+
+  if (
+    normalized === 'CONFIRMED' ||
+    normalized === 'RECEIVED' ||
+    normalized === 'RECEIVED_IN_CASH' ||
+    normalized === 'PAYMENT_CONFIRMED' ||
+    normalized === 'PAYMENT_RECEIVED' ||
+    normalized === 'PAYMENT_ANTICIPATED' ||
+    normalized === 'QUITADO'
+  ) {
+    return {
+      label: 'Confirmado (Pago)',
+      shortLabel: 'Confirmado',
+      tone: 'confirmed',
+    };
+  }
+
+  if (normalized === 'OVERDUE' || normalized === 'PAYMENT_OVERDUE' || normalized === 'EM ATRASO') {
+    return {
+      label: 'Em Atraso',
+      shortLabel: 'Em Atraso',
+      tone: 'overdue',
+    };
+  }
+
+  if (
+    normalized === 'PARTIALLY_REFUNDED' ||
+    normalized === 'PAYMENT_PARTIALLY_REFUNDED' ||
+    normalized === 'PARCIAL'
+  ) {
+    return {
+      label: 'Parcial',
+      shortLabel: 'Parcial',
+      tone: 'partial',
+    };
+  }
+
+  if (normalized === 'PENDING_GATEWAY_KEY') {
+    return {
+      label: 'Aguardando (Prévia)',
+      shortLabel: 'Aguardando',
+      tone: 'pending',
+    };
+  }
+
+  return {
+    label: 'Aguardando Pagamento',
+    shortLabel: 'Aguardando',
+    tone: 'pending',
+  };
+}
+

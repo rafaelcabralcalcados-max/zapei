@@ -1039,10 +1039,15 @@ async function startServer(): Promise<void> {
       case 'PAYMENT_CONFIRMED':
       case 'PAYMENT_RECEIVED':
       case 'PAYMENT_ANTICIPATED':
+      case 'CONFIRMED':
+      case 'RECEIVED':
+      case 'RECEIVED_IN_CASH':
         return 'Quitado';
       case 'PAYMENT_OVERDUE':
+      case 'OVERDUE':
         return 'Em Atraso';
       case 'PAYMENT_PARTIALLY_REFUNDED':
+      case 'PARTIALLY_REFUNDED':
         return 'Parcial';
       default:
         return 'Aguardando';
@@ -1527,6 +1532,46 @@ async function startServer(): Promise<void> {
       ) {
         res.status(403).json({ error: 'Sem permissão para consultar esta cobrança.' });
         return;
+      }
+
+      const asaasApiKey = (process.env.ASAAS_API_KEY || '').trim();
+      if (
+        asaasApiKey &&
+        record.mode === 'live' &&
+        record.chargeId &&
+        !record.chargeId.startsWith('asaas_preview_')
+      ) {
+        try {
+          const liveRes = await fetch(
+            `${getAsaasBaseUrl()}/payments/${encodeURIComponent(record.chargeId)}`,
+            {
+              headers: {
+                access_token: asaasApiKey,
+              },
+            }
+          );
+          if (liveRes.ok) {
+            const liveJson = (await liveRes.json()) as {
+              status?: string;
+              invoiceUrl?: string;
+              bankSlipUrl?: string;
+            };
+            if (liveJson.status) {
+              record.asaasStatus = liveJson.status;
+              record.mappedPaymentStatus = mapAsaasEventToStatus(liveJson.status);
+              record.updatedAtMs = Date.now();
+              if (record.mappedPaymentStatus === 'Quitado' && !record.confirmedAtMs) {
+                record.confirmedAtMs = Date.now();
+              }
+            }
+            if (liveJson.invoiceUrl || liveJson.bankSlipUrl) {
+              record.invoiceUrl = liveJson.invoiceUrl || liveJson.bankSlipUrl;
+            }
+            saveAsaasLedger();
+          }
+        } catch (err) {
+          console.warn('[asaas-status] Live poll fallback to cached ledger:', err);
+        }
       }
 
       res.json({

@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
+  Clock,
   Copy,
   CreditCard,
   ExternalLink,
@@ -19,7 +21,6 @@ import {
   Settings2,
   Store,
   Truck,
-  Wallet,
   X,
 } from 'lucide-react';
 import type {
@@ -36,11 +37,21 @@ import type {
   SubOrder,
   UserProfile,
 } from '../types/zapei';
-import type { CreateAsaasChargeResult } from '../lib/asaasService';
+import {
+  formatAsaasStatusLabel,
+  type AsaasOrderStatusResult,
+  type CreateAsaasChargeResult,
+} from '../lib/asaasService';
 import { computeResellerPrice, formatBRL } from '../lib/gradeParser';
 import { calculateOrderSplit } from '../lib/splitCalculator';
+import {
+  AsaasChargeModal,
+  toAsaasChargeModalData,
+  type AsaasChargeModalData,
+} from './AsaasChargeModal';
 import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
+import { WalletIdSplitCard } from './WalletIdSplitCard';
 
 interface ResellerPanelProps {
   profile: UserProfile;
@@ -85,7 +96,7 @@ interface ResellerPanelProps {
     paymentMethod: SplitPaymentMethod,
     installments: number
   ) => Promise<CreateAsaasChargeResult>;
-  onSyncAsaasStatus?: (order: MixedOrder) => Promise<void>;
+  onSyncAsaasStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
   onOpenMyStorefrontPreview: () => void;
   onOpenBilling: () => void;
 }
@@ -122,23 +133,17 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const [activeTab, setActiveTab] = useState<ResellerTab>('connections');
   const [feedback, setFeedback] = useState('');
 
-  // R01 Identity & Asaas Wallet state
+  // R01 Identity state
   const [storefrontName, setStorefrontName] = useState(
     profile.storefrontName || `Vitrine ${profile.name}`
   );
   const [storefrontPrivacy, setStorefrontPrivacy] = useState<'open' | 'approved'>(
     profile.storefrontPrivacy
   );
-  const [walletIdDraft, setWalletIdDraft] = useState(profile.asaasWalletId || '');
-  const [savingWallet, setSavingWallet] = useState(false);
 
   useEffect(() => {
     setStorefrontName(profile.storefrontName || `Vitrine ${profile.name}`);
   }, [profile.storefrontName, profile.name]);
-
-  useEffect(() => {
-    setWalletIdDraft(profile.asaasWalletId || '');
-  }, [profile.asaasWalletId]);
 
   // R02 Connect factory by phone & Margin Split Simulator state
   const [factoryPhone, setFactoryPhone] = useState('');
@@ -162,6 +167,8 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const [chargeResultsByOrder, setChargeResultsByOrder] = useState<
     Record<string, CreateAsaasChargeResult>
   >({});
+  const [activeModalCharge, setActiveModalCharge] =
+    useState<AsaasChargeModalData | null>(null);
 
   // R05 Logistics drafts keyed by subOrderId
   const [logTypeMap, setLogTypeMap] = useState<Record<string, LogisticsType>>({});
@@ -227,17 +234,6 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       if (res.ok) setFactoryPhone('');
     } finally {
       setBusy(false);
-    }
-  };
-
-  const handleSaveWalletSubmit = async () => {
-    setSavingWallet(true);
-    setFeedback('');
-    try {
-      await onSaveWalletId(walletIdDraft.trim());
-      setFeedback('Wallet ID Asaas do revendedor salvo para receber o Split automático.');
-    } finally {
-      setSavingWallet(false);
     }
   };
 
@@ -320,6 +316,16 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               </button>
             );
           })}
+        </div>
+
+        {/* Prominent Top Asaas Wallet ID Configuration */}
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <WalletIdSplitCard
+            compact
+            currentWalletId={profile.asaasWalletId}
+            onSaveWalletId={onSaveWalletId}
+            roleHint="Receba automaticamente sua comissão nas vendas da vitrine via Split Asaas."
+          />
         </div>
       </div>
 
@@ -843,9 +849,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       <div className="space-y-3">
                         <SplitBreakdownCard
                           breakdown={liveBreakdown}
-                          title={`Resumo de Split & Taxas — Pedido ${order.orderCode}`}
-                          factoryLabel="Quanto cai para o(s) Fabricante(s)"
-                          resellerLabel="Quanto fica retido/liberado para você (Revendedor)"
+                          title={`Extrato do Split & Taxas — Pedido ${order.orderCode}`}
+                          factoryLabel="Líquido Fabricante"
+                          resellerLabel="Líquido Revendedor (Você)"
+                          asaasChargeStatus={resolvedStatus}
+                          asaasChargeId={resolvedChargeId}
                           showMethodToggle
                           onChangeMethod={(m) =>
                             setOrderPayMethodMap((p) => ({ ...p, [order.id]: m }))
@@ -863,7 +871,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               </p>
                               <p className="text-[11px] font-mono text-slate-500">
                                 {resolvedChargeId
-                                  ? `ID: ${resolvedChargeId} · Status: ${resolvedStatus || 'PENDING'}`
+                                  ? `ID: ${resolvedChargeId} · Status: ${formatAsaasStatusLabel(resolvedStatus).label}`
                                   : 'Nenhuma cobrança emitida ainda para este pedido'}
                               </p>
                             </div>
@@ -886,10 +894,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                         ...p,
                                         [order.id]: res,
                                       }));
+                                      setActiveModalCharge(
+                                        toAsaasChargeModalData(res, order.orderCode, order.id)
+                                      );
                                       setFeedback(
                                         res.mode === 'live'
                                           ? `Cobrança Asaas (${res.chargeId}) emitida com split para o pedido ${order.orderCode}!`
-                                          : `Payload de split Asaas preparado (${res.chargeId}). Configure ASAAS_API_KEY para emissão real.`
+                                          : `Cobrança Asaas preparada (${res.chargeId}).`
                                       );
                                     } catch (err) {
                                       setFeedback(
@@ -912,7 +923,39 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                     ? 'Gerando...'
                                     : resolvedChargeId
                                       ? 'Regerar Cobrança Asaas'
-                                      : 'Gerar Cobrança Asaas (Split)'}
+                                      : 'Gerar Cobrança Asaas'}
+                                </button>
+                              )}
+
+                              {resolvedChargeId && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (chargeRes) {
+                                      setActiveModalCharge(
+                                        toAsaasChargeModalData(
+                                          chargeRes,
+                                          order.orderCode,
+                                          order.id
+                                        )
+                                      );
+                                    } else {
+                                      setActiveModalCharge({
+                                        orderId: order.id,
+                                        orderCode: order.orderCode,
+                                        mode: resolvedInvoiceUrl ? 'live' : 'preview',
+                                        chargeId: resolvedChargeId,
+                                        asaasStatus: resolvedStatus,
+                                        invoiceUrl: resolvedInvoiceUrl,
+                                        pixCopyPaste: resolvedPixPayload,
+                                        splitBreakdown: liveBreakdown,
+                                      });
+                                    }
+                                  }}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[#0D2B3E] px-3 text-xs font-semibold text-white hover:bg-[#143d57]"
+                                >
+                                  <QrCode className="h-3.5 w-3.5" />
+                                  QR Code & Fatura
                                 </button>
                               )}
 
@@ -925,7 +968,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                     try {
                                       await onSyncAsaasStatus(order);
                                       setFeedback(
-                                        `Status Asaas do pedido ${order.orderCode} sincronizado.`
+                                        `Status Asaas do pedido ${order.orderCode} atualizado.`
                                       );
                                     } catch (err) {
                                       setFeedback(
@@ -944,7 +987,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                       syncLoadingId === order.id ? 'animate-spin' : ''
                                     }`}
                                   />
-                                  Sincronizar Webhook
+                                  Já paguei / Verificar Status
                                 </button>
                               )}
                             </div>
@@ -954,7 +997,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                             <p className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
                               Wallet ID pendente para:{' '}
                               {chargeRes.missingWallets.map((w) => w.label).join(', ')}. Cadastre
-                              na aba Vitrine/Financeiro antes de emitir no modo produção.
+                              no campo Wallet ID Asaas no topo antes de emitir no modo produção.
                             </p>
                           )}
 
@@ -971,7 +1014,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                   className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-semibold text-[#0E7A34] hover:bg-emerald-100"
                                 >
                                   <Copy className="h-3.5 w-3.5" />
-                                  Copiar Pix Copia e Cola
+                                  Copiar Código Pix
                                 </button>
                               )}
                               {resolvedInvoiceUrl && (
@@ -982,7 +1025,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                   className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-[11px] font-semibold text-[#0D2B3E] hover:bg-slate-100"
                                 >
                                   <ExternalLink className="h-3.5 w-3.5" />
-                                  Abrir Fatura Asaas
+                                  Abrir Fatura / Pagar com Cartão
                                 </a>
                               )}
                             </div>
@@ -1134,36 +1177,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
       {/* TAB 4: DUAL FINANCE (R06) */}
       {activeTab === 'finance' && (
         <div className="space-y-5">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Wallet className="h-4 w-4 text-[#0E7A34]" />
-                <span className="text-xs font-bold text-slate-900">
-                  Wallet ID Asaas do Revendedor (Split Automático)
-                </span>
-              </div>
-              <span className="text-[11px] font-mono text-slate-500">
-                {profile.asaasWalletId ? 'Configurada' : 'Pendente'}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={walletIdDraft}
-                onChange={(e) => setWalletIdDraft(e.target.value)}
-                placeholder="Ex: c9b8a7d6-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingWallet}
-                onClick={() => void handleSaveWalletSubmit()}
-                className="h-10 rounded-xl bg-[#0E7A34] px-4 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
-              >
-                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
-              </button>
-            </div>
-          </div>
+          <WalletIdSplitCard
+            currentWalletId={profile.asaasWalletId}
+            onSaveWalletId={onSaveWalletId}
+            roleHint="Informe a Wallet ID Asaas da sua loja para recebimento automático do Split."
+          />
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1205,82 +1223,161 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               </p>
             ) : (
               <div className="divide-y divide-slate-100">
-                {receivables.map((pay) => (
-                  <div
-                    key={pay.id}
-                    className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">
-                        Pedido {pay.orderCode} · {pay.counterpartyName}
-                      </p>
-                      <p className="font-mono text-xs text-slate-500 tabular-nums">
-                        Vencimento: {pay.dueDate} · Total:{' '}
-                        <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
-                        {typeof pay.netAmount === 'number' && (
-                          <>
-                            {' '}
-                            · Líquido Split:{' '}
-                            <strong className="text-[#0E7A34]">{formatBRL(pay.netAmount)}</strong>
-                          </>
+                {receivables.map((pay) => {
+                  const linkedOrder = orders.find((o) => o.id === pay.orderId);
+                  const split = linkedOrder
+                    ? calculateOrderSplit({
+                        orderTotal: linkedOrder.buyerFinalTotal,
+                        factoryCostTotal: linkedOrder.factoryCostTotal,
+                        paymentMethod: linkedOrder.paymentMethod || 'pix',
+                        installments: linkedOrder.installments || 1,
+                        isDirectManufacturerSale: false,
+                      })
+                    : null;
+                  const factoryNet =
+                    linkedOrder?.splitFactoryNet ??
+                    split?.factoryNetTotal ??
+                    pay.costReference ??
+                    0;
+                  const resellerNet =
+                    typeof pay.netAmount === 'number'
+                      ? pay.netAmount
+                      : linkedOrder?.splitResellerNet ?? split?.resellerNetTotal ?? 0;
+                  const platformFee =
+                    pay.platformFeeGross ??
+                    linkedOrder?.platformFeeGross ??
+                    split?.platformGrossFee;
+                  const statusInfo = formatAsaasStatusLabel(
+                    linkedOrder?.asaasChargeStatus || pay.asaasChargeStatus || pay.status
+                  );
+
+                  return (
+                    <div
+                      key={pay.id}
+                      className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-bold text-slate-900">
+                            Pedido {pay.orderCode} · {pay.counterpartyName}
+                          </p>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-bold ${
+                              statusInfo.tone === 'confirmed'
+                                ? 'bg-emerald-100 text-[#0E7A34]'
+                                : statusInfo.tone === 'overdue'
+                                  ? 'bg-red-100 text-red-700'
+                                  : statusInfo.tone === 'partial'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-slate-100 text-slate-700'
+                            }`}
+                          >
+                            {statusInfo.tone === 'confirmed' ? (
+                              <CheckCircle2 className="h-3 w-3" />
+                            ) : (
+                              <Clock className="h-3 w-3" />
+                            )}
+                            Asaas: {statusInfo.shortLabel}
+                          </span>
+                        </div>
+
+                        <p className="font-mono text-xs text-slate-500 tabular-nums">
+                          Vencimento: {pay.dueDate} · Total Pedido:{' '}
+                          <strong className="text-slate-900">{formatBRL(pay.amount)}</strong>
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] tabular-nums">
+                          <span className="text-[#0D2B3E]">
+                            Líquido Fabricante: <strong>{formatBRL(factoryNet)}</strong>
+                          </span>
+                          <span className="text-[#0E7A34]">
+                            Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                          </span>
+                          {typeof platformFee === 'number' && (
+                            <span className="text-slate-600">
+                              Taxa ChatFi: <strong>{formatBRL(platformFee)}</strong>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {onSyncAsaasStatus && linkedOrder?.asaasChargeId && (
+                          <button
+                            type="button"
+                            disabled={syncLoadingId === linkedOrder.id}
+                            onClick={async () => {
+                              setSyncLoadingId(linkedOrder.id);
+                              try {
+                                await onSyncAsaasStatus(linkedOrder);
+                                setFeedback(
+                                  `Status Asaas do pedido ${pay.orderCode} atualizado.`
+                                );
+                              } finally {
+                                setSyncLoadingId(null);
+                              }
+                            }}
+                            className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 ${
+                                syncLoadingId === linkedOrder.id ? 'animate-spin' : ''
+                              }`}
+                            />
+                            Verificar Status
+                          </button>
                         )}
-                        {typeof pay.platformFeeGross === 'number' && (
-                          <> · Taxa ChatFi: {formatBRL(pay.platformFeeGross)}</>
-                        )}
-                        {pay.asaasChargeStatus && <> · Asaas: {pay.asaasChargeStatus}</>}
-                      </p>
+                        <select
+                          value={pay.method}
+                          onChange={(e) =>
+                            void onUpdatePayment(pay.id, {
+                              method: e.target.value as PaymentMethod,
+                            })
+                          }
+                          className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"
+                        >
+                          {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
+                            (m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            )
+                          )}
+                        </select>
+                        <select
+                          value={pay.status}
+                          onChange={(e) =>
+                            void onUpdatePayment(pay.id, {
+                              status: e.target.value as PaymentStatus,
+                            })
+                          }
+                          className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
+                        >
+                          {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
+                            (s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            )
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await onSendBillingReminder(pay);
+                            setFeedback(
+                              `Lembrete financeiro do pedido ${pay.orderCode} enviado no chat de ${pay.counterpartyName}.`
+                            );
+                          }}
+                          className="inline-flex h-9 items-center gap-1 rounded-lg bg-[#F97316] px-3 text-xs font-semibold text-white hover:bg-orange-600"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          Cobrar no Chat
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        value={pay.method}
-                        onChange={(e) =>
-                          void onUpdatePayment(pay.id, {
-                            method: e.target.value as PaymentMethod,
-                          })
-                        }
-                        className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"
-                      >
-                        {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
-                          (m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          )
-                        )}
-                      </select>
-                      <select
-                        value={pay.status}
-                        onChange={(e) =>
-                          void onUpdatePayment(pay.id, {
-                            status: e.target.value as PaymentStatus,
-                          })
-                        }
-                        className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
-                      >
-                        {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
-                          (s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          )
-                        )}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await onSendBillingReminder(pay);
-                          setFeedback(
-                            `Lembrete financeiro do pedido ${pay.orderCode} enviado no chat de ${pay.counterpartyName}.`
-                          );
-                        }}
-                        className="inline-flex h-9 items-center gap-1 rounded-lg bg-[#F97316] px-3 text-xs font-semibold text-white hover:bg-orange-600"
-                      >
-                        <Send className="h-3.5 w-3.5" />
-                        Cobrar no Chat
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1298,25 +1395,77 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               </p>
             ) : (
               <div className="divide-y divide-slate-100">
-                {payables.map((pay) => (
-                  <div
-                    key={pay.id}
-                    className="flex flex-wrap items-center justify-between gap-2 p-4"
-                  >
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">
-                        {pay.subOrderCode || pay.orderCode}
-                      </p>
-                      <p className="font-mono text-xs text-slate-500 tabular-nums">
-                        Vencimento: {pay.dueDate} · {pay.method} · Status:{' '}
-                        <strong>{pay.status}</strong>
-                      </p>
+                {payables.map((pay) => {
+                  const linkedOrder = orders.find((o) => o.id === pay.orderId);
+                  const split = linkedOrder
+                    ? calculateOrderSplit({
+                        orderTotal: linkedOrder.buyerFinalTotal,
+                        factoryCostTotal: linkedOrder.factoryCostTotal,
+                        paymentMethod: linkedOrder.paymentMethod || 'pix',
+                        installments: linkedOrder.installments || 1,
+                        isDirectManufacturerSale: false,
+                      })
+                    : null;
+                  const factoryNet =
+                    typeof pay.netAmount === 'number'
+                      ? pay.netAmount
+                      : linkedOrder?.splitFactoryNet ?? split?.factoryNetTotal ?? pay.amount;
+                  const resellerNet =
+                    linkedOrder?.splitResellerNet ?? split?.resellerNetTotal;
+                  const statusInfo = formatAsaasStatusLabel(
+                    linkedOrder?.asaasChargeStatus || pay.asaasChargeStatus || pay.status
+                  );
+
+                  return (
+                    <div
+                      key={pay.id}
+                      className="flex flex-wrap items-center justify-between gap-3 p-4"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-bold text-slate-900">
+                            {pay.subOrderCode || pay.orderCode}
+                          </p>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-bold ${
+                              statusInfo.tone === 'confirmed'
+                                ? 'bg-emerald-100 text-[#0E7A34]'
+                                : statusInfo.tone === 'overdue'
+                                  ? 'bg-red-100 text-red-700'
+                                  : statusInfo.tone === 'partial'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-slate-100 text-slate-700'
+                            }`}
+                          >
+                            {statusInfo.tone === 'confirmed' ? (
+                              <CheckCircle2 className="h-3 w-3" />
+                            ) : (
+                              <Clock className="h-3 w-3" />
+                            )}
+                            Asaas: {statusInfo.shortLabel}
+                          </span>
+                        </div>
+                        <p className="font-mono text-xs text-slate-500 tabular-nums">
+                          Vencimento: {pay.dueDate} · {pay.method} · Status:{' '}
+                          <strong>{pay.status}</strong>
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-[11px] tabular-nums">
+                          <span className="text-[#0D2B3E]">
+                            Líquido Fabricante: <strong>{formatBRL(factoryNet)}</strong>
+                          </span>
+                          {typeof resellerNet === 'number' && (
+                            <span className="text-[#0E7A34]">
+                              Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="font-mono text-sm font-bold text-[#0D2B3E] tabular-nums">
+                        {formatBRL(pay.amount)}
+                      </span>
                     </div>
-                    <span className="font-mono text-sm font-bold text-[#0D2B3E] tabular-nums">
-                      {formatBRL(pay.amount)}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1382,30 +1531,27 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
             Salvar Configurações da Vitrine
           </button>
 
-          <div className="border-t border-slate-100 pt-4 space-y-2">
-            <label className="block text-xs font-semibold text-slate-700">
-              Wallet ID Asaas do Revendedor (Split automático)
-            </label>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={walletIdDraft}
-                onChange={(e) => setWalletIdDraft(e.target.value)}
-                placeholder="Ex: c9b8a7d6-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                className="h-10 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingWallet}
-                onClick={() => void handleSaveWalletSubmit()}
-                className="h-10 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50"
-              >
-                {savingWallet ? 'Salvando...' : 'Salvar Wallet ID'}
-              </button>
-            </div>
+          <div className="border-t border-slate-100 pt-4">
+            <WalletIdSplitCard
+              compact
+              currentWalletId={profile.asaasWalletId}
+              onSaveWalletId={onSaveWalletId}
+            />
           </div>
         </form>
       )}
+
+      <AsaasChargeModal
+        isOpen={Boolean(activeModalCharge)}
+        data={activeModalCharge}
+        onClose={() => setActiveModalCharge(null)}
+        onVerifyStatus={async (orderId) => {
+          const order = myOrders.find((o) => o.id === orderId);
+          if (!order || !onSyncAsaasStatus) return null;
+          return onSyncAsaasStatus(order);
+        }}
+        onCopySuccess={(msg) => setFeedback(msg)}
+      />
     </div>
   );
 };
