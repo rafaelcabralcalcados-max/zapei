@@ -1,5 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { CheckCircle2, Wallet } from 'lucide-react';
+import React, { useEffect, useId, useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  HelpCircle,
+  Wallet,
+} from 'lucide-react';
 
 interface WalletIdSplitCardProps {
   currentWalletId?: string;
@@ -14,10 +21,12 @@ export const WalletIdSplitCard: React.FC<WalletIdSplitCardProps> = ({
   compact = false,
   roleHint,
 }) => {
+  const inputId = useId();
   const [draft, setDraft] = useState(currentWalletId || '');
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [showGuide, setShowGuide] = useState(false);
 
   useEffect(() => {
     setDraft(currentWalletId || '');
@@ -60,7 +69,7 @@ export const WalletIdSplitCard: React.FC<WalletIdSplitCardProps> = ({
           </div>
           <div>
             <label
-              htmlFor={`wallet-id-${compact ? 'top' : 'settings'}`}
+              htmlFor={inputId}
               className="block text-xs sm:text-sm font-bold text-slate-900"
             >
               Wallet ID Asaas (Recebimento Split)
@@ -82,7 +91,7 @@ export const WalletIdSplitCard: React.FC<WalletIdSplitCardProps> = ({
 
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
-          id={`wallet-id-${compact ? 'top' : 'settings'}`}
+          id={inputId}
           type="text"
           value={draft}
           onChange={(e) => {
@@ -120,6 +129,86 @@ export const WalletIdSplitCard: React.FC<WalletIdSplitCardProps> = ({
           </span>
         </div>
       )}
+
+      {/* Discreet Help Toggle & Direct Asaas Link */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+        <button
+          type="button"
+          aria-expanded={showGuide}
+          onClick={() => setShowGuide((prev) => !prev)}
+          className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-semibold text-[#0D2B3E] transition hover:bg-slate-100"
+        >
+          <HelpCircle className="h-3.5 w-3.5 text-[#0E7A34]" />
+          <span>Como conseguir meu Wallet ID?</span>
+          {showGuide ? (
+            <ChevronUp className="h-3.5 w-3.5 text-slate-500" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+          )}
+        </button>
+
+        <a
+          href="https://www.asaas.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-h-[34px] items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-[#0D2B3E] transition hover:bg-slate-100"
+        >
+          <span>Abrir site do Asaas ↗</span>
+        </a>
+      </div>
+
+      {showGuide && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-3 text-xs text-slate-700">
+          <p className="font-bold text-slate-900">
+            Passo a passo para encontrar seu Wallet ID no Asaas:
+          </p>
+          <ol className="space-y-2">
+            <li className="flex items-start gap-2.5">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] font-mono text-[11px] font-bold text-white">
+                1
+              </span>
+              <span>
+                Acesse <strong>asaas.com</strong> (ou abra o app Asaas) e crie sua conta gratuita com CPF ou CNPJ.
+              </span>
+            </li>
+            <li className="flex items-start gap-2.5">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] font-mono text-[11px] font-bold text-white">
+                2
+              </span>
+              <span>
+                No menu do Asaas, vá em <strong>Configurações da Conta → Integrações</strong> (ou <strong>Minha Conta → Dados da Conta</strong>).
+              </span>
+            </li>
+            <li className="flex items-start gap-2.5">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] font-mono text-[11px] font-bold text-white">
+                3
+              </span>
+              <span>
+                Copie o código chamado <strong>Wallet ID</strong> (um código longo com letras, números e traços).
+              </span>
+            </li>
+            <li className="flex items-start gap-2.5">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#0E7A34] font-mono text-[11px] font-bold text-white">
+                4
+              </span>
+              <span>
+                Volte aqui no ChatFi, cole o código no campo acima e clique em <strong>Salvar Wallet ID</strong>.
+              </span>
+            </li>
+          </ol>
+
+          <a
+            href="https://www.asaas.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white transition hover:bg-[#143d57] sm:w-auto"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Abrir site do Asaas ↗
+          </a>
+        </div>
+      )}
     </div>
   );
 };
+
