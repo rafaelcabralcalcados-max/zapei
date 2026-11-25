@@ -14,7 +14,15 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import type { Contact } from '../types/zapei';
+import type { Contact, FactoryConnection, Product } from '../types/zapei';
+import {
+  PRODUCT_CATEGORIES,
+  type MainCategoryId,
+  inferProductSubcategory,
+  normalizeProductCategory,
+  searchMatchesCategoryOrProduct,
+} from '../lib/categories';
+import { CategoryIcon } from '../lib/categoryIcons';
 import type { PhoneLookupResult, PublicDirectoryUser } from '../lib/firebase';
 import {
   formatPhoneDisplay,
@@ -38,6 +46,8 @@ interface ContactsViewProps {
   currentUserUid: string;
   contacts: Contact[];
   directoryUsers: PublicDirectoryUser[];
+  products?: Product[];
+  connections?: FactoryConnection[];
   onLookupPhone: (rawPhone: string) => Promise<PhoneLookupResult | null>;
   onSaveContact: (name: string, phone: string) => Promise<{ matched: boolean; matchedName?: string }>;
   onImportBatchContacts: (
@@ -65,6 +75,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   currentUserUid,
   contacts,
   directoryUsers,
+  products = [],
+  connections = [],
   onLookupPhone,
   onSaveContact,
   onImportBatchContacts,
@@ -74,11 +86,18 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onOpenChat,
   onOpenStorefront,
   onStartCall,
+  onOpenDirectoryChat,
+  onOpenDirectoryStorefront,
   onOpenDirectFoundChat,
   onStartDirectFoundCall,
   onPreviewAvatar,
 }) => {
   const [search, setSearch] = useState('');
+  const [selectedDirectoryCategory, setSelectedDirectoryCategory] = useState<
+    'Todas' | MainCategoryId | null
+  >(null);
+  const [selectedDirectorySubcategory, setSelectedDirectorySubcategory] =
+    useState<string>('Todas');
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
@@ -163,6 +182,136 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
 
   const onZapeiContacts = filtered.filter((c) => c.onZapei);
   const inviteContacts = filtered.filter((c) => !c.onZapei);
+
+  // Map each discoverable storefront owner to its visible catalog products (preserving factory confidentiality for resellers)
+  const storefrontCatalogByUid = useMemo(() => {
+    const map = new Map<string, Product[]>();
+    for (const user of directoryUsers) {
+      if (!user.hasStorefront || user.uid === currentUserUid) continue;
+      if (user.role === 'manufacturer') {
+        const items = products.filter(
+          (p) =>
+            p.factoryId === user.uid &&
+            !p.isSoldOutToday &&
+            p.stockBoxes > 0 &&
+            p.moderationStatus === 'approved'
+        );
+        map.set(user.uid, items);
+      } else if (user.role === 'reseller') {
+        const activeConns = connections.filter(
+          (c) => c.resellerId === user.uid && !c.paused
+        );
+        const items: Product[] = [];
+        for (const conn of activeConns) {
+          for (const p of products) {
+            if (p.factoryId !== conn.factoryId) continue;
+            if (p.isSoldOutToday || p.stockBoxes <= 0 || p.moderationStatus !== 'approved') {
+              continue;
+            }
+            if (conn.rejectedProductIds.includes(p.id)) continue;
+            if (conn.reviewPhotos && !conn.approvedProductIds.includes(p.id)) continue;
+            items.push(p);
+          }
+        }
+        map.set(user.uid, items);
+      }
+    }
+    return map;
+  }, [directoryUsers, products, connections, currentUserUid]);
+
+  const activeDirCatDef = useMemo(
+    () =>
+      selectedDirectoryCategory && selectedDirectoryCategory !== 'Todas'
+        ? PRODUCT_CATEGORIES.find((c) => c.id === selectedDirectoryCategory) ?? null
+        : null,
+    [selectedDirectoryCategory]
+  );
+
+  const showStorefrontDirectoryResults =
+    selectedDirectoryCategory !== null ||
+    (!looksLikePhoneQuery && normalizedQuery.length >= 2);
+
+  const filteredDirectoryStorefronts = useMemo(() => {
+    if (!showStorefrontDirectoryResults) return [];
+    const results: Array<{
+      user: PublicDirectoryUser;
+      matchingCount: number;
+      totalProducts: number;
+      categories: MainCategoryId[];
+    }> = [];
+
+    for (const user of directoryUsers) {
+      if (!user.hasStorefront || user.uid === currentUserUid) continue;
+      const items = storefrontCatalogByUid.get(user.uid) ?? [];
+      const catSet = new Set<MainCategoryId>();
+      for (const p of items) {
+        catSet.add(normalizeProductCategory(p.category));
+      }
+
+      const matchingProducts = items.filter((p) => {
+        const mainCat = normalizeProductCategory(p.category);
+        const subCat = inferProductSubcategory(p.category, p.subcategory);
+        if (
+          selectedDirectoryCategory &&
+          selectedDirectoryCategory !== 'Todas' &&
+          mainCat !== selectedDirectoryCategory
+        ) {
+          return false;
+        }
+        if (
+          selectedDirectorySubcategory !== 'Todas' &&
+          subCat !== selectedDirectorySubcategory
+        ) {
+          return false;
+        }
+        if (normalizedQuery) {
+          const storeTextMatch =
+            normalizeSearchText(user.storefrontName || user.displayName).includes(
+              normalizedQuery
+            ) || normalizeSearchText(user.displayName).includes(normalizedQuery);
+          if (storeTextMatch) return true;
+          const prodMatch =
+            normalizeSearchText(p.name).includes(normalizedQuery) ||
+            normalizeSearchText(p.specsSummary || '').includes(normalizedQuery) ||
+            searchMatchesCategoryOrProduct(normalizedQuery, p.category, subCat);
+          return prodMatch;
+        }
+        return true;
+      });
+
+      const storeMatchesQueryDirectly =
+        normalizedQuery.length >= 2 &&
+        (selectedDirectoryCategory === null || selectedDirectoryCategory === 'Todas') &&
+        (normalizeSearchText(user.storefrontName || '').includes(normalizedQuery) ||
+          normalizeSearchText(user.displayName).includes(normalizedQuery));
+
+      if (matchingProducts.length > 0 || storeMatchesQueryDirectly) {
+        results.push({
+          user,
+          matchingCount: matchingProducts.length,
+          totalProducts: items.length,
+          categories: Array.from(catSet),
+        });
+      } else if (selectedDirectoryCategory === 'Todas' && !normalizedQuery) {
+        results.push({
+          user,
+          matchingCount: items.length,
+          totalProducts: items.length,
+          categories: Array.from(catSet),
+        });
+      }
+    }
+
+    return results.sort((a, b) => b.matchingCount - a.matchingCount);
+  }, [
+    showStorefrontDirectoryResults,
+    directoryUsers,
+    currentUserUid,
+    storefrontCatalogByUid,
+    selectedDirectoryCategory,
+    selectedDirectorySubcategory,
+    normalizedQuery,
+  ]);
 
   const handleNativeDeviceSync = async () => {
     setBusy(true);
@@ -332,7 +481,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           </form>
         )}
 
-        {/* Search Input with Instant Name & Phone Search (Autofill disabled) */}
+        {/* Search Input with Instant Name, Category & Phone Search (Autofill disabled) */}
         <div className="relative mt-4">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
@@ -344,7 +493,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             spellCheck={false}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar nos seus contatos ou digitar telefone / CFI-..."
+            placeholder="Buscar contato, produto, categoria ou telefone / CFI-..."
             className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 focus:border-[#0E7A34] focus:bg-white focus:outline-none"
           />
           {liveLookupBusy ? (
@@ -359,6 +508,96 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               <X className="h-4 w-4" />
             </button>
           ) : null}
+        </div>
+
+        {/* Category Filter Strip to Explore Active Storefronts */}
+        <div className="mt-3.5 space-y-2 border-t border-slate-100 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Explorar vitrines por categoria
+            </span>
+            {selectedDirectoryCategory !== null && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedDirectoryCategory(null);
+                  setSelectedDirectorySubcategory('Todas');
+                }}
+                className="text-[11px] font-semibold text-slate-500 hover:text-slate-800"
+              >
+                Ocultar vitrines
+              </button>
+            )}
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedDirectoryCategory((prev) =>
+                  prev === 'Todas' ? null : 'Todas'
+                );
+                setSelectedDirectorySubcategory('Todas');
+              }}
+              className={`inline-flex min-h-[34px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-semibold transition ${
+                selectedDirectoryCategory === 'Todas'
+                  ? 'bg-[#0E7A34] text-white'
+                  : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              <CategoryIcon categoryId="Todas" className="h-3.5 w-3.5" />
+              Todas
+            </button>
+            {PRODUCT_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => {
+                  setSelectedDirectoryCategory((prev) =>
+                    prev === cat.id ? null : cat.id
+                  );
+                  setSelectedDirectorySubcategory('Todas');
+                }}
+                className={`inline-flex min-h-[34px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3 text-xs font-semibold transition ${
+                  selectedDirectoryCategory === cat.id
+                    ? 'bg-[#0E7A34] text-white'
+                    : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <CategoryIcon categoryId={cat.id} className="h-3.5 w-3.5" />
+                {cat.shortLabel}
+              </button>
+            ))}
+          </div>
+
+          {activeDirCatDef && (
+            <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+              <button
+                type="button"
+                onClick={() => setSelectedDirectorySubcategory('Todas')}
+                className={`min-h-[30px] shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[11px] font-semibold transition ${
+                  selectedDirectorySubcategory === 'Todas'
+                    ? 'bg-[#0D2B3E] text-white'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                Tudo em {activeDirCatDef.shortLabel}
+              </button>
+              {activeDirCatDef.subcategories.map((sub) => (
+                <button
+                  key={sub}
+                  type="button"
+                  onClick={() => setSelectedDirectorySubcategory(sub)}
+                  className={`min-h-[30px] shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[11px] font-semibold transition ${
+                    selectedDirectorySubcategory === sub
+                      ? 'bg-[#0D2B3E] text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  {sub}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Instant Live Lookup Result Card (when typing a phone number or virtual line) */}
@@ -460,6 +699,87 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Directory Storefronts Matching Selected Category or Product Search */}
+      {showStorefrontDirectoryResults && (
+        <section className="mt-5">
+          <div className="mb-2.5 flex items-center justify-between px-1">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Vitrines encontradas ({filteredDirectoryStorefronts.length})
+            </h2>
+          </div>
+
+          {filteredDirectoryStorefronts.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-xs text-slate-500">
+              Nenhuma vitrine ativa encontrada com produtos nesta categoria ou busca.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              {filteredDirectoryStorefronts.map(
+                ({ user, matchingCount, categories }) => (
+                  <div
+                    key={user.uid}
+                    className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      {user.avatarUrl ? (
+                        <img
+                          src={user.avatarUrl}
+                          alt={user.storefrontName || user.displayName}
+                          className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                        />
+                      ) : (
+                        <div
+                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                          style={{ backgroundColor: user.avatarColor || '#0E7A34' }}
+                        >
+                          {user.initials}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-bold text-slate-900">
+                          {user.storefrontName || user.displayName}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          {matchingCount > 0
+                            ? `${matchingCount} produto(s) nesta busca`
+                            : 'Vitrine ativa'}
+                          {categories.length > 0
+                            ? ` · ${categories.slice(0, 3).join(', ')}`
+                            : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {onOpenDirectoryStorefront && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenDirectoryStorefront(user)}
+                          className="flex min-h-[38px] items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0B5D27]"
+                        >
+                          <Store className="h-3.5 w-3.5" />
+                          Ver Vitrine
+                        </button>
+                      )}
+                      {onOpenDirectoryChat && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenDirectoryChat(user)}
+                          className="flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5" />
+                          Conversar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Saved Contacts Already on ChatFi */}
       {onZapeiContacts.length > 0 && (
@@ -677,6 +997,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       {/* Empty State when no saved contacts match */}
       {onZapeiContacts.length === 0 &&
         inviteContacts.length === 0 &&
+        !showStorefrontDirectoryResults &&
         !(looksLikePhoneQuery && liveLookupResult) && (
           <div className="mt-5 rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
             <Smartphone className="mx-auto h-10 w-10 text-slate-400" />
@@ -688,7 +1009,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
               {normalizedQuery
                 ? 'Para iniciar conversa com quem ainda não está salvo na sua agenda, digite o telefone completo com DDD ou a Linha Virtual (CFI-XXXX-XXXX) na busca acima.'
-                : 'Igual ao WhatsApp, apenas contatos da sua agenda aparecem aqui. Toque em "+ Novo contato" ou sincronize sua agenda usando telefone ou Linha Virtual (CFI-XXXX-XXXX).'}
+                : 'Igual ao WhatsApp, apenas contatos da sua agenda aparecem aqui. Toque em "+ Novo contato" ou sincronize sua agenda, ou escolha uma categoria acima para explorar vitrines.'}
             </p>
           </div>
         )}

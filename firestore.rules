@@ -205,16 +205,28 @@ service cloud.firestore {
     function isValidProduct(data) {
       return data.keys().hasAll(['factoryId', 'factoryName', 'name', 'category', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'factoryId', 'factoryName', 'name', 'sku', 'category', 'factoryPrice',
-          'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus',
-          'createdAt', 'updatedAt'
+          'factoryId', 'factoryName', 'name', 'sku', 'category', 'subcategory',
+          'unitType', 'quantityPerPack', 'packLabel', 'specsSummary',
+          'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl',
+          'isSoldOutToday', 'moderationStatus', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.factoryId)
         && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && (!('sku' in data) || (data.sku is string && data.sku.size() <= 40))
-        && data.category in ['Calçados', 'Bolsas', 'Sapatos', 'Joias', 'Acessórios']
-        && data.factoryPrice is number && data.factoryPrice >= 0 && data.factoryPrice <= 1000000
+        && data.category in [
+          'Calçados & Acessórios', 'Moda Íntima & Lingerie', 'Vestuário & Confecção',
+          'Automóveis & Veículos', 'Imóveis & Casas', 'Eletrônicos & Celulares',
+          'Casa, Móveis & Decoração', 'Beleza, Perfumaria & Saúde',
+          'Ferramentas, Construção & Agro', 'Alimentos, Bebidas & Outros',
+          'Calçados', 'Bolsas', 'Sapatos', 'Joias', 'Acessórios'
+        ]
+        && (!('subcategory' in data) || (data.subcategory is string && data.subcategory.size() <= 60))
+        && (!('unitType' in data) || data.unitType in ['par', 'unidade', 'kit'])
+        && (!('quantityPerPack' in data) || (data.quantityPerPack is number && data.quantityPerPack >= 1 && data.quantityPerPack <= 10000))
+        && (!('packLabel' in data) || (data.packLabel is string && data.packLabel.size() <= 30))
+        && (!('specsSummary' in data) || (data.specsSummary is string && data.specsSummary.size() <= 240))
+        && data.factoryPrice is number && data.factoryPrice >= 0 && data.factoryPrice <= 100000000
         && data.stockBoxes is number && data.stockBoxes >= 0 && data.stockBoxes <= 100000
         && data.gradeRaw is string && data.gradeRaw.size() >= 1 && data.gradeRaw.size() <= 200
         && data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 350000
@@ -697,7 +709,7 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'subcategory', 'unitType', 'quantityPerPack', 'packLabel', 'specsSummary', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'updatedAt'])
         );
       allow delete: if isVerified() && isValidId(productId) && existing().factoryId == request.auth.uid;
     }

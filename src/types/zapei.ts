@@ -1,4 +1,25 @@
-export type ProductCategory = 'Calçados' | 'Bolsas' | 'Sapatos' | 'Joias' | 'Acessórios';
+export type MainProductCategory =
+  | 'Calçados & Acessórios'
+  | 'Moda Íntima & Lingerie'
+  | 'Vestuário & Confecção'
+  | 'Automóveis & Veículos'
+  | 'Imóveis & Casas'
+  | 'Eletrônicos & Celulares'
+  | 'Casa, Móveis & Decoração'
+  | 'Beleza, Perfumaria & Saúde'
+  | 'Ferramentas, Construção & Agro'
+  | 'Alimentos, Bebidas & Outros';
+
+export type LegacyProductCategory =
+  | 'Calçados'
+  | 'Bolsas'
+  | 'Sapatos'
+  | 'Joias'
+  | 'Acessórios';
+
+export type ProductCategory = MainProductCategory | LegacyProductCategory;
+
+export type ProductUnitType = 'par' | 'unidade' | 'kit';
 
 export type CommercialMode = 'buyer' | 'manufacturer' | 'reseller';
 
@@ -120,6 +141,11 @@ export interface Product {
   name: string;
   sku: string;
   category: ProductCategory;
+  subcategory?: string;
+  unitType?: ProductUnitType;
+  quantityPerPack?: number;
+  packLabel?: string;
+  specsSummary?: string;
   factoryPrice: number;
   stockBoxes: number;
   gradeRaw: string;
@@ -142,7 +168,7 @@ export interface FactoryConnection {
   deliveryPolicy: MinimumDeliveryPolicy;
   reviewPhotos: boolean;
   paused: boolean;
-  margins: Record<ProductCategory, CategoryMargin>;
+  margins: Record<string, CategoryMargin>;
   approvedProductIds: string[];
   rejectedProductIds: string[];
 }

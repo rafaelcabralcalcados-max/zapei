@@ -49,6 +49,20 @@ import {
   computeResellerPrice,
   formatBRL,
 } from '../lib/gradeParser';
+import {
+  PRODUCT_CATEGORIES,
+  computeUnitPriceFromTotal,
+  formatPackSummaryLabel,
+  formatUnitSuffix,
+  getCategoryDefinition,
+  inferProductSubcategory,
+  isSingleAssetCategory,
+  normalizeProductCategory,
+  resolveMarginForProduct,
+  resolveProductPackLabel,
+  resolveProductQuantityPerPack,
+  resolveProductUnitType,
+} from '../lib/categories';
 import { calculateOrderSplit } from '../lib/splitCalculator';
 import {
   AsaasChargeModal,
@@ -77,7 +91,7 @@ interface ResellerPanelProps {
     updates: Partial<{
       reviewPhotos: boolean;
       paused: boolean;
-      margins: Record<ProductCategory, CategoryMargin>;
+      margins: Record<string, CategoryMargin>;
       approvedProductIds: string[];
       rejectedProductIds: string[];
     }>
@@ -107,14 +121,6 @@ interface ResellerPanelProps {
   onOpenMyStorefrontPreview: () => void;
   onOpenBilling: () => void;
 }
-
-const CATEGORIES: ProductCategory[] = [
-  'Calçados',
-  'Bolsas',
-  'Sapatos',
-  'Joias',
-  'Acessórios',
-];
 
 type ResellerTab = 'connections' | 'review' | 'orders' | 'finance' | 'identity';
 
@@ -264,7 +270,10 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
         (p) => p.factoryId === conn.factoryId && p.moderationStatus === 'approved'
       );
       if (prod) {
-        return computeResellerPrice(prod.factoryPrice, conn.margins[prod.category]);
+        const margin =
+          resolveMarginForProduct(conn.margins, prod.category) ??
+          getCategoryDefinition(prod.category).defaultMargin;
+        return computeResellerPrice(prod.factoryPrice, margin);
       }
     }
     return 501.6;
@@ -578,17 +587,21 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                     </div>
                   </div>
 
-                  {/* Per-category margins */}
+                  {/* Per-category margins (10 categories) */}
                   <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
-                    {CATEGORIES.map((cat) => {
-                      const margin = conn.margins[cat] ?? { mode: 'fixed', value: 100 };
+                    {PRODUCT_CATEGORIES.map((cat) => {
+                      const margin =
+                        resolveMarginForProduct(conn.margins, cat.id) ?? cat.defaultMargin;
                       return (
                         <div
-                          key={cat}
+                          key={cat.id}
                           className="rounded-xl border border-slate-200 bg-slate-50 p-2.5"
                         >
-                          <span className="block text-[11px] font-bold text-slate-700">
-                            {cat}
+                          <span
+                            title={cat.id}
+                            className="block truncate text-[11px] font-bold text-slate-700"
+                          >
+                            {cat.shortLabel}
                           </span>
                           <div className="mt-1.5 flex items-center gap-1">
                             <select
@@ -596,7 +609,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               onChange={(e) => {
                                 const updated = {
                                   ...conn.margins,
-                                  [cat]: {
+                                  [cat.id]: {
                                     ...margin,
                                     mode: e.target.value as 'fixed' | 'percent',
                                   },
@@ -619,7 +632,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                 );
                                 const updated = {
                                   ...conn.margins,
-                                  [cat]: { ...margin, value: val },
+                                  [cat.id]: { ...margin, value: val },
                                 };
                                 void onUpdateConnection(conn.id, { margins: updated });
                               }}
@@ -633,17 +646,29 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
 
                   {/* Live Pricing & Split Simulator for this factory's margins */}
                   {(() => {
-                    const simCat = simCategoryMap[conn.id] ?? 'Calçados';
+                    const simCat = simCategoryMap[conn.id] ?? 'Calçados & Acessórios';
+                    const simCatDef = getCategoryDefinition(simCat);
                     const sampleFactoryProduct = products.find(
-                      (p) => p.factoryId === conn.factoryId && p.category === simCat
+                      (p) =>
+                        p.factoryId === conn.factoryId &&
+                        normalizeProductCategory(p.category) === normalizeProductCategory(simCat)
                     );
-                    const defaultBase = sampleFactoryProduct?.factoryPrice ?? 55;
+                    const defaultBase = sampleFactoryProduct?.factoryPrice ?? 380;
+                    const simQty = sampleFactoryProduct
+                      ? resolveProductQuantityPerPack(sampleFactoryProduct)
+                      : simCatDef.defaultQuantityPerPack;
+                    const simUnitType = sampleFactoryProduct
+                      ? resolveProductUnitType(sampleFactoryProduct)
+                      : simCatDef.defaultUnitType;
+                    const simUnitSuffix = formatUnitSuffix(simUnitType);
                     const simBaseRaw =
                       simBaseCostMap[conn.id] !== undefined
                         ? Number.parseFloat(simBaseCostMap[conn.id].replace(',', '.')) || 0
                         : defaultBase;
-                    const simMargin = conn.margins[simCat] ?? { mode: 'fixed', value: 100 };
+                    const simMargin =
+                      resolveMarginForProduct(conn.margins, simCat) ?? simCatDef.defaultMargin;
                     const simPublicPrice = computeResellerPrice(simBaseRaw, simMargin);
+                    const simUnitPublicPrice = computeUnitPriceFromTotal(simPublicPrice, simQty);
                     const simMethod = simMethodMap[conn.id] ?? 'pix';
                     const simInst = simInstMap[conn.id] ?? 1;
                     const simBreakdown = calculateOrderSplit({
@@ -657,7 +682,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       <div className="mt-4 space-y-2.5 border-t border-slate-100 pt-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-xs font-bold text-slate-800">
-                            Simulador de Precificação na Vitrine ({simCat})
+                            Simulador de Precificação na Vitrine ({simCatDef.shortLabel})
                           </span>
                           <div className="flex flex-wrap items-center gap-2">
                             <select
@@ -670,9 +695,9 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               }
                               className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
                             >
-                              {CATEGORIES.map((c) => (
-                                <option key={c} value={c}>
-                                  {c}
+                              {PRODUCT_CATEGORIES.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.id}
                                 </option>
                               ))}
                             </select>
@@ -693,11 +718,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                     [conn.id]: e.target.value,
                                   }))
                                 }
-                                className="w-16 bg-transparent font-mono font-bold text-slate-900 focus:outline-none tabular-nums"
+                                className="w-20 bg-transparent font-mono font-bold text-slate-900 focus:outline-none tabular-nums"
                               />
                             </div>
                             <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                              Vitrine: {formatBRL(simPublicPrice)}
+                              {simQty > 1
+                                ? `Vitrine: ${formatBRL(simUnitPublicPrice)} / ${simUnitSuffix} (${formatBRL(simPublicPrice)} total)`
+                                : `Vitrine: ${formatBRL(simPublicPrice)} / unid.`}
                             </span>
                           </div>
                         </div>
@@ -706,7 +733,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           <SplitBreakdownCard
                             compact
                             breakdown={simBreakdown}
-                            title={`Split previsto na venda de 1 cx (${simCat})`}
+                            title={`Split previsto na venda (${simCatDef.shortLabel})`}
                             factoryLabel={`Vai para ${conn.factoryName}`}
                             resellerLabel="Fica retido/liberado para você"
                             showMethodToggle
@@ -744,10 +771,24 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {pendingReviewItems.map(({ product, connection }) => {
-                const publicPrice = computeResellerPrice(
-                  product.factoryPrice,
-                  connection.margins[product.category]
-                );
+                const margin =
+                  resolveMarginForProduct(connection.margins, product.category) ??
+                  getCategoryDefinition(product.category).defaultMargin;
+                const publicPrice = computeResellerPrice(product.factoryPrice, margin);
+                const qty = resolveProductQuantityPerPack(product);
+                const unitType = resolveProductUnitType(product);
+                const unitSuffix = formatUnitSuffix(unitType);
+                const unitPublic = computeUnitPriceFromTotal(publicPrice, qty);
+                const unitFactory = computeUnitPriceFromTotal(product.factoryPrice, qty);
+                const packSummary = formatPackSummaryLabel({
+                  quantityPerPack: qty,
+                  unitType,
+                  packLabel: resolveProductPackLabel(product),
+                });
+                const mainCat = normalizeProductCategory(product.category);
+                const subCat = inferProductSubcategory(product.category, product.subcategory);
+                const singleAsset = isSingleAssetCategory(product.category);
+
                 return (
                   <div
                     key={`${connection.id}_${product.id}`}
@@ -761,27 +802,41 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                     <div className="p-4 space-y-3">
                       <div>
                         <span className="text-[11px] font-semibold text-slate-500">
-                          {connection.factoryName} · {product.category}
+                          {connection.factoryName} · {mainCat}
+                          {subCat ? ` · ${subCat}` : ''}
                         </span>
                         <h3 className="text-sm font-bold text-slate-900">
                           {product.name}
                         </h3>
+                        {product.specsSummary && (
+                          <p className="text-xs text-slate-500">{product.specsSummary}</p>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs">
                         <div>
                           <span className="block text-[10px] text-slate-500">Custo Fábrica</span>
                           <span className="font-mono font-bold text-slate-700 tabular-nums">
-                            {formatBRL(product.factoryPrice)}
+                            {formatBRL(unitFactory)} / {unitSuffix}
                           </span>
+                          {qty > 1 && (
+                            <span className="block font-mono text-[10px] text-slate-500 tabular-nums">
+                              {packSummary}: {formatBRL(product.factoryPrice)}
+                            </span>
+                          )}
                         </div>
                         <div className="text-right">
                           <span className="block text-[10px] text-slate-500">
                             Seu Preço na Vitrine
                           </span>
                           <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
-                            {formatBRL(publicPrice)}
+                            {formatBRL(unitPublic)} / {unitSuffix}
                           </span>
+                          {qty > 1 && (
+                            <span className="block font-mono text-[10px] text-slate-500 tabular-nums">
+                              {packSummary}: {formatBRL(publicPrice)}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -793,12 +848,18 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           paymentMethod: 'pix',
                           isDirectManufacturerSale: false,
                         })}
-                        title="Precificação & Split (1 caixa no Pix)"
+                        title={`Precificação & Split (${qty > 1 ? packSummary : '1 unidade'} no Pix)`}
                         factoryLabel={`Vai para ${connection.factoryName}`}
                         resellerLabel="Fica retido/liberado para você"
                       />
 
-                      <GradeVisualGrid gradeRaw={product.gradeRaw} compact />
+                      {!singleAsset && qty > 1 && (
+                        <GradeVisualGrid
+                          gradeRaw={product.gradeRaw}
+                          compact
+                          unitLabel={unitType === 'par' ? 'pares' : 'un'}
+                        />
+                      )}
 
                       <div className="flex gap-2">
                         <button

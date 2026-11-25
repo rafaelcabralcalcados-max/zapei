@@ -12,6 +12,7 @@ import {
   Plus,
   QrCode,
   RefreshCw,
+  Search,
   ShieldCheck,
   ShoppingBag,
   Store,
@@ -27,11 +28,27 @@ import type {
   MixedOrder,
   OrderSplitBreakdown,
   Product,
-  ProductCategory,
   SplitPaymentMethod,
   SubOrder,
   SubscriptionStatus,
 } from '../types/zapei';
+import {
+  PRODUCT_CATEGORIES,
+  type MainCategoryId,
+  computeUnitPriceFromTotal,
+  formatPackSummaryLabel,
+  formatUnitSuffix,
+  getCategoryDefinition,
+  inferProductSubcategory,
+  isSingleAssetCategory,
+  normalizeProductCategory,
+  resolveMarginForProduct,
+  resolveProductPackLabel,
+  resolveProductQuantityPerPack,
+  resolveProductUnitType,
+  searchMatchesCategoryOrProduct,
+} from '../lib/categories';
+import { CategoryIcon } from '../lib/categoryIcons';
 import {
   formatAsaasStatusLabel,
   type AsaasOrderStatusResult,
@@ -103,15 +120,6 @@ interface PublicStorefrontViewProps {
   onSyncOrderStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
 }
 
-const CATEGORIES: Array<'Todos' | ProductCategory> = [
-  'Todos',
-  'Calçados',
-  'Bolsas',
-  'Sapatos',
-  'Joias',
-  'Acessórios',
-];
-
 export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   myUid,
   owner,
@@ -124,7 +132,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   onGenerateOrderCharge,
   onSyncOrderStatus,
 }) => {
-  const [selectedCategory, setSelectedCategory] = useState<'Todos' | ProductCategory>('Todos');
+  const [selectedCategory, setSelectedCategory] = useState<'Todas' | MainCategoryId>('Todas');
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('Todas');
+  const [catalogSearch, setCatalogSearch] = useState('');
   const [activeSubView, setActiveSubView] = useState<'catalog' | 'cart' | 'orders'>(
     initialSubView
   );
@@ -156,6 +166,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   useEffect(() => {
     setActiveSubView(initialSubView);
     setSelectedProductListing(null);
+    setSelectedCategory('Todas');
+    setSelectedSubcategory('Todas');
+    setCatalogSearch('');
   }, [owner.uid, initialSubView]);
 
   const isStorefrontAvailable =
@@ -204,9 +217,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
       });
 
       for (const p of connProds) {
+        const margin =
+          resolveMarginForProduct(conn.margins, p.category) ??
+          getCategoryDefinition(p.category).defaultMargin;
         result.push({
           product: p,
-          publicPrice: computeResellerPrice(p.factoryPrice, conn.margins[p.category]),
+          publicPrice: computeResellerPrice(p.factoryPrice, margin),
           factoryPrice: p.factoryPrice,
           lotGroupKey: conn.factoryId,
           lotLabel,
@@ -218,10 +234,34 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
     return result;
   }, [isStorefrontAvailable, owner, products, connections]);
 
+  const activeCategoryDef = useMemo(
+    () =>
+      selectedCategory === 'Todas'
+        ? null
+        : PRODUCT_CATEGORIES.find((c) => c.id === selectedCategory) ?? null,
+    [selectedCategory]
+  );
+
   const filteredListings = useMemo(() => {
-    if (selectedCategory === 'Todos') return listings;
-    return listings.filter((l) => l.product.category === selectedCategory);
-  }, [listings, selectedCategory]);
+    const q = catalogSearch.trim().toLowerCase();
+    return listings.filter((l) => {
+      const mainCat = normalizeProductCategory(l.product.category);
+      const subCat = inferProductSubcategory(l.product.category, l.product.subcategory);
+      if (selectedCategory !== 'Todas' && mainCat !== selectedCategory) {
+        return false;
+      }
+      if (selectedSubcategory !== 'Todas' && subCat !== selectedSubcategory) {
+        return false;
+      }
+      if (q) {
+        const nameMatch = l.product.name.toLowerCase().includes(q);
+        const specsMatch = (l.product.specsSummary || '').toLowerCase().includes(q);
+        const catMatch = searchMatchesCategoryOrProduct(q, l.product.category, subCat);
+        if (!nameMatch && !specsMatch && !catMatch) return false;
+      }
+      return true;
+    });
+  }, [listings, selectedCategory, selectedSubcategory, catalogSearch]);
 
   const addToCart = (listing: CatalogListing) => {
     setCart((prev) => {
@@ -508,32 +548,105 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
             </div>
           ) : activeSubView === 'catalog' ? (
             <>
-              {/* Category Tabs */}
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {CATEGORIES.map((cat) => (
+              {/* Search & 10-Category Scrollable Filter Bar with Icons */}
+              <div className="space-y-2.5">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={catalogSearch}
+                    onChange={(e) => setCatalogSearch(e.target.value)}
+                    placeholder="Buscar produto, subcategoria ou característica..."
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-9 text-sm text-slate-900 focus:border-[#0E7A34] focus:outline-none"
+                  />
+                  {catalogSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setCatalogSearch('')}
+                      aria-label="Limpar busca"
+                      className="absolute right-2.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex gap-2 overflow-x-auto pb-1">
                   <button
-                    key={cat}
                     type="button"
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`min-h-[38px] shrink-0 rounded-xl px-4 text-xs font-semibold transition ${
-                      selectedCategory === cat
+                    onClick={() => {
+                      setSelectedCategory('Todas');
+                      setSelectedSubcategory('Todas');
+                    }}
+                    className={`inline-flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3.5 text-xs font-semibold transition ${
+                      selectedCategory === 'Todas'
                         ? 'bg-[#0E7A34] text-white'
                         : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    {cat}
+                    <CategoryIcon categoryId="Todas" className="h-3.5 w-3.5" />
+                    Todas
                   </button>
-                ))}
+                  {PRODUCT_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory(cat.id);
+                        setSelectedSubcategory('Todas');
+                      }}
+                      className={`inline-flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-3.5 text-xs font-semibold transition ${
+                        selectedCategory === cat.id
+                          ? 'bg-[#0E7A34] text-white'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <CategoryIcon categoryId={cat.id} className="h-3.5 w-3.5" />
+                      {cat.shortLabel}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Dynamic Subcategories for the Selected Category */}
+                {activeCategoryDef && (
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubcategory('Todas')}
+                      className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-lg px-3 text-[11px] font-semibold transition ${
+                        selectedSubcategory === 'Todas'
+                          ? 'bg-[#0D2B3E] text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      Tudo em {activeCategoryDef.shortLabel}
+                    </button>
+                    {activeCategoryDef.subcategories.map((sub) => (
+                      <button
+                        key={sub}
+                        type="button"
+                        onClick={() => setSelectedSubcategory(sub)}
+                        className={`min-h-[32px] shrink-0 whitespace-nowrap rounded-lg px-3 text-[11px] font-semibold transition ${
+                          selectedSubcategory === sub
+                            ? 'bg-[#0D2B3E] text-white'
+                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                        }`}
+                      >
+                        {sub}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {filteredListings.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
                   <Package className="mx-auto h-10 w-10 text-slate-300" />
                   <p className="mt-3 text-sm font-semibold text-slate-800">
-                    Nenhum produto disponível nesta categoria
+                    Nenhum produto disponível neste filtro
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Assim que produtos forem publicados nesta vitrine, eles aparecerão em tempo real com grade visual.
+                    Limpe os filtros ou aguarde novos produtos publicados nesta vitrine.
                   </p>
                 </div>
               ) : (
@@ -542,10 +655,34 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     const inCart = cart.find(
                       (c) => c.productId === listing.product.id
                     );
-                    const originalAnchorPrice = computeAnchoredOriginalPrice(
+                    const qty = resolveProductQuantityPerPack(listing.product);
+                    const unitType = resolveProductUnitType(listing.product);
+                    const unitSuffix = formatUnitSuffix(unitType);
+                    const unitPublicPrice = computeUnitPriceFromTotal(
+                      listing.publicPrice,
+                      qty
+                    );
+                    const unitOriginalPrice = computeAnchoredOriginalPrice(
+                      unitPublicPrice,
+                      anchorDiscountPct
+                    );
+                    const packOriginalPrice = computeAnchoredOriginalPrice(
                       listing.publicPrice,
                       anchorDiscountPct
                     );
+                    const packLabel = resolveProductPackLabel(listing.product);
+                    const packSummary = formatPackSummaryLabel({
+                      quantityPerPack: qty,
+                      unitType,
+                      packLabel,
+                    });
+                    const mainCat = normalizeProductCategory(listing.product.category);
+                    const subCat = inferProductSubcategory(
+                      listing.product.category,
+                      listing.product.subcategory
+                    );
+                    const singleAsset = isSingleAssetCategory(listing.product.category);
+
                     return (
                       <article
                         key={listing.product.id}
@@ -564,7 +701,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           <span className="absolute left-3 top-3 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-[11px] font-semibold text-white">
                             {listing.lotLabel}
                           </span>
-                          {originalAnchorPrice && (
+                          {packOriginalPrice && (
                             <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
                               <Tag className="h-3 w-3" />
                               {anchorDiscountPct}% OFF
@@ -583,45 +720,104 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 onClick={() => setSelectedProductListing(listing)}
                                 className="min-w-0 text-left hover:opacity-80"
                               >
-                                <span className="text-[11px] font-semibold text-slate-400">
-                                  {listing.product.category}
+                                <span className="block truncate text-[11px] font-semibold text-slate-400">
+                                  {mainCat}
+                                  {subCat ? ` · ${subCat}` : ''}
                                 </span>
                                 <h3 className="text-sm font-bold text-slate-900">
                                   {listing.product.name}
                                 </h3>
                               </button>
                               <div className="shrink-0 text-right">
-                                {originalAnchorPrice ? (
+                                {qty > 1 ? (
                                   <>
-                                    <div className="flex items-center justify-end gap-1.5">
-                                      <span className="font-mono text-[11px] text-slate-400 line-through tabular-nums">
-                                        De {formatBRL(originalAnchorPrice)}
+                                    {unitOriginalPrice ? (
+                                      <>
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <span className="font-mono text-[11px] text-slate-400 line-through tabular-nums">
+                                            De {formatBRL(unitOriginalPrice)}
+                                          </span>
+                                          <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0E7A34]">
+                                            {anchorDiscountPct}% OFF
+                                          </span>
+                                        </div>
+                                        <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                          Por {formatBRL(unitPublicPrice)}
+                                          <span className="text-xs font-semibold"> / {unitSuffix}</span>
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                        {formatBRL(unitPublicPrice)}
+                                        <span className="text-xs font-semibold"> / {unitSuffix}</span>
                                       </span>
-                                      <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0E7A34]">
-                                        {anchorDiscountPct}% OFF
-                                      </span>
+                                    )}
+                                    <div className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
+                                      <span>{packSummary}: </span>
+                                      {packOriginalPrice ? (
+                                        <>
+                                          <span className="line-through text-slate-400 mr-1">
+                                            {formatBRL(packOriginalPrice)}
+                                          </span>
+                                          <strong className="text-slate-700">
+                                            {formatBRL(listing.publicPrice)}
+                                          </strong>
+                                        </>
+                                      ) : (
+                                        <strong className="text-slate-700">
+                                          {formatBRL(listing.publicPrice)}
+                                        </strong>
+                                      )}
                                     </div>
-                                    <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
-                                      Por {formatBRL(listing.publicPrice)}
-                                    </span>
                                   </>
                                 ) : (
-                                  <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
-                                    {formatBRL(listing.publicPrice)}
-                                  </span>
+                                  <>
+                                    {packOriginalPrice ? (
+                                      <>
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <span className="font-mono text-[11px] text-slate-400 line-through tabular-nums">
+                                            De {formatBRL(packOriginalPrice)}
+                                          </span>
+                                          <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0E7A34]">
+                                            {anchorDiscountPct}% OFF
+                                          </span>
+                                        </div>
+                                        <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                          Por {formatBRL(listing.publicPrice)}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                        {formatBRL(listing.publicPrice)}
+                                      </span>
+                                    )}
+                                    <span className="block text-[10px] text-slate-400">
+                                      / {unitSuffix}
+                                    </span>
+                                  </>
                                 )}
-                                <span className="block text-[10px] text-slate-400">
-                                  por caixa
-                                </span>
                               </div>
                             </div>
 
-                            {/* Visual Grade Boxes (NEVER raw commas) */}
-                            <GradeVisualGrid gradeRaw={listing.product.gradeRaw} compact />
+                            {listing.product.specsSummary && (
+                              <p className="text-xs text-slate-600">
+                                {listing.product.specsSummary}
+                              </p>
+                            )}
+
+                            {/* Visual Grade Boxes (NEVER raw commas; hidden for single-unit/vehicle/real-estate listings) */}
+                            {!singleAsset && qty > 1 && (
+                              <GradeVisualGrid
+                                gradeRaw={listing.product.gradeRaw}
+                                compact
+                                unitLabel={unitType === 'par' ? 'pares' : 'un'}
+                              />
+                            )}
 
                             <p className="text-[11px] text-slate-500">
                               Envio ({listing.lotLabel}): {listing.deliveryPolicy.label} ·{' '}
-                              {listing.product.stockBoxes} cx em estoque
+                              {listing.product.stockBoxes}{' '}
+                              {qty === 1 ? 'unid. disponível' : 'em estoque'}
                             </p>
                           </div>
 
@@ -641,7 +837,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 <Minus className="h-4 w-4" />
                               </button>
                               <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                                {inCart.boxes} cx no carrinho
+                                {inCart.boxes} {qty === 1 ? 'unid.' : 'cx'} no carrinho
                               </span>
                               <button
                                 type="button"
@@ -663,7 +859,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               onClick={() => addToCart(listing)}
                               className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white transition hover:bg-[#0B5D27]"
                             >
-                              Adicionar Caixa ao Pedido
+                              {qty > 1
+                                ? `Adicionar ${packLabel} ao Pedido`
+                                : 'Adicionar ao Pedido'}
                             </button>
                           )}
                         </div>
@@ -723,41 +921,64 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       )}
 
                       <div className="divide-y divide-slate-100">
-                        {group.items.map(({ listing, boxes }) => (
-                          <div
-                            key={listing.product.id}
-                            className="flex items-center justify-between gap-3 py-2.5"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              <img
-                                src={listing.product.imageUrl}
-                                alt={listing.product.name}
-                                className="h-12 w-12 shrink-0 rounded-lg object-cover"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-xs font-bold text-slate-900">
-                                  {listing.product.name}
-                                </p>
-                                <p className="font-mono text-xs text-slate-500 tabular-nums">
-                                  {boxes} cx × {formatBRL(listing.publicPrice)}
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateCartBoxes(
-                                  listing.product.id,
-                                  -boxes,
-                                  listing.product.stockBoxes
-                                )
-                              }
-                              className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                        {group.items.map(({ listing, boxes }) => {
+                          const qty = resolveProductQuantityPerPack(listing.product);
+                          const unitType = resolveProductUnitType(listing.product);
+                          const unitSuffix = formatUnitSuffix(unitType);
+                          const unitPublicPrice = computeUnitPriceFromTotal(
+                            listing.publicPrice,
+                            qty
+                          );
+                          const packSummary = formatPackSummaryLabel({
+                            quantityPerPack: qty,
+                            unitType,
+                            packLabel: resolveProductPackLabel(listing.product),
+                          });
+                          return (
+                            <div
+                              key={listing.product.id}
+                              className="flex items-center justify-between gap-3 py-2.5"
                             >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ))}
+                              <div className="flex items-center gap-3 min-w-0">
+                                <img
+                                  src={listing.product.imageUrl}
+                                  alt={listing.product.name}
+                                  className="h-12 w-12 shrink-0 rounded-lg object-cover"
+                                />
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-bold text-slate-900">
+                                    {listing.product.name}
+                                  </p>
+                                  <p className="font-mono text-xs text-slate-600 tabular-nums">
+                                    {boxes} × {qty > 1 ? packSummary : '1 unid.'} ·{' '}
+                                    <strong className="text-[#0E7A34]">
+                                      {formatBRL(listing.publicPrice)}
+                                    </strong>
+                                    {qty > 1 && (
+                                      <span className="text-slate-400">
+                                        {' '}
+                                        ({formatBRL(unitPublicPrice)} / {unitSuffix})
+                                      </span>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateCartBoxes(
+                                    listing.product.id,
+                                    -boxes,
+                                    listing.product.stockBoxes
+                                  )
+                                }
+                                className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
@@ -867,7 +1088,10 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
 
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-500">
-                      <span>Subtotal dos produtos ({totalCartBoxes} caixas)</span>
+                      <span>
+                        Subtotal dos produtos ({totalCartBoxes}{' '}
+                        {totalCartBoxes === 1 ? 'item' : 'itens'})
+                      </span>
                       <span className="font-mono font-semibold text-slate-700 tabular-nums">
                         {formatBRL(grandTotalBuyer)}
                       </span>
@@ -1353,16 +1577,40 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         </div>
       </div>
 
-      {/* Product Detail Modal with Anchored "De / Por" Pricing */}
+      {/* Product Detail Modal with Unit/Pair + Proportional Anchored "De / Por" Pricing */}
       {selectedProductListing && (() => {
         const detailListing = selectedProductListing;
         const detailInCart = cart.find(
           (c) => c.productId === detailListing.product.id
         );
-        const detailOriginalPrice = computeAnchoredOriginalPrice(
+        const detailQty = resolveProductQuantityPerPack(detailListing.product);
+        const detailUnitType = resolveProductUnitType(detailListing.product);
+        const detailUnitSuffix = formatUnitSuffix(detailUnitType);
+        const detailUnitPublic = computeUnitPriceFromTotal(
+          detailListing.publicPrice,
+          detailQty
+        );
+        const detailUnitOriginal = computeAnchoredOriginalPrice(
+          detailUnitPublic,
+          anchorDiscountPct
+        );
+        const detailPackOriginal = computeAnchoredOriginalPrice(
           detailListing.publicPrice,
           anchorDiscountPct
         );
+        const detailPackLabel = resolveProductPackLabel(detailListing.product);
+        const detailPackSummary = formatPackSummaryLabel({
+          quantityPerPack: detailQty,
+          unitType: detailUnitType,
+          packLabel: detailPackLabel,
+        });
+        const detailMainCat = normalizeProductCategory(detailListing.product.category);
+        const detailSubCat = inferProductSubcategory(
+          detailListing.product.category,
+          detailListing.product.subcategory
+        );
+        const detailSingleAsset = isSingleAssetCategory(detailListing.product.category);
+
         return (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3.5 sm:p-5 backdrop-blur-xs"
@@ -1380,7 +1628,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 <span className="absolute left-3.5 top-3.5 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-xs font-semibold text-white">
                   {detailListing.lotLabel}
                 </span>
-                {detailOriginalPrice && (
+                {detailPackOriginal && (
                   <span className="absolute left-3.5 bottom-3.5 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1 text-xs font-extrabold text-white shadow-sm">
                     <Tag className="h-3.5 w-3.5" />
                     {anchorDiscountPct}% OFF
@@ -1400,7 +1648,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                      {detailListing.product.category}
+                      {detailMainCat}
+                      {detailSubCat ? ` · ${detailSubCat}` : ''}
                     </span>
                     <h2
                       id="product-detail-title"
@@ -1408,44 +1657,100 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     >
                       {detailListing.product.name}
                     </h2>
+                    {detailListing.product.specsSummary && (
+                      <p className="mt-0.5 text-xs font-medium text-slate-600">
+                        {detailListing.product.specsSummary}
+                      </p>
+                    )}
                     <p className="mt-0.5 text-xs text-slate-500">
                       Envio ({detailListing.lotLabel}): {detailListing.deliveryPolicy.label} ·{' '}
-                      {detailListing.product.stockBoxes} cx em estoque
+                      {detailListing.product.stockBoxes}{' '}
+                      {detailQty === 1 ? 'unid. disponível' : 'em estoque'}
                     </p>
                   </div>
 
                   <div className="text-right">
-                    {detailOriginalPrice ? (
-                      <div className="space-y-0.5">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <span className="font-mono text-xs text-slate-400 line-through tabular-nums">
-                            De {formatBRL(detailOriginalPrice)}
+                    {detailQty > 1 ? (
+                      <>
+                        {detailUnitOriginal ? (
+                          <div className="space-y-0.5">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <span className="font-mono text-xs text-slate-400 line-through tabular-nums">
+                                De {formatBRL(detailUnitOriginal)}
+                              </span>
+                              <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-[#0E7A34]">
+                                {anchorDiscountPct}% OFF
+                              </span>
+                            </div>
+                            <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                              Por {formatBRL(detailUnitPublic)}
+                              <span className="text-sm font-semibold"> / {detailUnitSuffix}</span>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                            {formatBRL(detailUnitPublic)}
+                            <span className="text-sm font-semibold"> / {detailUnitSuffix}</span>
                           </span>
-                          <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-[#0E7A34]">
-                            {anchorDiscountPct}% OFF
-                          </span>
+                        )}
+                        <div className="mt-1 font-mono text-xs text-slate-500 tabular-nums">
+                          <span>{detailPackSummary}: </span>
+                          {detailPackOriginal ? (
+                            <>
+                              <span className="line-through text-slate-400 mr-1">
+                                {formatBRL(detailPackOriginal)}
+                              </span>
+                              <strong className="text-slate-800">
+                                {formatBRL(detailListing.publicPrice)}
+                              </strong>
+                            </>
+                          ) : (
+                            <strong className="text-slate-800">
+                              {formatBRL(detailListing.publicPrice)}
+                            </strong>
+                          )}
                         </div>
-                        <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
-                          Por {formatBRL(detailListing.publicPrice)}
-                        </span>
-                      </div>
+                      </>
                     ) : (
-                      <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
-                        {formatBRL(detailListing.publicPrice)}
-                      </span>
+                      <>
+                        {detailPackOriginal ? (
+                          <div className="space-y-0.5">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <span className="font-mono text-xs text-slate-400 line-through tabular-nums">
+                                De {formatBRL(detailPackOriginal)}
+                              </span>
+                              <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-[#0E7A34]">
+                                {anchorDiscountPct}% OFF
+                              </span>
+                            </div>
+                            <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                              Por {formatBRL(detailListing.publicPrice)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                            {formatBRL(detailListing.publicPrice)}
+                          </span>
+                        )}
+                        <span className="block text-[11px] text-slate-400">
+                          / {detailUnitSuffix}
+                        </span>
+                      </>
                     )}
-                    <span className="block text-[11px] text-slate-400">
-                      por caixa fechada
-                    </span>
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <span className="block text-xs font-bold text-slate-700">
-                    Grade da Caixa
-                  </span>
-                  <GradeVisualGrid gradeRaw={detailListing.product.gradeRaw} />
-                </div>
+                {!detailSingleAsset && detailQty > 1 && (
+                  <div className="space-y-1.5">
+                    <span className="block text-xs font-bold text-slate-700">
+                      Distribuição ({detailPackSummary})
+                    </span>
+                    <GradeVisualGrid
+                      gradeRaw={detailListing.product.gradeRaw}
+                      unitLabel={detailUnitType === 'par' ? 'pares' : 'un'}
+                    />
+                  </div>
+                )}
 
                 <div className="flex flex-col gap-2 pt-2 sm:flex-row">
                   {detailInCart ? (
@@ -1465,7 +1770,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           <Minus className="h-4 w-4" />
                         </button>
                         <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                          {detailInCart.boxes} cx no carrinho
+                          {detailInCart.boxes} {detailQty === 1 ? 'unid.' : 'cx'} no carrinho
                         </span>
                         <button
                           type="button"
@@ -1498,7 +1803,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       onClick={() => addToCart(detailListing)}
                       className="h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white transition hover:bg-[#0B5D27]"
                     >
-                      Adicionar Caixa ao Pedido · {formatBRL(detailListing.publicPrice)}
+                      {detailQty > 1
+                        ? `Adicionar ${detailPackLabel} ao Pedido · ${formatBRL(detailListing.publicPrice)}`
+                        : `Adicionar ao Pedido · ${formatBRL(detailListing.publicPrice)}`}
                     </button>
                   )}
                 </div>

@@ -3372,6 +3372,8 @@ export default function App() {
               currentUserUid={profile.uid}
               contacts={contacts}
               directoryUsers={directoryUsers}
+              products={products}
+              connections={connections}
               onPreviewAvatar={setAvatarPreview}
               onLookupPhone={lookupRegisteredUserByPhone}
               onOpenDirectoryChat={(person) => {
@@ -3568,7 +3570,7 @@ export default function App() {
                 updates: Partial<{
                   reviewPhotos: boolean;
                   paused: boolean;
-                  margins: Record<ProductCategory, CategoryMargin>;
+                  margins: Record<string, CategoryMargin>;
                   approvedProductIds: string[];
                   rejectedProductIds: string[];
                 }>

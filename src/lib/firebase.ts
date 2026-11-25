@@ -59,11 +59,13 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  ProductUnitType,
   SubOrder,
   SubOrderLineItem,
   SubscriptionStatus,
   UserProfile,
 } from '../types/zapei';
+import { buildDefaultMarginsMap } from './categories';
 import { DEFAULT_STATUS_MESSAGE, sanitizeStatusMessage } from './presenceUtils';
 import {
   generateRequestToken,
@@ -300,13 +302,7 @@ export function getDeterministicChatId(uid1: string, uid2: string): string {
   return [uid1, uid2].sort().join('__');
 }
 
-export const DEFAULT_CATEGORY_MARGINS: Record<ProductCategory, CategoryMargin> = {
-  Calçados: { mode: 'fixed', value: 100 },
-  Bolsas: { mode: 'percent', value: 25 },
-  Sapatos: { mode: 'fixed', value: 120 },
-  Joias: { mode: 'percent', value: 35 },
-  Acessórios: { mode: 'percent', value: 30 },
-};
+export const DEFAULT_CATEGORY_MARGINS: Record<string, CategoryMargin> = buildDefaultMarginsMap();
 
 // --- USER PROFILE & PHONE / VIRTUAL LINE HASH INDEX ---
 
@@ -1607,7 +1603,18 @@ export function subscribeProducts(
       factoryName: String(d.factoryName || ''),
       name: String(d.name || ''),
       sku: String(d.sku || ''),
-      category: (d.category as ProductCategory) ?? 'Calçados',
+      category: (d.category as ProductCategory) ?? 'Calçados & Acessórios',
+      subcategory: d.subcategory ? String(d.subcategory) : undefined,
+      unitType:
+        d.unitType === 'par' || d.unitType === 'unidade' || d.unitType === 'kit'
+          ? (d.unitType as ProductUnitType)
+          : undefined,
+      quantityPerPack:
+        typeof d.quantityPerPack === 'number' && Number.isFinite(d.quantityPerPack)
+          ? Number(d.quantityPerPack)
+          : undefined,
+      packLabel: d.packLabel ? String(d.packLabel) : undefined,
+      specsSummary: d.specsSummary ? String(d.specsSummary) : undefined,
       factoryPrice: Number(d.factoryPrice ?? 0),
       stockBoxes: Number(d.stockBoxes ?? 0),
       gradeRaw: String(d.gradeRaw || ''),
@@ -1648,28 +1655,53 @@ export async function createRealProduct(params: {
   name: string;
   sku: string;
   category: ProductCategory;
+  subcategory?: string;
+  unitType?: ProductUnitType;
+  quantityPerPack?: number;
+  packLabel?: string;
+  specsSummary?: string;
   factoryPrice: number;
   stockBoxes: number;
   gradeRaw: string;
   imageUrl: string;
 }): Promise<void> {
   const id = `prod_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const payload: Record<string, unknown> = {
+    factoryId: params.factoryId,
+    factoryName: params.factoryName.slice(0, 100),
+    name: params.name.slice(0, 120),
+    sku: params.sku.slice(0, 40),
+    category: params.category,
+    factoryPrice: params.factoryPrice,
+    stockBoxes: params.stockBoxes,
+    gradeRaw: params.gradeRaw.slice(0, 200),
+    imageUrl: params.imageUrl,
+    isSoldOutToday: false,
+    moderationStatus: 'approved',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  if (params.subcategory && params.subcategory.trim()) {
+    payload.subcategory = params.subcategory.trim().slice(0, 60);
+  }
+  if (params.unitType) {
+    payload.unitType = params.unitType;
+  }
+  if (
+    typeof params.quantityPerPack === 'number' &&
+    Number.isFinite(params.quantityPerPack) &&
+    params.quantityPerPack >= 1
+  ) {
+    payload.quantityPerPack = Math.min(10000, Math.round(params.quantityPerPack));
+  }
+  if (params.packLabel && params.packLabel.trim()) {
+    payload.packLabel = params.packLabel.trim().slice(0, 30);
+  }
+  if (params.specsSummary && params.specsSummary.trim()) {
+    payload.specsSummary = params.specsSummary.trim().slice(0, 240);
+  }
   try {
-    await setDoc(doc(db, 'products', id), {
-      factoryId: params.factoryId,
-      factoryName: params.factoryName.slice(0, 100),
-      name: params.name.slice(0, 120),
-      sku: params.sku.slice(0, 40),
-      category: params.category,
-      factoryPrice: params.factoryPrice,
-      stockBoxes: params.stockBoxes,
-      gradeRaw: params.gradeRaw.slice(0, 200),
-      imageUrl: params.imageUrl,
-      isSoldOutToday: false,
-      moderationStatus: 'approved',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    await setDoc(doc(db, 'products', id), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `products/${id}`);
   }
@@ -1724,7 +1756,7 @@ export function subscribeConnections(
       },
       reviewPhotos: Boolean(d.reviewPhotos),
       paused: Boolean(d.paused),
-      margins: (d.margins as Record<ProductCategory, CategoryMargin>) ?? DEFAULT_CATEGORY_MARGINS,
+      margins: (d.margins as Record<string, CategoryMargin>) ?? DEFAULT_CATEGORY_MARGINS,
       approvedProductIds: Array.isArray(d.approvedProductIds)
         ? (d.approvedProductIds as string[])
         : [],
@@ -1790,7 +1822,7 @@ export async function updateRealConnection(
   updates: Partial<{
     reviewPhotos: boolean;
     paused: boolean;
-    margins: Record<ProductCategory, CategoryMargin>;
+    margins: Record<string, CategoryMargin>;
     approvedProductIds: string[];
     rejectedProductIds: string[];
   }>

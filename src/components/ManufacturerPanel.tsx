@@ -27,11 +27,26 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  ProductUnitType,
   SplitPaymentMethod,
   SubOrder,
   UserProfile,
 } from '../types/zapei';
 import {
+  PRODUCT_CATEGORIES,
+  computeUnitPriceFromTotal,
+  formatPackSummaryLabel,
+  formatUnitSuffix,
+  getCategoryDefinition,
+  inferProductSubcategory,
+  isSingleAssetCategory,
+  normalizeProductCategory,
+  resolveProductPackLabel,
+  resolveProductQuantityPerPack,
+  resolveProductUnitType,
+} from '../lib/categories';
+import {
+  computeResellerPrice,
   formatBRL,
   getTotalPairsFromGrade,
   parseGradeString,
@@ -62,6 +77,11 @@ interface ManufacturerPanelProps {
     name: string;
     sku: string;
     category: ProductCategory;
+    subcategory?: string;
+    unitType?: ProductUnitType;
+    quantityPerPack?: number;
+    packLabel?: string;
+    specsSummary?: string;
     factoryPrice: number;
     stockBoxes: number;
     gradeRaw: string;
@@ -83,14 +103,6 @@ interface ManufacturerPanelProps {
   ) => Promise<void>;
   onOpenBilling: () => void;
 }
-
-const CATEGORIES: ProductCategory[] = [
-  'Calçados',
-  'Bolsas',
-  'Sapatos',
-  'Joias',
-  'Acessórios',
-];
 
 type FactoryTab = 'catalog' | 'conference' | 'dispatch' | 'finance' | 'policy';
 
@@ -130,10 +142,17 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   // F02 Fast Product Form state
   const [prodName, setProdName] = useState('');
   const [prodSku, setProdSku] = useState('');
-  const [prodCategory, setProdCategory] = useState<ProductCategory>('Calçados');
+  const [prodCategory, setProdCategory] = useState<ProductCategory>('Calçados & Acessórios');
+  const [prodSubcategory, setProdSubcategory] = useState<string>(
+    PRODUCT_CATEGORIES[0].subcategories[0]
+  );
+  const [prodUnitType, setProdUnitType] = useState<ProductUnitType>('par');
+  const [prodQtyPerPack, setProdQtyPerPack] = useState<string>('12');
+  const [priceEntryMode, setPriceEntryMode] = useState<'pack' | 'unit'>('pack');
   const [prodPrice, setProdPrice] = useState('');
   const [prodStock, setProdStock] = useState('10');
   const [prodGradeRaw, setProdGradeRaw] = useState('34:1, 35:2, 36:3, 37:3, 38:2, 39:1');
+  const [specValues, setSpecValues] = useState<Record<string, string>>({});
   const [prodImageUrl, setProdImageUrl] = useState('');
   const [prodImageName, setProdImageName] = useState('');
   const [moderationWarning, setModerationWarning] = useState('');
@@ -143,6 +162,55 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   const [pricingSimInstallments, setPricingSimInstallments] = useState(1);
 
   const productPhotoInputRef = useRef<HTMLInputElement | null>(null);
+
+  const currentCatDef = useMemo(() => getCategoryDefinition(prodCategory), [prodCategory]);
+  const isSingleAsset = currentCatDef.behavior === 'single_asset';
+  const effectiveQtyPerPack = useMemo(() => {
+    if (isSingleAsset) return 1;
+    const n = Number.parseInt(prodQtyPerPack, 10);
+    return Number.isFinite(n) && n >= 1 ? Math.min(10000, n) : 1;
+  }, [isSingleAsset, prodQtyPerPack]);
+
+  const handleCategoryChange = (nextCategory: ProductCategory) => {
+    const def = getCategoryDefinition(nextCategory);
+    setProdCategory(nextCategory);
+    setProdSubcategory(def.subcategories[0] ?? '');
+    setProdUnitType(def.defaultUnitType);
+    setProdQtyPerPack(String(def.defaultQuantityPerPack));
+    setProdGradeRaw(def.defaultGradeRaw);
+    setSpecValues({});
+    if (def.behavior === 'single_asset') {
+      setPriceEntryMode('pack');
+      setProdStock('1');
+    } else if (def.defaultQuantityPerPack === 1) {
+      setPriceEntryMode('pack');
+    }
+  };
+
+  const applyPackPreset = (qty: number, customGrade?: string, customUnit?: ProductUnitType) => {
+    const safeQty = Math.max(1, Math.round(qty));
+    setProdQtyPerPack(String(safeQty));
+    if (customUnit) setProdUnitType(customUnit);
+    if (customGrade) {
+      setProdGradeRaw(customGrade);
+      return;
+    }
+    if (safeQty === 1) {
+      setProdGradeRaw('Único:1');
+      if (prodUnitType === 'kit') setProdUnitType('unidade');
+    } else if (currentCatDef.behavior === 'footwear_box') {
+      if (safeQty === 6) setProdGradeRaw('34:1, 35:1, 36:1, 37:1, 38:1, 39:1');
+      else if (safeQty === 12) setProdGradeRaw('34:1, 35:2, 36:3, 37:3, 38:2, 39:1');
+      else if (safeQty === 15) setProdGradeRaw('34:2, 35:2, 36:4, 37:4, 38:2, 39:1');
+      else setProdGradeRaw(`Único:${safeQty}`);
+    } else if (currentCatDef.behavior === 'apparel_flexible') {
+      if (safeQty === 6) setProdGradeRaw('P:1, M:2, G:2, GG:1');
+      else if (safeQty === 12) setProdGradeRaw('P:2, M:4, G:4, GG:2');
+      else setProdGradeRaw(`Único:${safeQty}`);
+    } else {
+      setProdGradeRaw(`Único:${safeQty}`);
+    }
+  };
 
   // F04 Conference item availability drafts keyed by subOrderId -> itemId
   const [confDecisions, setConfDecisions] = useState<
@@ -200,21 +268,46 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 
   const isPaused = profile.subscriptionStatus === 'expired';
 
-  const parsedDraftPrice = useMemo(() => {
+  const parsedInputPrice = useMemo(() => {
     const val = Number.parseFloat(prodPrice.replace(',', '.'));
     return Number.isFinite(val) && val > 0 ? val : 0;
   }, [prodPrice]);
 
+  // Total factory price of the box/pack (or single unit)
+  const parsedDraftTotalFactoryPrice = useMemo(() => {
+    if (parsedInputPrice <= 0) return 0;
+    if (isSingleAsset || effectiveQtyPerPack <= 1 || priceEntryMode === 'pack') {
+      return Number(parsedInputPrice.toFixed(2));
+    }
+    return Number((parsedInputPrice * effectiveQtyPerPack).toFixed(2));
+  }, [parsedInputPrice, isSingleAsset, effectiveQtyPerPack, priceEntryMode]);
+
+  const draftFactoryUnitPrice = useMemo(
+    () => computeUnitPriceFromTotal(parsedDraftTotalFactoryPrice, effectiveQtyPerPack),
+    [parsedDraftTotalFactoryPrice, effectiveQtyPerPack]
+  );
+
+  // Estimated storefront price with default reseller margin + unit price preview
+  const estimatedPublicPackPrice = useMemo(() => {
+    if (parsedDraftTotalFactoryPrice <= 0) return 0;
+    return computeResellerPrice(parsedDraftTotalFactoryPrice, currentCatDef.defaultMargin);
+  }, [parsedDraftTotalFactoryPrice, currentCatDef]);
+
+  const estimatedPublicUnitPrice = useMemo(
+    () => computeUnitPriceFromTotal(estimatedPublicPackPrice, effectiveQtyPerPack),
+    [estimatedPublicPackPrice, effectiveQtyPerPack]
+  );
+
   const draftSplitPreview = useMemo(
     () =>
       calculateOrderSplit({
-        orderTotal: parsedDraftPrice,
-        factoryCostTotal: parsedDraftPrice,
+        orderTotal: parsedDraftTotalFactoryPrice,
+        factoryCostTotal: parsedDraftTotalFactoryPrice,
         paymentMethod: pricingSimMethod,
         installments: pricingSimInstallments,
         isDirectManufacturerSale: true,
       }),
-    [parsedDraftPrice, pricingSimMethod, pricingSimInstallments]
+    [parsedDraftTotalFactoryPrice, pricingSimMethod, pricingSimInstallments]
   );
 
   const handleProductPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,7 +340,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
     if (!prodGradeRaw.trim() || parseGradeString(prodGradeRaw).length === 0) return;
     const totalPairs = getTotalPairsFromGrade(prodGradeRaw);
     const label =
-      favLabel.trim() || `${prodCategory} (${totalPairs} un)`;
+      favLabel.trim() || `${currentCatDef.shortLabel} (${totalPairs} un)`;
     await onSaveFavoriteGrade({
       id: `fav_${Date.now()}`,
       label,
@@ -271,17 +364,45 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       setModerationWarning('Envie uma foto real do produto antes de cadastrar.');
       return;
     }
-    const parsedGrade = parseGradeString(prodGradeRaw);
-    if (parsedGrade.length === 0) {
+
+    const finalUnitType: ProductUnitType = isSingleAsset ? 'unidade' : prodUnitType;
+    const finalQtyPerPack = isSingleAsset ? 1 : effectiveQtyPerPack;
+    const finalGradeRaw = isSingleAsset
+      ? 'Único:1'
+      : prodGradeRaw.trim() || `Único:${finalQtyPerPack}`;
+    const parsedGrade = parseGradeString(finalGradeRaw);
+    if (!isSingleAsset && parsedGrade.length === 0) {
       setModerationWarning('Digite a grade válida separada por vírgulas (ex: 34:1, 35:2, 36:3).');
       return;
     }
-    const priceNum = Number.parseFloat(prodPrice.replace(',', '.'));
+
+    const priceNum = parsedDraftTotalFactoryPrice;
     const stockNum = Number.parseInt(prodStock, 10);
     if (Number.isNaN(priceNum) || priceNum <= 0) {
-      setModerationWarning('Informe um preço de fábrica válido.');
+      setModerationWarning('Informe um preço válido maior que zero.');
       return;
     }
+
+    const specsSummary = currentCatDef.specFields
+      ? currentCatDef.specFields
+          .map((f) => {
+            const v = (specValues[f.key] || '').trim();
+            return v ? `${f.label}: ${v}` : '';
+          })
+          .filter(Boolean)
+          .join(' · ')
+      : '';
+
+    const packLabel =
+      finalQtyPerPack <= 1
+        ? 'Unidade'
+        : finalUnitType === 'par'
+          ? finalQtyPerPack >= 10
+            ? 'Caixa'
+            : 'Grade'
+          : finalUnitType === 'kit'
+            ? 'Kit'
+            : 'Grade';
 
     setSubmitting(true);
     try {
@@ -289,15 +410,21 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
         name: prodName.trim(),
         sku: prodSku.trim() || `REF-${Date.now().toString().slice(-4)}`,
         category: prodCategory,
+        subcategory: prodSubcategory || undefined,
+        unitType: finalUnitType,
+        quantityPerPack: finalQtyPerPack,
+        packLabel,
+        specsSummary: specsSummary || undefined,
         factoryPrice: priceNum,
         stockBoxes: Math.max(0, Number.isNaN(stockNum) ? 0 : stockNum),
-        gradeRaw: prodGradeRaw.trim(),
+        gradeRaw: finalGradeRaw,
         imageUrl: prodImageUrl,
       });
       setProdName('');
       setProdSku('');
       setProdPrice('');
-      setProdStock('10');
+      setSpecValues({});
+      setProdStock(isSingleAsset ? '1' : '10');
       setProdImageUrl('');
       setProdImageName('');
       setFeedback('Produto cadastrado com sucesso no catálogo real!');
@@ -345,6 +472,19 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       setFeedback('Não foi possível ler a foto do comprovante.');
     }
   };
+
+  const namePlaceholder =
+    currentCatDef.id === 'Automóveis & Veículos'
+      ? 'Ex: Honda Civic Touring 1.5 Turbo'
+      : currentCatDef.id === 'Imóveis & Casas'
+        ? 'Ex: Casa 3 Quartos com Quintal'
+        : currentCatDef.id === 'Eletrônicos & Celulares'
+          ? 'Ex: Smartphone 256GB Lacrado'
+          : currentCatDef.id === 'Moda Íntima & Lingerie'
+            ? 'Ex: Conjunto Renda Premium'
+            : 'Ex: Sandália Couro Tratorada';
+
+  const unitSuffix = formatUnitSuffix(isSingleAsset ? 'unidade' : prodUnitType);
 
   return (
     <div className="mx-auto w-full max-w-6xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
@@ -511,34 +651,217 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold text-slate-700">
-                  Nome do modelo
+                  Nome do produto / modelo
                 </label>
                 <input
                   type="text"
                   required
                   value={prodName}
                   onChange={(e) => setProdName(e.target.value)}
-                  placeholder="Ex: Sandália Couro Tratorada"
+                  placeholder={namePlaceholder}
                   className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700">
-                  Categoria
+                  Categoria Principal
                 </label>
                 <select
                   value={prodCategory}
-                  onChange={(e) => setProdCategory(e.target.value as ProductCategory)}
+                  onChange={(e) => handleCategoryChange(e.target.value as ProductCategory)}
                   className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
                 >
-                  {CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
+                  {PRODUCT_CATEGORIES.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.id}
                     </option>
                   ))}
                 </select>
               </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Subcategoria
+                </label>
+                <select
+                  value={prodSubcategory}
+                  onChange={(e) => setProdSubcategory(e.target.value)}
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0E7A34] focus:outline-none"
+                >
+                  {currentCatDef.subcategories.map((sub) => (
+                    <option key={sub} value={sub}>
+                      {sub}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Domain-specific quick fields for Vehicles and Real Estate */}
+              {currentCatDef.specFields && (
+                <div className="sm:col-span-2 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-3">
+                  {currentCatDef.specFields.map((field) => (
+                    <div key={field.key}>
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        {field.label}
+                      </label>
+                      <input
+                        type="text"
+                        value={specValues[field.key] ?? ''}
+                        onChange={(e) =>
+                          setSpecValues((prev) => ({
+                            ...prev,
+                            [field.key]: e.target.value,
+                          }))
+                        }
+                        placeholder={field.placeholder}
+                        className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs focus:border-[#0E7A34] focus:outline-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Flexible Pack Quantity & Unit Type (hidden cleanly for single-asset categories like Vehicles/Real Estate) */}
+              {!isSingleAsset && (
+                <div className="sm:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-slate-800">
+                      Quantidade por Grade / Caixa
+                    </label>
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                      {(
+                        [
+                          { id: 'par', label: 'Par' },
+                          { id: 'unidade', label: 'Unidade' },
+                          { id: 'kit', label: 'Kit' },
+                        ] as const
+                      ).map((u) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => setProdUnitType(u.id)}
+                          className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition ${
+                            prodUnitType === u.id
+                              ? 'bg-[#0D2B3E] text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {u.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Quick presets adapted to category */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {currentCatDef.behavior === 'apparel_flexible' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => applyPackPreset(1, 'Único:1', 'unidade')}
+                          className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            effectiveQtyPerPack === 1
+                              ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          1 peça avulsa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyPackPreset(6, 'Único:6', 'kit')}
+                          className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            effectiveQtyPerPack === 6 && prodUnitType === 'kit'
+                              ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          Kit 6 unid.
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyPackPreset(6, 'P:1, M:2, G:2, GG:1', 'unidade')}
+                          className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            effectiveQtyPerPack === 6 && prodUnitType !== 'kit'
+                              ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          Grade P–GG (6)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyPackPreset(12, 'P:2, M:4, G:4, GG:2', 'unidade')}
+                          className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            effectiveQtyPerPack === 12
+                              ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          Grade 12 peças
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => applyPackPreset(1, 'Único:1', 'unidade')}
+                          className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            effectiveQtyPerPack === 1
+                              ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          1 unidade avulsa
+                        </button>
+                        {[6, 12, 15].map((q) => (
+                          <button
+                            key={q}
+                            type="button"
+                            onClick={() =>
+                              applyPackPreset(
+                                q,
+                                undefined,
+                                currentCatDef.behavior === 'footwear_box' ? 'par' : prodUnitType
+                              )
+                            }
+                            className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                              effectiveQtyPerPack === q
+                                ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            {q} {prodUnitType === 'par' ? 'pares' : 'unid.'}
+                          </button>
+                        ))}
+                      </>
+                    )}
+
+                    <div className="flex items-center gap-1 ml-auto">
+                      <span className="text-[11px] text-slate-500">Outro:</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000"
+                        value={prodQtyPerPack}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setProdQtyPerPack(raw);
+                          const parsed = Number.parseInt(raw, 10);
+                          if (Number.isFinite(parsed) && parsed >= 1) {
+                            if (parsed === 1 || prodGradeRaw.startsWith('Único:')) {
+                              setProdGradeRaw(`Único:${parsed}`);
+                            }
+                          }
+                        }}
+                        aria-label="Quantidade personalizada por grade ou caixa"
+                        className="h-8 w-16 rounded-lg border border-slate-200 bg-white px-2 text-center font-mono text-xs font-bold tabular-nums focus:border-[#0E7A34] focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700">
@@ -555,23 +878,9 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700">
-                  Preço de fábrica (caixa R$)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="1"
-                  required
-                  value={prodPrice}
-                  onChange={(e) => setProdPrice(e.target.value)}
-                  placeholder="480.00"
-                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700">
-                  Estoque inicial (caixas)
+                  {isSingleAsset || effectiveQtyPerPack === 1
+                    ? 'Estoque disponível (unidades)'
+                    : 'Estoque inicial (caixas/grades)'}
                 </label>
                 <input
                   type="number"
@@ -582,12 +891,117 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
                 />
               </div>
+
+              <div className="sm:col-span-2 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    {isSingleAsset || effectiveQtyPerPack === 1
+                      ? 'Preço de venda (R$)'
+                      : priceEntryMode === 'pack'
+                        ? `Preço de fábrica da embalagem (${effectiveQtyPerPack} ${
+                            prodUnitType === 'par' ? 'pares' : 'unid.'
+                          })`
+                        : `Preço unitário de fábrica (por ${unitSuffix})`}
+                  </label>
+                  {!isSingleAsset && effectiveQtyPerPack > 1 && (
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setPriceEntryMode('pack')}
+                        className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                          priceEntryMode === 'pack'
+                            ? 'bg-[#0E7A34] text-white'
+                            : 'text-slate-600'
+                        }`}
+                      >
+                        Por caixa/grade
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPriceEntryMode('unit')}
+                        className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                          priceEntryMode === 'unit'
+                            ? 'bg-[#0E7A34] text-white'
+                            : 'text-slate-600'
+                        }`}
+                      >
+                        Por {unitSuffix}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  required
+                  value={prodPrice}
+                  onChange={(e) => setProdPrice(e.target.value)}
+                  placeholder={
+                    isSingleAsset
+                      ? '45000.00'
+                      : effectiveQtyPerPack === 1
+                        ? '89.90'
+                        : priceEntryMode === 'pack'
+                          ? '480.00'
+                          : '40.00'
+                  }
+                  className="h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
+                />
+
+                {/* Live Automatic Unit/Pair & Estimated Vitrine Calculation */}
+                {parsedDraftTotalFactoryPrice > 0 && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 space-y-1">
+                    {effectiveQtyPerPack > 1 ? (
+                      <>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-700">
+                            Valor de fábrica por {unitSuffix} ({effectiveQtyPerPack}x):
+                          </span>
+                          <span className="font-mono font-bold text-[#0D2B3E] tabular-nums">
+                            {formatBRL(draftFactoryUnitPrice)} / {unitSuffix}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-600">Total da caixa/grade na fábrica:</span>
+                          <span className="font-mono font-semibold text-slate-800 tabular-nums">
+                            {formatBRL(parsedDraftTotalFactoryPrice)}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-700">Valor unitário na fábrica:</span>
+                        <span className="font-mono font-bold text-[#0D2B3E] tabular-nums">
+                          {formatBRL(parsedDraftTotalFactoryPrice)} / unid.
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between border-t border-emerald-200/70 pt-1.5 text-xs">
+                      <span className="font-semibold text-[#0E7A34]">
+                        Estimativa na Vitrine (c/ margem padrão):
+                      </span>
+                      <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
+                        {formatBRL(estimatedPublicUnitPrice)} / {unitSuffix}
+                        {effectiveQtyPerPack > 1 && (
+                          <span className="font-normal text-slate-600">
+                            {' '}
+                            ({formatBRL(estimatedPublicPackPrice)} total)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
-            {parsedDraftPrice > 0 && (
+            {parsedDraftTotalFactoryPrice > 0 && (
               <SplitBreakdownCard
                 breakdown={draftSplitPreview}
-                title="Simulação de Precificação & Split (1 caixa venda direta)"
+                title={`Simulação de Precificação & Split (1 ${
+                  effectiveQtyPerPack > 1 ? 'embalagem' : 'unidade'
+                } venda direta)`}
                 factoryLabel="Quanto cai líquido para sua Fábrica"
                 hideResellerIfDirect
                 showMethodToggle
@@ -596,61 +1010,70 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               />
             )}
 
-            {/* Comma-Separated Grade Input + Favorites + Visual Preview */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700">
-                Grade por vírgulas (número:quantidade)
-              </label>
-              <input
-                type="text"
-                required
-                value={prodGradeRaw}
-                onChange={(e) => setProdGradeRaw(e.target.value)}
-                placeholder="34:1, 35:2, 36:3, 37:3, 38:2, 39:1"
-                className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
-              />
-
-              {/* Favorite grades chips */}
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {profile.favoriteGrades.map((fav) => (
-                  <button
-                    key={fav.id}
-                    type="button"
-                    onClick={() => setProdGradeRaw(fav.raw)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-[#0E7A34] hover:text-[#0E7A34]"
-                  >
-                    {fav.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Save new favorite grade */}
-              <div className="mt-2 flex gap-2">
+            {/* Comma-Separated Grade Input + Favorites + Visual Preview (only for multi-unit / non-single-asset) */}
+            {!isSingleAsset && effectiveQtyPerPack > 1 && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Grade por vírgulas (tamanho:quantidade)
+                </label>
                 <input
                   type="text"
-                  value={favLabel}
-                  onChange={(e) => setFavLabel(e.target.value)}
-                  placeholder="Nome para salvar esta grade favorita..."
-                  className="h-9 flex-1 rounded-lg border border-slate-200 px-2.5 text-xs focus:border-[#0E7A34] focus:outline-none"
+                  required
+                  value={prodGradeRaw}
+                  onChange={(e) => setProdGradeRaw(e.target.value)}
+                  placeholder="34:1, 35:2, 36:3, 37:3, 38:2, 39:1"
+                  className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
                 />
-                <button
-                  type="button"
-                  onClick={() => void handleAddFavoriteGrade()}
-                  className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  <BookmarkPlus className="h-3.5 w-3.5" />
-                  Salvar grade
-                </button>
-              </div>
 
-              {/* Live Visual Preview of how buyers will see the grade */}
-              <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
-                  Prévia visual da grade para compradores (sem vírgulas):
-                </p>
-                <GradeVisualGrid gradeRaw={prodGradeRaw} />
+                {/* Favorite grades chips */}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {profile.favoriteGrades.map((fav) => (
+                    <button
+                      key={fav.id}
+                      type="button"
+                      onClick={() => {
+                        setProdGradeRaw(fav.raw);
+                        const sum = getTotalPairsFromGrade(fav.raw);
+                        if (sum >= 1) setProdQtyPerPack(String(sum));
+                      }}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-[#0E7A34] hover:text-[#0E7A34]"
+                    >
+                      {fav.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Save new favorite grade */}
+                <div className="mt-2 flex gap-2">
+                  <input
+                    type="text"
+                    value={favLabel}
+                    onChange={(e) => setFavLabel(e.target.value)}
+                    placeholder="Nome para salvar esta grade favorita..."
+                    className="h-9 flex-1 rounded-lg border border-slate-200 px-2.5 text-xs focus:border-[#0E7A34] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleAddFavoriteGrade()}
+                    className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <BookmarkPlus className="h-3.5 w-3.5" />
+                    Salvar grade
+                  </button>
+                </div>
+
+                {/* Live Visual Preview of how buyers will see the grade */}
+                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-1.5 text-[11px] font-semibold text-slate-500">
+                    Prévia visual da grade para compradores (sem vírgulas):
+                  </p>
+                  <GradeVisualGrid
+                    gradeRaw={prodGradeRaw}
+                    unitLabel={prodUnitType === 'par' ? 'pares' : 'un'}
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             {moderationWarning && (
               <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
@@ -681,127 +1104,160 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   Nenhum produto cadastrado ainda
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  Cadastre seu primeiro produto ao lado com foto real e grade por vírgulas. Ele ficará disponível imediatamente na sua vitrine e para revendedores conectados.
+                  Cadastre seu primeiro produto ao lado com foto real. Ele ficará disponível imediatamente na sua vitrine e para lojistas conectados.
                 </p>
               </div>
             ) : (
               <div className="space-y-3">
-                {myProducts.map((product) => (
-                  <div
-                    key={product.id}
-                    className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row"
-                  >
-                    <img
-                      src={product.imageUrl}
-                      alt={product.name}
-                      className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-28 sm:w-28"
-                    />
-                    <div className="flex-1 min-w-0 space-y-2">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                            {product.category} · {product.sku}
-                          </span>
-                          <h3 className="text-sm font-bold text-slate-900">
-                            {product.name}
-                          </h3>
-                        </div>
-                        <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
-                          {formatBRL(product.factoryPrice)} / cx
-                        </span>
-                      </div>
+                {myProducts.map((product) => {
+                  const qty = resolveProductQuantityPerPack(product);
+                  const unitType = resolveProductUnitType(product);
+                  const unitSuffix = formatUnitSuffix(unitType);
+                  const unitFactory = computeUnitPriceFromTotal(product.factoryPrice, qty);
+                  const packLabel = resolveProductPackLabel(product);
+                  const packSummary = formatPackSummaryLabel({
+                    quantityPerPack: qty,
+                    unitType,
+                    packLabel,
+                  });
+                  const mainCat = normalizeProductCategory(product.category);
+                  const subCat = inferProductSubcategory(product.category, product.subcategory);
+                  const singleAsset = isSingleAssetCategory(product.category);
 
-                      <GradeVisualGrid gradeRaw={product.gradeRaw} compact />
-
-                      {(() => {
-                        const pixPreview = calculateOrderSplit({
-                          orderTotal: product.factoryPrice,
-                          factoryCostTotal: product.factoryPrice,
-                          paymentMethod: 'pix',
-                          isDirectManufacturerSale: true,
-                        });
-                        return (
-                          <div
-                            className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-mono tabular-nums ${
-                              pixPreview.belowPixMinThreshold
-                                ? 'border-amber-200 bg-amber-50 text-amber-900'
-                                : 'border-slate-200 bg-slate-50 text-slate-600'
-                            }`}
-                          >
-                            {pixPreview.belowPixMinThreshold ? (
-                              <>
-                                <strong>Abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}:</strong> 1 cx
-                                no Pix aplica tarifa mínima de {formatBRL(PIX_MIN_GROSS_BRL)} · Líquido
-                                fábrica: <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong>
-                              </>
-                            ) : (
-                              <>
-                                Repasse líquido fábrica (1 cx venda direta Pix):{' '}
-                                <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong> (taxa
-                                plataforma {formatBRL(pixPreview.platformGrossFee)})
-                              </>
+                  return (
+                    <div
+                      key={product.id}
+                      className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row"
+                    >
+                      <img
+                        src={product.imageUrl}
+                        alt={product.name}
+                        className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-28 sm:w-28"
+                      />
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                              {mainCat}
+                              {subCat ? ` · ${subCat}` : ''} · {product.sku}
+                            </span>
+                            <h3 className="text-sm font-bold text-slate-900">
+                              {product.name}
+                            </h3>
+                            {product.specsSummary && (
+                              <p className="text-xs text-slate-500">{product.specsSummary}</p>
                             )}
                           </div>
-                        );
-                      })()}
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-slate-600">
-                            Estoque:
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void onUpdateStock(
-                                product.id,
-                                Math.max(0, product.stockBoxes - 1),
-                                product.stockBoxes - 1 <= 0 ? true : product.isSoldOutToday
-                              )
-                            }
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
-                          >
-                            <Minus className="h-4 w-4" />
-                          </button>
-                          <span className="min-w-[54px] text-center font-mono text-sm font-bold text-slate-900 tabular-nums">
-                            {product.stockBoxes} cx
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void onUpdateStock(
-                                product.id,
-                                product.stockBoxes + 1,
-                                false
-                              )
-                            }
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
-                          >
-                            <Plus className="h-4 w-4" />
-                          </button>
+                          <div className="text-right font-mono tabular-nums">
+                            <span className="block text-sm font-bold text-[#0E7A34]">
+                              {formatBRL(unitFactory)} / {unitSuffix}
+                            </span>
+                            {qty > 1 && (
+                              <span className="block text-[11px] text-slate-500">
+                                {packSummary}: {formatBRL(product.factoryPrice)}
+                              </span>
+                            )}
+                          </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void onUpdateStock(
-                              product.id,
-                              product.stockBoxes,
-                              !product.isSoldOutToday
-                            )
-                          }
-                          className={`min-h-[36px] rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                            product.isSoldOutToday
-                              ? 'bg-orange-100 text-orange-800 hover:bg-orange-200'
-                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                          }`}
-                        >
-                          {product.isSoldOutToday ? 'Reativar Hoje' : 'Esgotado Hoje'}
-                        </button>
+                        {!singleAsset && qty > 1 && (
+                          <GradeVisualGrid
+                            gradeRaw={product.gradeRaw}
+                            compact
+                            unitLabel={unitType === 'par' ? 'pares' : 'un'}
+                          />
+                        )}
+
+                        {(() => {
+                          const pixPreview = calculateOrderSplit({
+                            orderTotal: product.factoryPrice,
+                            factoryCostTotal: product.factoryPrice,
+                            paymentMethod: 'pix',
+                            isDirectManufacturerSale: true,
+                          });
+                          return (
+                            <div
+                              className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-mono tabular-nums ${
+                                pixPreview.belowPixMinThreshold
+                                  ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                  : 'border-slate-200 bg-slate-50 text-slate-600'
+                              }`}
+                            >
+                              {pixPreview.belowPixMinThreshold ? (
+                                <>
+                                  <strong>Abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}:</strong> venda
+                                  no Pix aplica tarifa mínima de {formatBRL(PIX_MIN_GROSS_BRL)} · Líquido
+                                  fábrica: <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong>
+                                </>
+                              ) : (
+                                <>
+                                  Repasse líquido fábrica (venda direta Pix):{' '}
+                                  <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong> (taxa
+                                  plataforma {formatBRL(pixPreview.platformGrossFee)})
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium text-slate-600">
+                              Estoque:
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onUpdateStock(
+                                  product.id,
+                                  Math.max(0, product.stockBoxes - 1),
+                                  product.stockBoxes - 1 <= 0 ? true : product.isSoldOutToday
+                                )
+                              }
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                            >
+                              <Minus className="h-4 w-4" />
+                            </button>
+                            <span className="min-w-[60px] text-center font-mono text-sm font-bold text-slate-900 tabular-nums">
+                              {product.stockBoxes} {qty === 1 ? 'un' : 'cx'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onUpdateStock(
+                                  product.id,
+                                  product.stockBoxes + 1,
+                                  false
+                                )
+                              }
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                            >
+                              <Plus className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void onUpdateStock(
+                                product.id,
+                                product.stockBoxes,
+                                !product.isSoldOutToday
+                              )
+                            }
+                            className={`min-h-[36px] rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                              product.isSoldOutToday
+                                ? 'bg-orange-100 text-orange-800 hover:bg-orange-200'
+                                : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            {product.isSoldOutToday ? 'Reativar Hoje' : 'Esgotado Hoje'}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -876,7 +1332,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                                 {item.productName}
                               </p>
                               <p className="font-mono text-xs text-slate-600 tabular-nums">
-                                {item.boxesRequested} cx × {formatBRL(item.unitFactoryPrice)} ={' '}
+                                {item.boxesRequested} × {formatBRL(item.unitFactoryPrice)} ={' '}
                                 <strong>
                                   {formatBRL(item.boxesRequested * item.unitFactoryPrice)}
                                 </strong>
