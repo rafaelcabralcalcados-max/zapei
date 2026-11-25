@@ -316,6 +316,7 @@ export interface UserProfile {
   storefrontPrivacy: 'open' | 'approved';
   factoryName: string;
   asaasWalletId?: string;
+  anchorDiscountPercent?: number;
   factoryPolicy: MinimumDeliveryPolicy;
   favoriteGrades: FavoriteGrade[];
 }

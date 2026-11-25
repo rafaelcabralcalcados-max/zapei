@@ -15,7 +15,9 @@ import {
   ShieldCheck,
   ShoppingBag,
   Store,
+  Tag,
   Trash2,
+  X,
 } from 'lucide-react';
 import type {
   CartItem,
@@ -36,6 +38,7 @@ import {
   type CreateAsaasChargeResult,
 } from '../lib/asaasService';
 import {
+  computeAnchoredOriginalPrice,
   computeResellerPrice,
   formatBRL,
   getTotalPairsFromGrade,
@@ -43,7 +46,6 @@ import {
 import {
   calculateOrderSplit,
   getAsaasCreditCardRates,
-  MINIMUM_FEE_THRESHOLD_BRL,
   roundBRL,
 } from '../lib/splitCalculator';
 import {
@@ -52,7 +54,6 @@ import {
   type AsaasChargeModalData,
 } from './AsaasChargeModal';
 import { GradeVisualGrid } from './GradeVisualGrid';
-import { SplitBreakdownCard } from './SplitBreakdownCard';
 
 export interface PublicStorefrontOwner {
   uid: string;
@@ -61,6 +62,7 @@ export interface PublicStorefrontOwner {
   hasStorefront: boolean;
   storefrontName: string;
   factoryName: string;
+  anchorDiscountPercent?: number;
   deliveryPolicy: MinimumDeliveryPolicy;
   subscriptionStatus: SubscriptionStatus;
 }
@@ -143,9 +145,17 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   >({});
   const [activeModalCharge, setActiveModalCharge] =
     useState<AsaasChargeModalData | null>(null);
+  const [selectedProductListing, setSelectedProductListing] =
+    useState<CatalogListing | null>(null);
+
+  const anchorDiscountPct = Math.min(
+    80,
+    Math.max(0, Math.round(owner.anchorDiscountPercent ?? 0))
+  );
 
   useEffect(() => {
     setActiveSubView(initialSubView);
+    setSelectedProductListing(null);
   }, [owner.uid, initialSubView]);
 
   const isStorefrontAvailable =
@@ -397,7 +407,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
             chargeResult,
             subOrders[0]?.subOrderCode.split('-')[0] || `#${orderNum}`,
             orderId,
-            owner.commercialMode === 'manufacturer'
+            owner.commercialMode === 'manufacturer',
+            true
           )
         );
       }
@@ -531,37 +542,74 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     const inCart = cart.find(
                       (c) => c.productId === listing.product.id
                     );
+                    const originalAnchorPrice = computeAnchoredOriginalPrice(
+                      listing.publicPrice,
+                      anchorDiscountPct
+                    );
                     return (
                       <article
                         key={listing.product.id}
-                        className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                        className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md"
                       >
-                        <div className="relative h-52 bg-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedProductListing(listing)}
+                          className="group relative h-52 w-full overflow-hidden bg-slate-100 text-left"
+                        >
                           <img
                             src={listing.product.imageUrl}
                             alt={listing.product.name}
-                            className="h-full w-full object-cover"
+                            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                           />
                           <span className="absolute left-3 top-3 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-[11px] font-semibold text-white">
                             {listing.lotLabel}
                           </span>
-                        </div>
+                          {originalAnchorPrice && (
+                            <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
+                              <Tag className="h-3 w-3" />
+                              {anchorDiscountPct}% OFF
+                            </span>
+                          )}
+                          <span className="absolute bottom-2.5 right-2.5 rounded-lg bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 opacity-0 shadow-xs transition group-hover:opacity-100">
+                            Ver detalhes
+                          </span>
+                        </button>
 
                         <div className="flex flex-1 flex-col justify-between p-4 space-y-3">
                           <div className="space-y-2">
                             <div className="flex items-start justify-between gap-2">
-                              <div>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedProductListing(listing)}
+                                className="min-w-0 text-left hover:opacity-80"
+                              >
                                 <span className="text-[11px] font-semibold text-slate-400">
                                   {listing.product.category}
                                 </span>
                                 <h3 className="text-sm font-bold text-slate-900">
                                   {listing.product.name}
                                 </h3>
-                              </div>
-                              <div className="text-right">
-                                <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
-                                  {formatBRL(listing.publicPrice)}
-                                </span>
+                              </button>
+                              <div className="shrink-0 text-right">
+                                {originalAnchorPrice ? (
+                                  <>
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      <span className="font-mono text-[11px] text-slate-400 line-through tabular-nums">
+                                        De {formatBRL(originalAnchorPrice)}
+                                      </span>
+                                      <span className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0E7A34]">
+                                        {anchorDiscountPct}% OFF
+                                      </span>
+                                    </div>
+                                    <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                      Por {formatBRL(listing.publicPrice)}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="font-mono text-base font-bold text-[#0E7A34] tabular-nums">
+                                    {formatBRL(listing.publicPrice)}
+                                  </span>
+                                )}
                                 <span className="block text-[10px] text-slate-400">
                                   por caixa
                                 </span>
@@ -575,12 +623,6 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               Envio ({listing.lotLabel}): {listing.deliveryPolicy.label} ·{' '}
                               {listing.product.stockBoxes} cx em estoque
                             </p>
-                            {listing.publicPrice < MINIMUM_FEE_THRESHOLD_BRL && (
-                              <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-900">
-                                Pedidos abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)} no Pix
-                                aplicam a tarifa mínima de plataforma (R$ 6,99 bruto).
-                              </p>
-                            )}
                           </div>
 
                           {inCart ? (
@@ -720,14 +762,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     </div>
                   ))}
 
-                  {/* Payment Method Selection (Pix vs Credit Card 1x..12x Buyer Pass-Through) */}
+                  {/* Payment Method Selection (Clean Online Store Checkout) */}
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
                     <div>
                       <h3 className="text-sm font-bold text-slate-900">
-                        Forma de Pagamento (Split Asaas)
+                        Forma de Pagamento
                       </h3>
                       <p className="mt-0.5 text-xs text-slate-500">
-                        Escolha Pix (sem juros) ou Cartão de Crédito à vista / parcelado em até 12x com repasse transparente das taxas do cartão.
+                        Escolha Pix (sem juros) ou Cartão de Crédito à vista ou parcelado em até 12x.
                       </p>
                     </div>
 
@@ -784,7 +826,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               Cartão de Crédito
                             </p>
                             <p className="text-[11px] text-slate-500">
-                              À vista ou 2x a 12x (taxas repassadas)
+                              À vista ou parcelado em até 12x
                             </p>
                           </div>
                         </div>
@@ -813,28 +855,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             return (
                               <option key={n} value={n}>
                                 {n === 1
-                                  ? `1x à vista de ${formatBRL(gross)} (total ${formatBRL(gross)})`
+                                  ? `1x à vista de ${formatBRL(gross)}`
                                   : `${n}x de ${formatBRL(perInst)} (total ${formatBRL(gross)})`}
                               </option>
                             );
                           })}
                         </select>
-                        <p className="text-[11px] text-slate-500">
-                          As tarifas de processamento e juros de parcelamento do cartão são repassadas integralmente ao comprador, preservando o repasse líquido do Fabricante, Revendedor e ChatFi.
-                        </p>
                       </div>
                     )}
-
-                    <SplitBreakdownCard
-                      breakdown={cartBreakdown}
-                      title="Resumo do Pedido, Taxas e Divisão Transparente (Split)"
-                      factoryLabel="Repasse ao Fabricante (Produção)"
-                      resellerLabel={
-                        owner.commercialMode === 'manufacturer'
-                          ? 'Venda direta da fábrica'
-                          : 'Retido / Liberado para o Lojista'
-                      }
-                    />
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
@@ -844,14 +872,6 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         {formatBRL(grandTotalBuyer)}
                       </span>
                     </div>
-                    {paymentMethod === 'credit_card' && cartBreakdown.cardFeePassedToBuyer > 0 && (
-                      <div className="flex items-center justify-between text-xs text-[#F97316]">
-                        <span>Taxas e juros do cartão ({installments}x)</span>
-                        <span className="font-mono font-semibold tabular-nums">
-                          +{formatBRL(cartBreakdown.cardFeePassedToBuyer)}
-                        </span>
-                      </div>
-                    )}
                     <div className="flex items-center justify-between border-t border-slate-100 pt-2">
                       <span className="text-sm font-bold text-slate-900">
                         Total Final a Pagar
@@ -868,7 +888,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       </div>
                     </div>
                     <p className="text-xs text-slate-500">
-                      Ao confirmar, seu pedido entra em conferência de estoque, a cobrança Asaas com Split é preparada e um cartão interativo é enviado na conversa.
+                      Ao confirmar, seu pedido entra em conferência de estoque e um cartão interativo é enviado na conversa.
                     </p>
                     <button
                       type="button"
@@ -877,7 +897,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       className="mt-2 h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
                     >
                       {submitting
-                        ? 'Enviando pedido e calculando Split...'
+                        ? 'Finalizando pedido...'
                         : `Finalizar Pedido · ${formatBRL(cartBreakdown.buyerChargedTotal)}`}
                     </button>
                   </div>
@@ -893,8 +913,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     <div>
                       <h3 className="text-sm font-bold text-slate-900">
                         {lastChargeResult.mode === 'live'
-                          ? 'Cobrança Asaas Emitida com Split'
-                          : 'Cobrança Asaas Preparada com Split'}
+                          ? 'Pagamento Emitido com Sucesso'
+                          : 'Pagamento do Pedido Preparado'}
                       </h3>
                       <p className="font-mono text-[11px] text-slate-500">
                         Cobrança: {lastChargeResult.chargeId} · Status:{' '}
@@ -908,7 +928,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
 
                   {lastChargeResult.message && (
                     <p className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700">
-                      {lastChargeResult.message}
+                      {/split|wallet|fabricante|revendedor/i.test(lastChargeResult.message)
+                        ? 'Utilize o QR Code Pix ou abra a fatura abaixo para concluir o pagamento do seu pedido.'
+                        : lastChargeResult.message}
                     </p>
                   )}
 
@@ -1123,7 +1145,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                     Cartão em até 12x
                                   </span>
                                   <span className="block text-[10px] text-slate-500">
-                                    Taxas transparentes no total
+                                    Parcelamento em até 12x
                                   </span>
                                 </div>
                               </div>
@@ -1188,14 +1210,15 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         res,
                                         order.orderCode,
                                         order.id,
-                                        isDirectMfg
+                                        isDirectMfg,
+                                        true
                                       )
                                     );
                                   } catch (err) {
                                     setOrderNotice(
                                       err instanceof Error
                                         ? err.message
-                                        : 'Não foi possível gerar a cobrança Asaas.'
+                                        : 'Não foi possível gerar a cobrança.'
                                     );
                                   } finally {
                                     setOrderChargeLoadingId(null);
@@ -1224,7 +1247,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         cachedCharge,
                                         order.orderCode,
                                         order.id,
-                                        isDirectMfg
+                                        isDirectMfg,
+                                        true
                                       )
                                     );
                                   } else {
@@ -1239,6 +1263,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                       pixCopyPaste: activePixPayload,
                                       splitBreakdown: orderBreakdown,
                                       hideResellerShare: isDirectMfg,
+                                      hideSplitExtract: true,
                                     });
                                   }
                                 }}
@@ -1262,14 +1287,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         res.asaasStatus || res.mappedPaymentStatus
                                       );
                                       setOrderNotice(
-                                        `Status Asaas do pedido ${order.orderCode}: ${fmt.label}`
+                                        `Status do pedido ${order.orderCode}: ${fmt.label}`
                                       );
                                     }
                                   } catch (err) {
                                     setOrderNotice(
                                       err instanceof Error
                                         ? err.message
-                                        : 'Falha ao verificar status Asaas.'
+                                        : 'Falha ao verificar status do pagamento.'
                                     );
                                   } finally {
                                     setOrderSyncLoadingId(null);
@@ -1288,21 +1313,6 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           </div>
                         </section>
                       )}
-
-                      <SplitBreakdownCard
-                        compact
-                        breakdown={orderBreakdown}
-                        title="Extrato do Split & Transparência Asaas"
-                        factoryLabel="Líquido Fabricante (Produção)"
-                        resellerLabel={
-                          isDirectMfg
-                            ? 'Venda direta da fábrica'
-                            : 'Líquido Revendedor (Loja)'
-                        }
-                        hideResellerIfDirect={isDirectMfg}
-                        asaasChargeStatus={activeChargeStatus}
-                        asaasChargeId={activeChargeId}
-                      />
 
                       <div className="space-y-2">
                         {order.subOrders.map((sub) => (
@@ -1342,6 +1352,161 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Product Detail Modal with Anchored "De / Por" Pricing */}
+      {selectedProductListing && (() => {
+        const detailListing = selectedProductListing;
+        const detailInCart = cart.find(
+          (c) => c.productId === detailListing.product.id
+        );
+        const detailOriginalPrice = computeAnchoredOriginalPrice(
+          detailListing.publicPrice,
+          anchorDiscountPct
+        );
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3.5 sm:p-5 backdrop-blur-xs"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="product-detail-title"
+          >
+            <div className="relative flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="relative h-64 shrink-0 bg-slate-100 sm:h-72">
+                <img
+                  src={detailListing.product.imageUrl}
+                  alt={detailListing.product.name}
+                  className="h-full w-full object-cover"
+                />
+                <span className="absolute left-3.5 top-3.5 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-xs font-semibold text-white">
+                  {detailListing.lotLabel}
+                </span>
+                {detailOriginalPrice && (
+                  <span className="absolute left-3.5 bottom-3.5 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1 text-xs font-extrabold text-white shadow-sm">
+                    <Tag className="h-3.5 w-3.5" />
+                    {anchorDiscountPct}% OFF
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedProductListing(null)}
+                  aria-label="Fechar detalhes do produto"
+                  className="absolute right-3.5 top-3.5 flex h-9 w-9 items-center justify-center rounded-xl bg-white/95 text-slate-700 shadow-sm hover:bg-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      {detailListing.product.category}
+                    </span>
+                    <h2
+                      id="product-detail-title"
+                      className="text-lg font-bold text-slate-900"
+                    >
+                      {detailListing.product.name}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Envio ({detailListing.lotLabel}): {detailListing.deliveryPolicy.label} ·{' '}
+                      {detailListing.product.stockBoxes} cx em estoque
+                    </p>
+                  </div>
+
+                  <div className="text-right">
+                    {detailOriginalPrice ? (
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className="font-mono text-xs text-slate-400 line-through tabular-nums">
+                            De {formatBRL(detailOriginalPrice)}
+                          </span>
+                          <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-extrabold text-[#0E7A34]">
+                            {anchorDiscountPct}% OFF
+                          </span>
+                        </div>
+                        <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                          Por {formatBRL(detailListing.publicPrice)}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="block font-mono text-2xl font-extrabold text-[#0E7A34] tabular-nums">
+                        {formatBRL(detailListing.publicPrice)}
+                      </span>
+                    )}
+                    <span className="block text-[11px] text-slate-400">
+                      por caixa fechada
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <span className="block text-xs font-bold text-slate-700">
+                    Grade da Caixa
+                  </span>
+                  <GradeVisualGrid gradeRaw={detailListing.product.gradeRaw} />
+                </div>
+
+                <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+                  {detailInCart ? (
+                    <>
+                      <div className="flex flex-1 items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 p-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateCartBoxes(
+                              detailListing.product.id,
+                              -1,
+                              detailListing.product.stockBoxes
+                            )
+                          }
+                          className="flex h-9 w-9 items-center justify-center rounded-lg bg-white text-slate-700 shadow-sm"
+                        >
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
+                          {detailInCart.boxes} cx no carrinho
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateCartBoxes(
+                              detailListing.product.id,
+                              1,
+                              detailListing.product.stockBoxes
+                            )
+                          }
+                          className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#0E7A34] text-white shadow-sm"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedProductListing(null);
+                          setActiveSubView('cart');
+                        }}
+                        className="h-12 rounded-xl bg-[#0D2B3E] px-5 text-xs font-semibold text-white hover:bg-[#143d57]"
+                      >
+                        Ir para o Carrinho
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => addToCart(detailListing)}
+                      className="h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white transition hover:bg-[#0B5D27]"
+                    >
+                      Adicionar Caixa ao Pedido · {formatBRL(detailListing.publicPrice)}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <AsaasChargeModal
         isOpen={Boolean(activeModalCharge)}

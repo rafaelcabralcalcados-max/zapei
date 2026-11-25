@@ -29,12 +29,28 @@ export function getTotalPairsFromGrade(raw: string): number {
   return parseGradeString(raw).reduce((sum, item) => sum + item.pairs, 0);
 }
 
+export const ANCHOR_DISCOUNT_PRESETS = [0, 10, 15, 20, 30] as const;
+
 export function computeResellerPrice(factoryPrice: number, margin?: CategoryMargin): number {
   if (!margin) return factoryPrice;
   if (margin.mode === 'fixed') {
     return Number((factoryPrice + margin.value).toFixed(2));
   }
   return Number((factoryPrice * (1 + margin.value / 100)).toFixed(2));
+}
+
+/**
+ * Computes the strikethrough "De" price backward from the final selling "Por" price
+ * and a visual discount percentage (0..80), keeping the net selling price and Split untouched.
+ */
+export function computeAnchoredOriginalPrice(
+  sellingPrice: number,
+  discountPercent?: number
+): number | null {
+  const pct = Number(discountPercent ?? 0);
+  if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) return null;
+  if (!Number.isFinite(pct) || pct <= 0 || pct >= 90) return null;
+  return Number((sellingPrice / (1 - pct / 100)).toFixed(2));
 }
 
 export function formatBRL(value: number): string {

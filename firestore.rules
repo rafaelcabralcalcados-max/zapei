@@ -46,7 +46,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
-          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId',
+          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId', 'anchorDiscountPercent',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
           'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
           'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'createdAt', 'updatedAt'
@@ -66,6 +66,7 @@ service cloud.firestore {
         && (!('storefrontPrivacy' in data) || data.storefrontPrivacy in ['open', 'approved'])
         && (!('factoryName' in data) || (data.factoryName is string && data.factoryName.size() <= 80))
         && (!('asaasWalletId' in data) || (data.asaasWalletId is string && data.asaasWalletId.size() <= 128))
+        && (!('anchorDiscountPercent' in data) || (data.anchorDiscountPercent is number && data.anchorDiscountPercent >= 0 && data.anchorDiscountPercent <= 80))
         && (!('deliveryPolicyType' in data) || data.deliveryPolicyType in ['boxes', 'pieces', 'amount'])
         && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
         && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
@@ -490,7 +491,7 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
-          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId',
+          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId', 'anchorDiscountPercent',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
           'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
           'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'

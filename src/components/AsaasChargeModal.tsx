@@ -33,6 +33,7 @@ export interface AsaasChargeModalData {
   missingWallets?: Array<{ role: 'manufacturer' | 'reseller'; uid: string; label: string }>;
   splitBreakdown: OrderSplitBreakdown;
   hideResellerShare?: boolean;
+  hideSplitExtract?: boolean;
 }
 
 interface AsaasChargeModalProps {
@@ -111,9 +112,10 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
   const breakdown = data.splitBreakdown;
 
   const handleCopyPix = async () => {
+    const fallbackPrefix = data.hideSplitExtract ? 'PIX-PEDIDO' : 'ASAAS-SPLIT-PREVIEW';
     const payload =
       effectivePixCopyPaste ||
-      `ASAAS-SPLIT-PREVIEW:${data.chargeId}|ORDER:${data.orderCode}|TOTAL:${breakdown.buyerChargedTotal.toFixed(2)}`;
+      `${fallbackPrefix}:${data.chargeId}|ORDER:${data.orderCode}|TOTAL:${breakdown.buyerChargedTotal.toFixed(2)}`;
     try {
       await navigator.clipboard.writeText(payload);
       setCopiedPix(true);
@@ -173,7 +175,9 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
                 id="asaas-modal-title"
                 className="truncate text-base font-bold text-slate-900"
               >
-                Pagamento Asaas · Pedido {data.orderCode}
+                {data.hideSplitExtract
+                  ? `Pagamento · Pedido ${data.orderCode}`
+                  : `Pagamento Asaas · Pedido ${data.orderCode}`}
               </h2>
             </div>
             <p className="mt-0.5 font-mono text-[11px] text-slate-500">
@@ -239,11 +243,14 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
 
           {data.message && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-700">
-              {data.message}
+              {data.hideSplitExtract &&
+              /split|wallet|fabricante|revendedor/i.test(data.message)
+                ? 'Pagamento pronto. Utilize o QR Code Pix ou abra a fatura abaixo para concluir seu pedido.'
+                : data.message}
             </div>
           )}
 
-          {data.missingWallets && data.missingWallets.length > 0 && (
+          {!data.hideSplitExtract && data.missingWallets && data.missingWallets.length > 0 && (
             <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
               <span>
@@ -346,36 +353,38 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
             </div>
           )}
 
-          {/* Split Transparency Extract */}
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-2 text-xs">
-            <p className="font-bold text-slate-900">
-              Extrato Transparente do Split Asaas
-            </p>
-            <div className="divide-y divide-slate-200/80 rounded-xl border border-slate-200 bg-white px-3">
-              <div className="flex items-center justify-between py-2">
-                <span className="text-slate-600">Líquido Fabricante</span>
-                <span className="font-mono font-bold text-[#0D2B3E] tabular-nums">
-                  {formatBRL(breakdown.factoryNetTotal)}
-                </span>
-              </div>
-              {!(breakdown.isDirectManufacturerSale && data.hideResellerShare) && (
+          {/* Split Transparency Extract (Internal Seller Panels Only — hidden for buyers) */}
+          {!data.hideSplitExtract && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 space-y-2 text-xs">
+              <p className="font-bold text-slate-900">
+                Extrato Transparente do Split Asaas
+              </p>
+              <div className="divide-y divide-slate-200/80 rounded-xl border border-slate-200 bg-white px-3">
                 <div className="flex items-center justify-between py-2">
-                  <span className="text-slate-600">Líquido Revendedor</span>
-                  <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
-                    {formatBRL(breakdown.resellerNetTotal)}
+                  <span className="text-slate-600">Líquido Fabricante</span>
+                  <span className="font-mono font-bold text-[#0D2B3E] tabular-nums">
+                    {formatBRL(breakdown.factoryNetTotal)}
                   </span>
                 </div>
-              )}
-              <div className="flex items-center justify-between py-2">
-                <span className="text-slate-600">
-                  Taxa ChatFi ({breakdown.minimumRuleApplied ? 'tarifa mínima' : '8,5%'})
-                </span>
-                <span className="font-mono font-bold text-slate-900 tabular-nums">
-                  {formatBRL(breakdown.platformGrossFee)}
-                </span>
+                {!(breakdown.isDirectManufacturerSale && data.hideResellerShare) && (
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-slate-600">Líquido Revendedor</span>
+                    <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
+                      {formatBRL(breakdown.resellerNetTotal)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between py-2">
+                  <span className="text-slate-600">
+                    Taxa ChatFi ({breakdown.minimumRuleApplied ? 'tarifa mínima' : '8,5%'})
+                  </span>
+                  <span className="font-mono font-bold text-slate-900 tabular-nums">
+                    {formatBRL(breakdown.platformGrossFee)}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -386,7 +395,8 @@ export function toAsaasChargeModalData(
   res: CreateAsaasChargeResult,
   orderCode: string,
   orderId: string,
-  hideResellerShare = false
+  hideResellerShare = false,
+  hideSplitExtract = false
 ): AsaasChargeModalData {
   return {
     orderId,
@@ -401,5 +411,6 @@ export function toAsaasChargeModalData(
     missingWallets: res.missingWallets,
     splitBreakdown: res.splitBreakdown,
     hideResellerShare,
+    hideSplitExtract,
   };
 }

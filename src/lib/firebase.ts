@@ -340,6 +340,7 @@ export async function registerOrUpdateUserProfile(params: {
   storefrontPrivacy?: 'open' | 'approved';
   factoryName?: string;
   asaasWalletId?: string;
+  anchorDiscountPercent?: number;
   factoryPolicy?: MinimumDeliveryPolicy;
   subscriptionStatus?: SubscriptionStatus;
   trialEndsAt?: number;
@@ -413,6 +414,17 @@ export async function registerOrUpdateUserProfile(params: {
   )
     .trim()
     .slice(0, 128);
+  const resolvedAnchorDiscount = Math.min(
+    80,
+    Math.max(
+      0,
+      Math.round(
+        params.anchorDiscountPercent !== undefined
+          ? params.anchorDiscountPercent
+          : Number(existingPubData?.anchorDiscountPercent ?? 0) || 0
+      )
+    )
+  );
   const nowMs = Date.now();
 
   const publicData: Record<string, unknown> = {
@@ -430,6 +442,7 @@ export async function registerOrUpdateUserProfile(params: {
     storefrontPrivacy: params.storefrontPrivacy ?? 'open',
     factoryName: (params.factoryName ?? params.displayName).slice(0, 80),
     asaasWalletId: resolvedWalletId,
+    anchorDiscountPercent: resolvedAnchorDiscount,
     deliveryPolicyType: policy.type,
     deliveryPolicyValue: policy.value,
     deliveryPolicyPickup: policy.allowCounterPickup,
@@ -625,6 +638,10 @@ function buildUserProfileFromDocs(
     storefrontPrivacy: (publicData.storefrontPrivacy as 'open' | 'approved') ?? 'open',
     factoryName: String(publicData.factoryName ?? ''),
     asaasWalletId: publicData.asaasWalletId ? String(publicData.asaasWalletId) : '',
+    anchorDiscountPercent: Math.min(
+      80,
+      Math.max(0, Math.round(Number(publicData.anchorDiscountPercent ?? 0) || 0))
+    ),
     factoryPolicy: {
       type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
       value: Number(publicData.deliveryPolicyValue ?? 1),
@@ -2222,6 +2239,7 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
   hasStorefront: boolean;
   storefrontName: string;
   factoryName: string;
+  anchorDiscountPercent: number;
   deliveryPolicy: MinimumDeliveryPolicy;
   subscriptionStatus: SubscriptionStatus;
 } | null> {
@@ -2236,6 +2254,10 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
       hasStorefront: Boolean(d.hasStorefront),
       storefrontName: String(d.storefrontName || d.factoryName || d.displayName || ''),
       factoryName: String(d.factoryName || d.displayName || ''),
+      anchorDiscountPercent: Math.min(
+        80,
+        Math.max(0, Math.round(Number(d.anchorDiscountPercent ?? 0) || 0))
+      ),
       deliveryPolicy: {
         type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
         value: Number(d.deliveryPolicyValue ?? 1),

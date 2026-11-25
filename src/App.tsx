@@ -1029,6 +1029,8 @@ export default function App() {
         storefrontPrivacy: overrides.storefrontPrivacy ?? base?.storefrontPrivacy ?? 'open',
         factoryName: overrides.factoryName ?? base?.factoryName ?? base?.name ?? '',
         asaasWalletId: overrides.asaasWalletId ?? base?.asaasWalletId ?? '',
+        anchorDiscountPercent:
+          overrides.anchorDiscountPercent ?? base?.anchorDiscountPercent ?? 0,
         factoryPolicy: overrides.factoryPolicy ?? base?.factoryPolicy,
         subscriptionStatus: overrides.subscriptionStatus ?? base?.subscriptionStatus ?? 'free',
         trialEndsAt: overrides.trialEndsAt ?? base?.trialEndsAt ?? 0,
@@ -3554,6 +3556,9 @@ export default function App() {
               onSaveStorefrontIdentity={async (storefrontName, storefrontPrivacy) => {
                 await persistProfileUpdate({ storefrontName, storefrontPrivacy });
               }}
+              onSaveAnchorDiscount={async (anchorDiscountPercent: number) => {
+                await persistProfileUpdate({ anchorDiscountPercent });
+              }}
               onSaveWalletId={async (asaasWalletId: string) => {
                 await persistProfileUpdate({ asaasWalletId });
               }}
@@ -3804,11 +3809,9 @@ export default function App() {
                 asaasChargeStatus: chargeRes.status,
               }).catch(() => {});
               return chargeRes;
-            } catch (err) {
+            } catch {
               showToast(
-                err instanceof Error
-                  ? `Pedido registrado. Cobrança Asaas pendente: ${err.message}`
-                  : 'Pedido registrado. Cobrança Asaas pendente de Wallet ID.'
+                'Pedido registrado! Você pode gerar o pagamento em Meus Pedidos.'
               );
               return null;
             }

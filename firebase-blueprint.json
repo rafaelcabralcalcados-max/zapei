@@ -19,6 +19,7 @@
         "storefrontPrivacy": { "type": "string", "enum": ["open", "approved"] },
         "factoryName": { "type": "string", "maxLength": 80 },
         "asaasWalletId": { "type": "string", "maxLength": 128 },
+        "anchorDiscountPercent": { "type": "number" },
         "deliveryPolicyType": { "type": "string", "enum": ["boxes", "pieces", "amount"] },
         "deliveryPolicyValue": { "type": "number" },
         "deliveryPolicyPickup": { "type": "boolean" },
