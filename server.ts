@@ -715,6 +715,7 @@ async function startServer(): Promise<void> {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        allowedHosts: true as const,
         hmr: hmrDisabled ? false : true,
         ws: { server: httpServer },
       },
