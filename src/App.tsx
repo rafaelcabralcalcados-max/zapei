@@ -1960,28 +1960,39 @@ export default function App() {
           onProgress?.(completedOps, Math.max(1, totalOps));
 
           if (!isOnline) {
-            if ((item.kind === 'image' || item.kind === 'audio') && blob.size <= 330 * 1024) {
+            if (
+              (item.kind === 'image' || item.kind === 'audio' || item.kind === 'pdf') &&
+              blob.size <= 330 * 1024
+            ) {
               const dataUrl = await blobToDataUrl(blob);
+              const isPdfItem = item.kind === 'pdf';
+              const resolvedOfflineType: 'image' | 'audio' =
+                item.kind === 'audio' ? 'audio' : 'image';
               await sendOrQueueMessage(
                 {
                   senderId: profile.uid,
                   senderName: profile.name,
                   recipientId: target.uid,
                   recipientName: target.name,
-                  type: item.kind,
+                  type: resolvedOfflineType,
                   text:
                     item.kind === 'audio'
                       ? `Mensagem de voz (${item.durationLabel || '0:00'})`
-                      : (idx === 0 && caption) || 'Foto',
+                      : isPdfItem
+                        ? item.name || 'Documento.pdf'
+                        : (idx === 0 && caption) || 'Foto',
                   mediaUrl: dataUrl,
+                  mediaMimeType: isPdfItem ? 'application/pdf' : mimeType,
                   audioDuration: item.kind === 'audio' ? item.durationLabel || '0:00' : undefined,
                   pushPreviewText:
                     item.kind === 'audio'
                       ? `Áudio (${item.durationLabel || '0:00'})`
-                      : caption
-                        ? `Foto: ${caption}`
-                        : 'Enviou uma foto',
-                  pushMessageType: item.kind,
+                      : isPdfItem
+                        ? `PDF: ${item.name || 'Documento.pdf'}`
+                        : caption
+                          ? `Foto: ${caption}`
+                          : 'Enviou uma foto',
+                  pushMessageType: resolvedOfflineType,
                 },
                 authUser
               );
@@ -1991,22 +2002,26 @@ export default function App() {
               );
             }
           } else {
+            const isPdfItem = item.kind === 'pdf';
+            const resolvedOnlineType: 'image' | 'audio' | 'video' =
+              item.kind === 'pdf' ? 'image' : item.kind;
             await sendMediaWithTransitBridge({
               myUid: profile.uid,
               myName: profile.name,
               recipientId: target.uid,
               recipientName: target.name,
-              mediaType: item.kind,
+              mediaType: resolvedOnlineType,
               blob,
-              mimeType,
+              mimeType: isPdfItem ? 'application/pdf' : mimeType,
               durationLabel:
                 item.kind === 'audio'
                   ? item.durationLabel || '0:00'
                   : item.kind === 'video'
                     ? item.durationLabel || undefined
                     : undefined,
-              caption:
-                item.kind === 'image' || item.kind === 'video'
+              caption: isPdfItem
+                ? item.name || 'Documento.pdf'
+                : item.kind === 'image' || item.kind === 'video'
                   ? idx === 0
                     ? caption || (item.kind === 'image' ? 'Foto' : undefined)
                     : item.kind === 'image'
@@ -3313,9 +3328,9 @@ export default function App() {
       <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Mobile Compact Top Header (hidden when inside an active mobile chat thread) */}
         {!mobileInChat && (
-          <header className="flex md:hidden items-center justify-between gap-2 border-b border-slate-200 bg-[#0D2B3E] px-3.5 pb-2.5 pt-safe text-white shrink-0">
+          <header className="flex md:hidden items-center justify-between gap-2 border-b border-[#0A2233] bg-[#0D2B3E] px-3.5 py-2.5 text-white shrink-0">
             <div className="flex min-w-0 items-center gap-2.5">
-              <ChatFiLogo className="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
+              <ChatFiLogo className="h-8 w-8 shrink-0 rounded-lg" />
               <span className="truncate text-base font-extrabold tracking-tight">ChatFi</span>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -3825,6 +3840,44 @@ export default function App() {
                         authUser,
                       });
                     }}
+                    onSendPdf={async (pdfBlob, fileName) => {
+                      const cleanName = (fileName || 'Documento.pdf').trim().slice(0, 120);
+                      if (!isOnline) {
+                        if (pdfBlob.size <= 330 * 1024) {
+                          const dataUrl = await blobToDataUrl(pdfBlob);
+                          await sendOrQueueMessage(
+                            {
+                              senderId: profile.uid,
+                              senderName: profile.name,
+                              recipientId: selectedPeer.uid,
+                              recipientName: selectedPeer.name,
+                              type: 'image',
+                              text: cleanName,
+                              mediaUrl: dataUrl,
+                              mediaMimeType: 'application/pdf',
+                              pushPreviewText: `PDF: ${cleanName}`,
+                              pushMessageType: 'image',
+                            },
+                            authUser
+                          );
+                          showToast('PDF salvo na fila — será enviado assim que o sinal voltar.');
+                          return;
+                        }
+                        throw new Error('Sem conexão para enviar este PDF. Tente novamente quando o sinal voltar.');
+                      }
+                      await sendMediaWithTransitBridge({
+                        myUid: profile.uid,
+                        myName: profile.name,
+                        recipientId: selectedPeer.uid,
+                        recipientName: selectedPeer.name,
+                        mediaType: 'image',
+                        blob: pdfBlob,
+                        mimeType: 'application/pdf',
+                        fileName: cleanName,
+                        caption: cleanName,
+                        authUser,
+                      });
+                    }}
                     onForwardMessage={async (target, msg) => {
                       if (msg.type === 'image' || msg.type === 'audio' || msg.type === 'video') {
                         const cached = await getLocalMedia(msg.id);
@@ -3847,7 +3900,7 @@ export default function App() {
                           recipientName: target.name,
                           mediaType: msg.type,
                           blob: blobToSend,
-                          mimeType: cached?.mimeType || blobToSend.type,
+                          mimeType: cached?.mimeType || msg.mediaMimeType || blobToSend.type,
                           durationLabel:
                             msg.type === 'audio'
                               ? msg.audioDuration

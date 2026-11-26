@@ -27,6 +27,7 @@ export interface ZapeiMessagePacket {
   type: ChatMessage['type'];
   text: string;
   mediaUrl?: string;
+  mediaMimeType?: string;
   audioDuration?: string;
   videoDuration?: string;
   pushPreviewText?: string;
@@ -237,6 +238,7 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
       type: packet.type,
       text: packet.text,
       mediaUrl: packet.mediaUrl,
+      mediaMimeType: packet.mediaMimeType,
       audioDuration: packet.audioDuration,
       videoDuration: packet.videoDuration,
       customMessageId: packet.id,
@@ -328,6 +330,7 @@ export function packetToChatMessage(packet: ZapeiMessagePacket): ChatMessage {
     text: packet.text,
     timestamp: formatPacketTimeLabel(packet.timestamp),
     mediaUrl: packet.mediaUrl,
+    mediaMimeType: packet.mediaMimeType,
     audioDuration: packet.audioDuration,
     videoDuration: packet.videoDuration,
     deliveryStatus: packet.deliveryStatus,
@@ -354,6 +357,7 @@ export interface SendTransportMessageInput {
   type: ChatMessage['type'];
   text: string;
   mediaUrl?: string;
+  mediaMimeType?: string;
   audioDuration?: string;
   videoDuration?: string;
   pushPreviewText?: string;
@@ -385,6 +389,7 @@ export async function sendOrQueueMessage(
     type: input.type,
     text: input.text,
     mediaUrl: input.mediaUrl,
+    mediaMimeType: input.mediaMimeType,
     audioDuration: input.audioDuration,
     videoDuration: input.videoDuration,
     pushPreviewText: input.pushPreviewText,

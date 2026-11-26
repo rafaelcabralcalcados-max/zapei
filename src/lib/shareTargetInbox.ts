@@ -10,7 +10,7 @@ export const SHARE_INBOX_DB_NAME = 'zapei_share_inbox_v1';
 export const SHARE_INBOX_DB_VERSION = 1;
 export const SHARE_INBOX_STORE_NAME = 'pending_shares';
 
-export type SharedMediaKind = 'image' | 'audio' | 'video' | 'unsupported';
+export type SharedMediaKind = 'image' | 'audio' | 'video' | 'pdf' | 'unsupported';
 
 export interface StoredSharedFile {
   name: string;
@@ -54,6 +54,7 @@ export function classifySharedFile(file: { name?: string; type?: string }): Shar
   const mime = (file.type || '').toLowerCase();
   const lowerName = (file.name || '').toLowerCase();
 
+  if (mime === 'application/pdf' || mime.endsWith('/pdf')) return 'pdf';
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('video/')) {
@@ -64,6 +65,7 @@ export function classifySharedFile(file: { name?: string; type?: string }): Shar
     return 'video';
   }
 
+  if (lowerName.endsWith('.pdf')) return 'pdf';
   if (IMAGE_EXTS.some((ext) => lowerName.endsWith(ext))) return 'image';
   if (AUDIO_EXTS.some((ext) => lowerName.endsWith(ext))) return 'audio';
   if (VIDEO_EXTS.some((ext) => lowerName.endsWith(ext))) return 'video';

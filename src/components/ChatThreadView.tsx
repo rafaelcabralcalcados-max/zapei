@@ -8,6 +8,8 @@ import {
   Clock,
   Copy,
   Download,
+  Eye,
+  FileText,
   Film,
   Forward,
   Image as ImageIcon,
@@ -16,6 +18,7 @@ import {
   Pause,
   Phone,
   Play,
+  Printer,
   Radio,
   Receipt,
   Reply,
@@ -41,6 +44,7 @@ import {
 import {
   IMAGE_JPEG_QUALITY,
   MAX_IMAGE_WIDTH,
+  MAX_MEDIA_BYTES,
   MAX_VIDEO_BYTES,
   type MediaResolveResult,
   receiveAndDeliverTransitMedia,
@@ -59,6 +63,7 @@ import {
   type PresenceSnapshot,
 } from '../lib/presenceUtils';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
+import { PdfViewerCanvas, renderPdfToPrintHtml } from './PdfViewerCanvas';
 import { StarRatingBadge } from './StarRatingBadge';
 
 export interface ActiveChatPeer {
@@ -100,6 +105,7 @@ interface ChatThreadViewProps {
   onSendAudio: (blob: Blob, durationLabel: string) => Promise<void>;
   onSendImage: (blob: Blob, caption: string) => Promise<void>;
   onSendVideo: (blob: Blob, durationLabel: string, caption: string) => Promise<void>;
+  onSendPdf?: (blob: Blob, fileName: string) => Promise<void>;
   onForwardMessage?: (target: ForwardTarget, msg: ChatMessage) => Promise<void>;
   onNotify?: (message: string) => void;
   onStartCall: (type: 'audio' | 'video') => void;
@@ -124,8 +130,21 @@ function isIOSDevice(): boolean {
   );
 }
 
+function isPdfMessage(
+  msg: Pick<ChatMessage, 'type' | 'mediaMimeType' | 'mediaUrl' | 'text'>,
+  resolvedMimeType?: string
+): boolean {
+  const mime = (resolvedMimeType || msg.mediaMimeType || '').toLowerCase();
+  if (mime === 'application/pdf' || mime.endsWith('/pdf')) return true;
+  const url = (msg.mediaUrl || '').toLowerCase();
+  if (url.startsWith('data:application/pdf') || /\.pdf(\?|$)/i.test(url)) return true;
+  if (msg.type === 'image' && /\.pdf$/i.test((msg.text || '').trim())) return true;
+  return false;
+}
+
 function getExtensionFromMime(mime: string, fallback: string): string {
   const lower = mime.toLowerCase();
+  if (lower.includes('pdf')) return 'pdf';
   if (lower.includes('jpeg') || lower.includes('jpg')) return 'jpg';
   if (lower.includes('png')) return 'png';
   if (lower.includes('webp')) return 'webp';
@@ -145,13 +164,21 @@ async function mediaUrlToBlobAndFile(
   baseName: string,
   fallbackExt: string
 ): Promise<{ blob: Blob; file: File; filename: string }> {
+  const defaultMime =
+    fallbackExt === 'pdf'
+      ? 'application/pdf'
+      : fallbackExt === 'jpg'
+        ? 'image/jpeg'
+        : fallbackExt === 'mp4'
+          ? 'video/mp4'
+          : 'audio/webm';
   let blob: Blob;
   if (mediaUrl.startsWith('data:')) {
     const commaIdx = mediaUrl.indexOf(',');
     const header = mediaUrl.slice(0, commaIdx);
     const dataPart = mediaUrl.slice(commaIdx + 1);
     const mimeMatch = header.match(/data:([^;]+)/);
-    const mime = mimeMatch ? mimeMatch[1] : fallbackExt === 'jpg' ? 'image/jpeg' : 'audio/webm';
+    const mime = mimeMatch ? mimeMatch[1] : defaultMime;
     const binary = atob(dataPart);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i += 1) {
@@ -165,12 +192,13 @@ async function mediaUrlToBlobAndFile(
 
   const ext = getExtensionFromMime(blob.type || '', fallbackExt);
   const safeBase = baseName
+    .replace(/\.pdf$/i, '')
     .replace(/[^a-zA-Z0-9_-]/g, '-')
     .replace(/-+/g, '-')
     .slice(0, 32) || 'chatfi-midia';
   const filename = `${safeBase}-${Date.now().toString().slice(-5)}.${ext}`;
   const file = new File([blob], filename, {
-    type: blob.type || (fallbackExt === 'jpg' ? 'image/jpeg' : 'audio/webm'),
+    type: blob.type || defaultMime,
   });
   return { blob, file, filename };
 }
@@ -237,6 +265,9 @@ function parseQuotedMessage(text: string): ParsedQuotedText | null {
 }
 
 function getReplySnippet(msg: ChatMessage): string {
+  if (isPdfMessage(msg)) {
+    return `📄 ${msg.text || 'Documento.pdf'}`.slice(0, 72);
+  }
   if (msg.type === 'image') {
     const cleanCaption = msg.text && msg.text !== 'Foto' ? ` — ${msg.text}` : '';
     return `📷 Foto${cleanCaption}`.slice(0, 72);
@@ -553,6 +584,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   onSendAudio,
   onSendImage,
   onSendVideo,
+  onSendPdf,
   onForwardMessage,
   onNotify,
   onStartCall,
@@ -599,6 +631,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   // WhatsApp-style media & message interaction states
   const [lightboxMsg, setLightboxMsg] = useState<ChatMessage | null>(null);
+  const [pdfViewerMsg, setPdfViewerMsg] = useState<ChatMessage | null>(null);
+  const [printingMsgId, setPrintingMsgId] = useState<string | null>(null);
   const [pendingPhoto, setPendingPhoto] = useState<{
     blob: Blob;
     previewUrl: string;
@@ -631,9 +665,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const selectedMimeTypeRef = useRef<string>('audio/webm');
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const activePrintCleanupRef = useRef<(() => void) | null>(null);
 
   const activeChatId = useMemo(
     () => getDeterministicChatId(myUid, peer.uid),
@@ -730,6 +766,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     return () => {
       if (recordTimerRef.current) window.clearInterval(recordTimerRef.current);
       recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+      activePrintCleanupRef.current?.();
+      activePrintCleanupRef.current = null;
     };
   }, []);
 
@@ -763,25 +801,41 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const handleSaveMedia = async (
     mediaUrl: string | undefined,
-    kind: 'image' | 'audio' | 'video'
+    kind: 'image' | 'audio' | 'video' | 'pdf',
+    preferredName?: string
   ) => {
     if (!mediaUrl || mediaBusy) return;
     setMediaBusy(true);
     try {
       const baseName =
-        kind === 'image' ? 'chatfi-foto' : kind === 'video' ? 'chatfi-video' : 'chatfi-audio';
-      const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
+        kind === 'pdf'
+          ? preferredName || 'chatfi-documento'
+          : kind === 'image'
+            ? 'chatfi-foto'
+            : kind === 'video'
+              ? 'chatfi-video'
+              : 'chatfi-audio';
+      const fallbackExt =
+        kind === 'pdf'
+          ? 'pdf'
+          : kind === 'image'
+            ? 'jpg'
+            : kind === 'video'
+              ? 'mp4'
+              : 'webm';
       const { blob, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       triggerBlobDownload(blob, filename);
       if (kind === 'image' && isIOSDevice()) {
         notify('Foto baixada! No iPhone, use "Compartilhar → Salvar Imagem" para guardar direto no rolo da câmera.');
       } else {
         notify(
-          kind === 'image'
-            ? 'Foto salva no aparelho!'
-            : kind === 'video'
-              ? 'Vídeo salvo no aparelho!'
-              : 'Áudio salvo no aparelho!'
+          kind === 'pdf'
+            ? 'PDF salvo no aparelho!'
+            : kind === 'image'
+              ? 'Foto salva no aparelho!'
+              : kind === 'video'
+                ? 'Vídeo salvo no aparelho!'
+                : 'Áudio salvo no aparelho!'
         );
       }
     } catch {
@@ -791,17 +845,160 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     }
   };
 
+  const handlePrintPdf = async (
+    mediaUrl: string | undefined,
+    fileName?: string,
+    msgId?: string
+  ) => {
+    if (!mediaUrl || printingMsgId) return;
+    setPrintingMsgId(msgId || 'pdf');
+    try {
+      activePrintCleanupRef.current?.();
+      activePrintCleanupRef.current = null;
+
+      const resolvedName = fileName || 'chatfi-documento.pdf';
+      const printHtml = await renderPdfToPrintHtml(mediaUrl, resolvedName);
+
+      const iframe = document.createElement('iframe');
+      iframe.title = `Imprimir ${resolvedName}`;
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '1px';
+      iframe.style.height = '1px';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+
+      let cleanedUp = false;
+      let printed = false;
+      let fallbackTimer: number | null = null;
+      let maxLifeTimer: number | null = null;
+
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
+        if (maxLifeTimer !== null) window.clearTimeout(maxLifeTimer);
+        window.removeEventListener('afterprint', cleanup);
+        try {
+          iframe.contentWindow?.removeEventListener('afterprint', cleanup);
+        } catch {
+          // ignore cross-context cleanup errors
+        }
+        if (iframe.parentNode) {
+          iframe.parentNode.removeChild(iframe);
+        }
+        if (activePrintCleanupRef.current === cleanup) {
+          activePrintCleanupRef.current = null;
+        }
+      };
+
+      activePrintCleanupRef.current = cleanup;
+      window.addEventListener('afterprint', cleanup);
+      maxLifeTimer = window.setTimeout(cleanup, 90_000);
+
+      const triggerIframePrint = async () => {
+        if (printed || cleanedUp) return;
+        printed = true;
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
+        try {
+          const frameWin = iframe.contentWindow;
+          if (!frameWin) {
+            throw new Error('Print window unavailable');
+          }
+          try {
+            frameWin.addEventListener('afterprint', cleanup);
+          } catch {
+            // ignore
+          }
+          frameWin.focus();
+          frameWin.print();
+          setPrintingMsgId(null);
+        } catch {
+          cleanup();
+          setPrintingMsgId(null);
+          try {
+            const { blob, filename } = await mediaUrlToBlobAndFile(
+              mediaUrl,
+              resolvedName,
+              'pdf'
+            );
+            triggerBlobDownload(blob, filename);
+            notify('PDF baixado — abra o arquivo no aparelho para imprimir.');
+          } catch {
+            notify('Não foi possível abrir a impressão do PDF agora.');
+          }
+        }
+      };
+
+      iframe.onload = () => {
+        window.setTimeout(() => void triggerIframePrint(), 120);
+      };
+      iframe.onerror = async () => {
+        cleanup();
+        setPrintingMsgId(null);
+        try {
+          const { blob, filename } = await mediaUrlToBlobAndFile(
+            mediaUrl,
+            resolvedName,
+            'pdf'
+          );
+          triggerBlobDownload(blob, filename);
+          notify('PDF baixado — abra o arquivo no aparelho para imprimir.');
+        } catch {
+          notify('Não foi possível preparar a impressão do PDF agora.');
+        }
+      };
+
+      document.body.appendChild(iframe);
+      iframe.srcdoc = printHtml;
+
+      fallbackTimer = window.setTimeout(() => void triggerIframePrint(), 1200);
+    } catch {
+      setPrintingMsgId(null);
+      try {
+        const { blob, filename } = await mediaUrlToBlobAndFile(
+          mediaUrl,
+          fileName || 'chatfi-documento',
+          'pdf'
+        );
+        triggerBlobDownload(blob, filename);
+        notify('PDF baixado — abra o arquivo no aparelho para imprimir.');
+      } catch {
+        notify('Não foi possível preparar a impressão do PDF agora.');
+      }
+    }
+  };
+
   const handleShareMedia = async (
     mediaUrl: string | undefined,
-    kind: 'image' | 'audio' | 'video',
+    kind: 'image' | 'audio' | 'video' | 'pdf',
     caption?: string
   ) => {
     if (!mediaUrl || mediaBusy) return;
     setMediaBusy(true);
     try {
       const baseName =
-        kind === 'image' ? 'chatfi-foto' : kind === 'video' ? 'chatfi-video' : 'chatfi-audio';
-      const fallbackExt = kind === 'image' ? 'jpg' : kind === 'video' ? 'mp4' : 'webm';
+        kind === 'pdf'
+          ? caption || 'chatfi-documento'
+          : kind === 'image'
+            ? 'chatfi-foto'
+            : kind === 'video'
+              ? 'chatfi-video'
+              : 'chatfi-audio';
+      const fallbackExt =
+        kind === 'pdf'
+          ? 'pdf'
+          : kind === 'image'
+            ? 'jpg'
+            : kind === 'video'
+              ? 'mp4'
+              : 'webm';
       const { blob, file, filename } = await mediaUrlToBlobAndFile(mediaUrl, baseName, fallbackExt);
       const nav = navigator as Navigator & {
         canShare?: (data?: ShareData) => boolean;
@@ -820,11 +1017,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       // Desktop / unsupported browser fallback: save locally so user can share immediately
       triggerBlobDownload(blob, filename);
       notify(
-        kind === 'image'
-          ? 'Foto baixada para você compartilhar.'
-          : kind === 'video'
-            ? 'Vídeo baixado para você compartilhar.'
-            : 'Áudio baixado para você compartilhar.'
+        kind === 'pdf'
+          ? 'PDF baixado para você compartilhar.'
+          : kind === 'image'
+            ? 'Foto baixada para você compartilhar.'
+            : kind === 'video'
+              ? 'Vídeo baixado para você compartilhar.'
+              : 'Áudio baixado para você compartilhar.'
       );
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -870,6 +1069,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const handleOpenForward = (msg: ChatMessage) => {
     setActionSheetMsg(null);
     setLightboxMsg(null);
+    setPdfViewerMsg(null);
     setForwardSearch('');
     setForwardMsg(msg);
   };
@@ -1129,6 +1329,25 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     });
   };
 
+  const sendSelectedPdfFile = async (file: File) => {
+    if (file.size > MAX_MEDIA_BYTES) {
+      setMediaError(
+        `PDF muito grande (${formatBytesPtBr(file.size)}). O limite máximo é de 25 MB.`
+      );
+      return;
+    }
+    const pdfBlob =
+      file.type === 'application/pdf'
+        ? file
+        : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+    const fileName = (file.name || 'Documento.pdf').trim().slice(0, 120);
+    if (onSendPdf) {
+      await onSendPdf(pdfBlob, fileName);
+    } else {
+      await onSendImage(pdfBlob, fileName);
+    }
+  };
+
   const handleImagePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -1138,6 +1357,10 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setSending(true);
     try {
       const detectedKind = classifySharedFile(file);
+      if (detectedKind === 'pdf') {
+        await sendSelectedPdfFile(file);
+        return;
+      }
       if (detectedKind === 'video') {
         await preparePendingVideo(file);
         return;
@@ -1165,6 +1388,24 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     } catch (err) {
       setMediaError(
         err instanceof Error ? err.message : 'Não foi possível processar o arquivo selecionado.'
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handlePdfPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setMediaError('');
+    setShowEmojiPicker(false);
+    setSending(true);
+    try {
+      await sendSelectedPdfFile(file);
+    } catch (err) {
+      setMediaError(
+        err instanceof Error ? err.message : 'Não foi possível enviar o arquivo PDF.'
       );
     } finally {
       setSending(false);
@@ -1490,6 +1731,119 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         />
                       ) : (
                         mediaStatusPlaceholder('Áudio')
+                      )}
+                    </div>
+                  ) : msg.type === 'image' && isPdfMessage(msg, resolvedState?.mimeType) ? (
+                    <div className="space-y-2 pr-6">
+                      {resolvedUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => setPdfViewerMsg(msg)}
+                          className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left transition ${
+                            isMine
+                              ? 'border-white/20 bg-white/10 hover:bg-white/15'
+                              : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
+                          }`}
+                        >
+                          <div
+                            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                              isMine ? 'bg-white/20 text-white' : 'bg-rose-50 text-rose-600'
+                            }`}
+                          >
+                            <FileText className="h-5 w-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-bold leading-snug">
+                              {msg.text && msg.text !== 'Foto' ? msg.text : 'Documento.pdf'}
+                            </p>
+                            <p
+                              className={`mt-0.5 text-[10px] font-medium ${
+                                isMine ? 'text-emerald-100/80' : 'text-slate-500'
+                              }`}
+                            >
+                              PDF{msg.mediaSizeBytes ? ` · ${formatBytesPtBr(msg.mediaSizeBytes)}` : ''}
+                            </p>
+                          </div>
+                        </button>
+                      ) : (
+                        <div>{mediaStatusPlaceholder('PDF')}</div>
+                      )}
+
+                      {resolvedUrl && (
+                        <div
+                          className={`flex flex-wrap items-center gap-1 pt-0.5 ${
+                            isMine ? 'border-t border-white/15' : 'border-t border-slate-100'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handlePrintPdf(
+                                resolvedUrl,
+                                msg.text && msg.text !== 'Foto' ? msg.text : 'Documento.pdf',
+                                msg.id
+                              )
+                            }
+                            disabled={printingMsgId === msg.id}
+                            className={`flex items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'bg-white text-[#0E7A34] hover:bg-emerald-50'
+                                : 'bg-[#0D2B3E] text-white hover:bg-[#143d57]'
+                            }`}
+                          >
+                            {printingMsgId === msg.id ? (
+                              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                            ) : (
+                              <Printer className="h-3.5 w-3.5 shrink-0" />
+                            )}
+                            <span>Imprimir</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPdfViewerMsg(msg)}
+                            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Eye className="h-3.5 w-3.5 shrink-0" />
+                            <span>Visualizar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleSaveMedia(
+                                resolvedUrl,
+                                'pdf',
+                                msg.text && msg.text !== 'Foto' ? msg.text : 'Documento.pdf'
+                              )
+                            }
+                            disabled={mediaBusy}
+                            className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                              isMine
+                                ? 'text-emerald-50 hover:bg-white/15'
+                                : 'text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <Download className="h-3.5 w-3.5 shrink-0" />
+                            <span>Salvar</span>
+                          </button>
+                          {onForwardMessage && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenForward(msg)}
+                              className={`flex items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                                isMine
+                                  ? 'text-emerald-50 hover:bg-white/15'
+                                  : 'text-slate-700 hover:bg-slate-100'
+                              }`}
+                              title="Encaminhar PDF"
+                            >
+                              <Forward className="h-3.5 w-3.5 shrink-0" />
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   ) : msg.type === 'image' ? (
@@ -1836,12 +2190,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
       {/* Composer */}
       <footer className="shrink-0 border-t border-slate-200 bg-white px-2 pt-2 pb-safe sm:px-4">
-        {/* Gallery photo, video & phone/WhatsApp audio picker */}
+        {/* Gallery photo, video, PDF & phone audio picker */}
         <input
           ref={galleryInputRef}
           type="file"
-          accept="image/*,video/*,audio/*,.opus,.ogg,.mp3,.m4a,.aac,.wav,.amr,.3gp"
+          accept="image/*,video/*,audio/*,application/pdf,.pdf,.opus,.ogg,.mp3,.m4a,.aac,.wav,.amr,.3gp"
           onChange={handleImagePicked}
+          className="hidden"
+        />
+        {/* Direct PDF picker (up to 25 MB) */}
+        <input
+          ref={pdfInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          onChange={handlePdfPicked}
           className="hidden"
         />
         {/* Direct video picker (up to 25 MB) */}
@@ -1928,6 +2290,17 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               aria-label="Galeria de fotos e áudios"
             >
               <ImageIcon className="h-5 w-5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => pdfInputRef.current?.click()}
+              disabled={sending}
+              title="Enviar arquivo PDF (até 25 MB)"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
+              aria-label="Enviar PDF"
+            >
+              <FileText className="h-5 w-5" />
             </button>
 
             <button
@@ -2226,6 +2599,113 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       )}
 
+      {/* Full-Screen PDF Attachment Viewer (Visualizar + Imprimir + Salvar + Compartilhar) */}
+      {pdfViewerMsg && getResolvedMediaUrl(pdfViewerMsg) && (
+        <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-slate-900 text-white">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0D2B3E] px-3 py-2.5 sm:px-5">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPdfViewerMsg(null)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+                aria-label="Fechar PDF"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-bold">
+                  {pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                    ? pdfViewerMsg.text
+                    : 'Documento.pdf'}
+                </p>
+                <p className="text-[11px] text-slate-300">
+                  {pdfViewerMsg.senderId === myUid ? myName || 'Você' : peer.name} ·{' '}
+                  {pdfViewerMsg.timestamp}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  void handlePrintPdf(
+                    getResolvedMediaUrl(pdfViewerMsg),
+                    pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                      ? pdfViewerMsg.text
+                      : 'Documento.pdf',
+                    pdfViewerMsg.id
+                  )
+                }
+                disabled={printingMsgId === pdfViewerMsg.id}
+                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
+              >
+                {printingMsgId === pdfViewerMsg.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Printer className="h-4 w-4" />
+                )}
+                <span>Imprimir</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void handleSaveMedia(
+                    getResolvedMediaUrl(pdfViewerMsg),
+                    'pdf',
+                    pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                      ? pdfViewerMsg.text
+                      : 'Documento.pdf'
+                  )
+                }
+                disabled={mediaBusy}
+                title="Salvar PDF"
+                className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/20"
+              >
+                <Download className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void handleShareMedia(
+                    getResolvedMediaUrl(pdfViewerMsg),
+                    'pdf',
+                    pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                      ? pdfViewerMsg.text
+                      : 'Documento.pdf'
+                  )
+                }
+                disabled={mediaBusy}
+                title="Compartilhar PDF"
+                className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/20"
+              >
+                <Share2 className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <PdfViewerCanvas
+              mediaUrl={getResolvedMediaUrl(pdfViewerMsg)!}
+              fileName={
+                pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                  ? pdfViewerMsg.text
+                  : 'Documento.pdf'
+              }
+              onDownload={() =>
+                void handleSaveMedia(
+                  getResolvedMediaUrl(pdfViewerMsg),
+                  'pdf',
+                  pdfViewerMsg.text && pdfViewerMsg.text !== 'Foto'
+                    ? pdfViewerMsg.text
+                    : 'Documento.pdf'
+                )
+              }
+            />
+          </div>
+        </div>
+      )}
+
       {/* WhatsApp-Style Message Action Sheet (Responder, Encaminhar, Salvar, Compartilhar, Copiar) */}
       {actionSheetMsg && (
         <div
@@ -2278,7 +2758,74 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   </button>
                 )}
 
-              {actionSheetMsg.type === 'image' && getResolvedMediaUrl(actionSheetMsg) && (
+              {actionSheetMsg.type === 'image' &&
+                isPdfMessage(actionSheetMsg, resolvedMedia[actionSheetMsg.id]?.mimeType) &&
+                getResolvedMediaUrl(actionSheetMsg) && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = getResolvedMediaUrl(actionSheetMsg);
+                        const name =
+                          actionSheetMsg.text && actionSheetMsg.text !== 'Foto'
+                            ? actionSheetMsg.text
+                            : 'Documento.pdf';
+                        const id = actionSheetMsg.id;
+                        setActionSheetMsg(null);
+                        void handlePrintPdf(url, name, id);
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                    >
+                      <Printer className="h-4 w-4 text-[#0D2B3E]" />
+                      <span>Imprimir PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetMsg = actionSheetMsg;
+                        setActionSheetMsg(null);
+                        setPdfViewerMsg(targetMsg);
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                    >
+                      <Eye className="h-4 w-4 text-[#0E7A34]" />
+                      <span>Visualizar PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = getResolvedMediaUrl(actionSheetMsg);
+                        const name =
+                          actionSheetMsg.text && actionSheetMsg.text !== 'Foto'
+                            ? actionSheetMsg.text
+                            : 'Documento.pdf';
+                        setActionSheetMsg(null);
+                        void handleSaveMedia(url, 'pdf', name);
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                    >
+                      <Download className="h-4 w-4 text-[#0E7A34]" />
+                      <span>Salvar PDF no aparelho</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = getResolvedMediaUrl(actionSheetMsg);
+                        const cap = actionSheetMsg.text;
+                        setActionSheetMsg(null);
+                        void handleShareMedia(url, 'pdf', cap);
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                    >
+                      <Share2 className="h-4 w-4 text-[#0E7A34]" />
+                      <span>Compartilhar PDF</span>
+                    </button>
+                  </>
+                )}
+
+              {actionSheetMsg.type === 'image' &&
+                !isPdfMessage(actionSheetMsg, resolvedMedia[actionSheetMsg.id]?.mimeType) &&
+                getResolvedMediaUrl(actionSheetMsg) && (
                 <>
                   <button
                     type="button"

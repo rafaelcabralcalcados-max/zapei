@@ -206,15 +206,21 @@ export async function sendMediaWithTransitBridge(
   }
 
   // Step 3: Create message document in Firestore with mediaDelivered: false
-  const textLabel =
-    mediaType === 'image'
+  const isPdfFile =
+    mimeType.toLowerCase().includes('pdf') ||
+    (fileName ? fileName.toLowerCase().endsWith('.pdf') : false);
+
+  const textLabel = isPdfFile
+    ? caption?.trim() || fileName?.trim() || 'Documento.pdf'
+    : mediaType === 'image'
       ? caption?.trim() || 'Foto'
       : mediaType === 'video'
         ? caption?.trim() || (durationLabel ? `Vídeo (${durationLabel})` : 'Vídeo')
         : `Mensagem de voz (${durationLabel || '0:00'})`;
 
-  const pushPreviewText =
-    mediaType === 'image'
+  const pushPreviewText = isPdfFile
+    ? `PDF: ${caption?.trim() || fileName?.trim() || 'Documento.pdf'}`
+    : mediaType === 'image'
       ? caption?.trim()
         ? `Foto: ${caption.trim()}`
         : 'Enviou uma foto'

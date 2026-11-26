@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
+  FileText,
   Film,
   Image as ImageIcon,
   Loader2,
@@ -33,7 +34,7 @@ export interface ShareTargetRecipient {
 
 export interface PreparedShareItem {
   id: string;
-  kind: 'image' | 'audio' | 'video';
+  kind: 'image' | 'audio' | 'video' | 'pdf';
   name: string;
   mimeType: string;
   sizeBytes: number;
@@ -104,7 +105,9 @@ export const ShareTargetModal: React.FC<ShareTargetModalProps> = ({
           const mimeType =
             kind === 'audio'
               ? normalizeSharedAudioMimeType(file)
-              : file.type || (kind === 'image' ? 'image/jpeg' : 'video/mp4');
+              : kind === 'pdf'
+                ? 'application/pdf'
+                : file.type || (kind === 'image' ? 'image/jpeg' : 'video/mp4');
           const typedBlob =
             file.blob.type === mimeType
               ? file.blob
@@ -272,6 +275,11 @@ export const ShareTargetModal: React.FC<ShareTargetModalProps> = ({
                         {item.kind === 'video' && (
                           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#0D2B3E] text-white">
                             <Film className="h-5 w-5" />
+                          </div>
+                        )}
+                        {item.kind === 'pdf' && (
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-rose-600 text-white">
+                            <FileText className="h-5 w-5" />
                           </div>
                         )}
 
