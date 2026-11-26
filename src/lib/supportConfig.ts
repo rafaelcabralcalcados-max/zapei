@@ -1,14 +1,11 @@
 import type { CommercialMode, SupportTicketReason } from '../types/zapei';
 
 export const OFFICIAL_SUPPORT_UID = 'chatfi_suporte_oficial';
-export const OFFICIAL_SUPPORT_VIRTUAL_LINE = 'CFI-0800-0001';
+export const OFFICIAL_SUPPORT_VIRTUAL_LINE = 'CFI-6178-2601';
 export const OFFICIAL_SUPPORT_NAME = 'Suporte Oficial ChatFi';
 export const OFFICIAL_SUPPORT_EMAIL =
   (import.meta.env.VITE_SUPPORT_EMAIL as string | undefined)?.trim() ||
-  'contato@chatfi.app';
-export const OFFICIAL_SUPPORT_WHATSAPP =
-  (import.meta.env.VITE_SUPPORT_WHATSAPP as string | undefined)?.replace(/\D/g, '') ||
-  '5537999990000';
+  'suporte.chatfi@gmail.com';
 
 export const SUPPORT_TICKET_REASONS: SupportTicketReason[] = [
   'Problema com Pagamento / Pix',
@@ -191,19 +188,6 @@ export function buildSupportContactMessage(params: {
     lines.push(`• Detalhes: ${params.customNote.trim()}`);
   }
   return lines.join('\n');
-}
-
-export function buildWhatsAppSupportUrl(params: {
-  userName: string;
-  userVirtualLine?: string;
-  userPhone?: string;
-  orderCode?: string;
-  orderId?: string;
-  reason?: string;
-  customNote?: string;
-}): string {
-  const message = buildSupportContactMessage(params);
-  return `https://wa.me/${OFFICIAL_SUPPORT_WHATSAPP}?text=${encodeURIComponent(message)}`;
 }
 
 export function buildEmailSupportUrl(params: {

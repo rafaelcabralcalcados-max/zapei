@@ -722,20 +722,38 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                     className="flex flex-col gap-3 p-3.5 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 items-center gap-3">
-                      {user.avatarUrl ? (
-                        <img
-                          src={user.avatarUrl}
-                          alt={user.storefrontName || user.displayName}
-                          className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
-                        />
-                      ) : (
-                        <div
-                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
-                          style={{ backgroundColor: user.avatarColor || '#0E7A34' }}
-                        >
-                          {user.initials}
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onPreviewAvatar?.({
+                            name: user.storefrontName || user.displayName,
+                            initials: user.initials,
+                            avatarBg: user.avatarColor || '#0E7A34',
+                            avatarUrl: user.avatarUrl,
+                            phone: user.virtualLine,
+                            virtualLine: user.virtualLine,
+                            subtitle: user.storefrontName || user.displayName,
+                          })
+                        }
+                        title={`Ver foto de ${user.storefrontName || user.displayName}`}
+                        aria-label={`Ampliar foto de ${user.storefrontName || user.displayName}`}
+                        className="shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+                      >
+                        {user.avatarUrl ? (
+                          <img
+                            src={user.avatarUrl}
+                            alt={user.storefrontName || user.displayName}
+                            className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                          />
+                        ) : (
+                          <div
+                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                            style={{ backgroundColor: user.avatarColor || '#0E7A34' }}
+                          >
+                            {user.initials}
+                          </div>
+                        )}
+                      </button>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-bold text-slate-900">
                           {user.storefrontName || user.displayName}
@@ -808,7 +826,9 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           initials: contact.initials,
                           avatarBg: contact.avatarBg || '#0E7A34',
                           avatarUrl: photoUrl,
-                          subtitle: contact.phone,
+                          phone: contact.phone,
+                          virtualLine: dir?.virtualLine,
+                          subtitle: contact.storefrontName,
                         })
                       }
                       title={`Ver foto de ${contact.name}`}
@@ -1009,7 +1029,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
               {normalizedQuery
                 ? 'Para iniciar conversa com quem ainda não está salvo na sua agenda, digite o telefone completo com DDD ou a Linha Virtual (CFI-XXXX-XXXX) na busca acima.'
-                : 'Igual ao WhatsApp, apenas contatos da sua agenda aparecem aqui. Toque em "+ Novo contato" ou sincronize sua agenda, ou escolha uma categoria acima para explorar vitrines.'}
+                : 'Apenas contatos da sua agenda aparecem aqui. Toque em "+ Novo contato" ou sincronize sua agenda, ou escolha uma categoria acima para explorar vitrines.'}
             </p>
           </div>
         )}

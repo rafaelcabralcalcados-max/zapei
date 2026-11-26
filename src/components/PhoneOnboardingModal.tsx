@@ -857,7 +857,7 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
             {step === 'welcome' && (
               <>
                 <div className="flex flex-1 flex-col items-center justify-center text-center">
-                  <ChatFiLogo className="h-24 w-24 rounded-3xl shadow-lg ring-8 ring-emerald-50" />
+                  <ChatFiLogo className="h-24 w-24 rounded-3xl border border-slate-200/80 shadow-sm" />
 
                   <h1 className="mt-7 text-2xl font-bold tracking-tight text-slate-900">
                     Boas-vindas ao ChatFi

@@ -67,6 +67,7 @@ export interface ActiveChatPeer {
   avatarBg: string;
   avatarUrl?: string;
   phone?: string;
+  virtualLine?: string;
   role: 'normal' | 'reseller' | 'manufacturer';
   hasStorefront: boolean;
   storefrontName?: string;
@@ -260,16 +261,65 @@ function formatAudioSeconds(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+function parseAudioDurationLabel(label?: string): number {
+  if (!label) return 0;
+  const parts = label.trim().split(':').map((p) => Number(p));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return 0;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+const WAVEFORM_BARS = [
+  28, 46, 62, 42, 74, 58, 36, 68, 84, 52, 40, 76, 90, 64,
+  44, 72, 56, 82, 48, 66, 38, 70, 54, 60, 42, 50, 34, 44,
+];
+
 const RealAudioBubble: React.FC<{
   mediaUrl?: string;
   duration?: string;
   isMine: boolean;
 }> = ({ mediaUrl, duration, isMine }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
   const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [currentTimeLabel, setCurrentTimeLabel] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const [currentSec, setCurrentSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(() => parseAudioDurationLabel(duration));
   const [speed, setSpeed] = useState<1 | 1.5 | 2>(1);
+
+  const fallbackSec = useMemo(() => parseAudioDurationLabel(duration), [duration]);
+  const effectiveDuration =
+    Number.isFinite(durationSec) && durationSec > 0 ? durationSec : fallbackSec;
+  const progressRatio =
+    effectiveDuration > 0
+      ? Math.max(0, Math.min(1, currentSec / effectiveDuration))
+      : 0;
+  const progressPct = progressRatio * 100;
+
+  useEffect(() => {
+    setCurrentSec(0);
+    setPlaying(false);
+    setDurationSec(parseAudioDurationLabel(duration));
+  }, [mediaUrl, duration]);
+
+  useEffect(() => {
+    if (!playing) return undefined;
+    let rafId = 0;
+    const tick = () => {
+      const el = audioRef.current;
+      if (el && !draggingRef.current) {
+        if (Number.isFinite(el.duration) && el.duration > 0) {
+          setDurationSec(el.duration);
+        }
+        setCurrentSec(el.currentTime);
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [playing]);
 
   const togglePlay = () => {
     const el = audioRef.current;
@@ -278,6 +328,10 @@ const RealAudioBubble: React.FC<{
     if (playing) {
       el.pause();
     } else {
+      if (effectiveDuration > 0 && el.currentTime >= effectiveDuration - 0.05) {
+        el.currentTime = 0;
+        setCurrentSec(0);
+      }
       void el.play().catch(() => {});
     }
   };
@@ -290,35 +344,109 @@ const RealAudioBubble: React.FC<{
     }
   };
 
-  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+  const seekToClientX = (clientX: number) => {
     const el = audioRef.current;
-    if (!el || !el.duration || !Number.isFinite(el.duration)) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    el.currentTime = ratio * el.duration;
-    setProgress(ratio * 100);
-    setCurrentTimeLabel(formatAudioSeconds(el.currentTime));
+    const track = trackRef.current;
+    if (!el || !track) return;
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const maxSec =
+      Number.isFinite(el.duration) && el.duration > 0 ? el.duration : effectiveDuration;
+    if (maxSec <= 0) return;
+    const nextSec = ratio * maxSec;
+    setCurrentSec(nextSec);
+    try {
+      el.currentTime = nextSec;
+    } catch {
+      // Ignore if media isn't seekable yet
+    }
   };
 
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!mediaUrl) return;
+    e.preventDefault();
+    draggingRef.current = true;
+    setDragging(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore unsupported capture
+    }
+    seekToClientX(e.clientX);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    seekToClientX(e.clientX);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    seekToClientX(e.clientX);
+    draggingRef.current = false;
+    setDragging(false);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const el = audioRef.current;
+    if (!el || effectiveDuration <= 0) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const delta = e.key === 'ArrowRight' ? 3 : -3;
+      const next = Math.max(0, Math.min(effectiveDuration, el.currentTime + delta));
+      el.currentTime = next;
+      setCurrentSec(next);
+    }
+  };
+
+  const displayTimeLabel =
+    playing || currentSec > 0 || dragging
+      ? `${formatAudioSeconds(currentSec)} / ${
+          effectiveDuration > 0 ? formatAudioSeconds(effectiveDuration) : duration || '0:00'
+        }`
+      : effectiveDuration > 0
+        ? formatAudioSeconds(effectiveDuration)
+        : duration || '0:00';
+
   return (
-    <div className="flex min-w-[220px] items-center gap-2.5 py-0.5">
+    <div className="flex min-w-[236px] sm:min-w-[260px] items-center gap-2.5 py-0.5 select-none">
       {mediaUrl && (
         <audio
           ref={audioRef}
           src={mediaUrl}
+          preload="metadata"
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration;
+            if (Number.isFinite(d) && d > 0) setDurationSec(d);
+          }}
+          onDurationChange={(e) => {
+            const d = e.currentTarget.duration;
+            if (Number.isFinite(d) && d > 0) setDurationSec(d);
+          }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => {
             setPlaying(false);
-            setProgress(0);
-            setCurrentTimeLabel('');
+            setCurrentSec(0);
+            if (audioRef.current) {
+              audioRef.current.currentTime = 0;
+            }
           }}
           onTimeUpdate={(e) => {
+            if (draggingRef.current) return;
             const el = e.currentTarget;
-            if (el.duration && Number.isFinite(el.duration)) {
-              setProgress(Math.min(100, (el.currentTime / el.duration) * 100));
-              setCurrentTimeLabel(formatAudioSeconds(el.currentTime));
+            if (Number.isFinite(el.duration) && el.duration > 0) {
+              setDurationSec(el.duration);
             }
+            setCurrentSec(el.currentTime);
           }}
           className="hidden"
         />
@@ -339,30 +467,57 @@ const RealAudioBubble: React.FC<{
 
       <div className="min-w-0 flex-1">
         <div
+          ref={trackRef}
           role="slider"
           aria-label="Progresso do áudio"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={Math.round(progress)}
+          aria-valuenow={Math.round(progressPct)}
           tabIndex={0}
-          onClick={handleSeek}
-          className="cursor-pointer py-2"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onKeyDown={handleKeyDown}
+          className="relative flex h-8 cursor-pointer touch-none items-center"
         >
-          <div
-            className={`h-1.5 w-full overflow-hidden rounded-full ${
-              isMine ? 'bg-white/25' : 'bg-slate-200'
-            }`}
-          >
-            <div
-              className={`h-full transition-all ${isMine ? 'bg-white' : 'bg-[#0E7A34]'}`}
-              style={{ width: `${progress}%` }}
-            />
+          {/* Smooth waveform bars synced directly to playback ratio */}
+          <div className="flex h-6 w-full items-center justify-between gap-[2px]">
+            {WAVEFORM_BARS.map((heightPct, idx) => {
+              const barThreshold = (idx + 0.5) / WAVEFORM_BARS.length;
+              const isFilled = progressRatio >= barThreshold;
+              return (
+                <span
+                  key={idx}
+                  className={`block flex-1 rounded-full ${
+                    isFilled
+                      ? isMine
+                        ? 'bg-white'
+                        : 'bg-[#0E7A34]'
+                      : isMine
+                        ? 'bg-white/30'
+                        : 'bg-slate-300'
+                  }`}
+                  style={{ height: `${heightPct}%` }}
+                />
+              );
+            })}
           </div>
+          {/* Draggable scrubber thumb */}
+          <span
+            aria-hidden="true"
+            className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-xs ${
+              dragging ? 'scale-110' : ''
+            } ${
+              isMine
+                ? 'bg-white ring-2 ring-[#0E7A34]'
+                : 'bg-[#0E7A34] ring-2 ring-white'
+            }`}
+            style={{ left: `${progressPct}%` }}
+          />
         </div>
-        <div className="flex items-center justify-between gap-2 text-[11px] opacity-85">
-          <span className="font-mono tabular-nums">
-            {playing && currentTimeLabel ? currentTimeLabel : duration || '0:00'}
-          </span>
+        <div className="flex items-center justify-between gap-2 text-[11px] opacity-90">
+          <span className="font-mono tabular-nums">{displayTimeLabel}</span>
           <button
             type="button"
             onClick={cycleSpeed}
@@ -1076,9 +1231,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#ECE5DD]/60">
+    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#F4F6F8]">
       {/* Top Chat Header */}
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-2.5 pb-2.5 pt-safe sm:px-4 md:py-2.5">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-2.5 pb-2.5 pt-safe sm:px-4 md:py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {onBack && (
             <button
@@ -1098,9 +1253,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 initials: peer.initials,
                 avatarBg: peer.avatarBg,
                 avatarUrl: peer.avatarUrl,
+                phone: peer.phone || peer.virtualLine,
+                virtualLine: peer.virtualLine,
                 subtitle: peerPresenceDisplay.isPresence
                   ? peerPresenceDisplay.label
-                  : peer.phone || peer.storefrontName,
+                  : peer.storefrontName,
               })
             }
             title="Ver foto de perfil"

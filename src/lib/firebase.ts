@@ -1587,6 +1587,57 @@ export function subscribeUserCalls(
   };
 }
 
+const dismissedCallStorageKey = (uid: string) => `chatfi_dismissed_calls_v1_${uid}`;
+
+export function getDismissedCallIds(uid: string): Set<string> {
+  if (!uid || typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(dismissedCallStorageKey(uid));
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((v): v is string => typeof v === 'string'))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissedCallId(uid: string, callId: string): void {
+  if (!uid || !callId || typeof window === 'undefined') return;
+  try {
+    const next = getDismissedCallIds(uid);
+    next.add(callId);
+    const trimmed = Array.from(next).slice(-300);
+    window.localStorage.setItem(dismissedCallStorageKey(uid), JSON.stringify(trimmed));
+  } catch {
+    // Ignore storage restriction
+  }
+}
+
+export async function deleteCallHistoryRecord(
+  callId: string,
+  myUid?: string
+): Promise<void> {
+  if (!callId.trim()) return;
+  if (myUid) {
+    saveDismissedCallId(myUid, callId);
+  }
+  try {
+    await deleteDoc(doc(db, 'calls', callId));
+  } catch (error) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code || '')
+        : '';
+    if (code === 'permission-denied' || code === 'not-found') {
+      return;
+    }
+    handleFirestoreError(error, OperationType.DELETE, `calls/${callId}`);
+    throw error;
+  }
+}
+
 // --- REAL PRODUCTS, CONNECTIONS, ORDERS, SUB_ORDERS, PAYMENTS ---
 
 export function subscribeProducts(
@@ -3220,6 +3271,54 @@ export async function sendRecoveryEmailForSignedInCpfUser(): Promise<{
 
 // --- HELP CENTER & SUPPORT TICKETS (support_tickets) ---
 
+const localSupportStorageKey = (uid: string) => `chatfi_support_tickets_v1_${uid}`;
+const localSupportListeners = new Map<string, Set<() => void>>();
+
+function getErrorCodeString(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    return String((error as { code?: unknown }).code || '');
+  }
+  const msg = error instanceof Error ? error.message : String(error || '');
+  return msg.toLowerCase().includes('permission') ? 'permission-denied' : '';
+}
+
+function loadLocalSupportTickets(uid: string): SupportTicket[] {
+  if (!uid || typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(localSupportStorageKey(uid));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as SupportTicket[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalSupportTickets(uid: string, list: SupportTicket[]): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      localSupportStorageKey(uid),
+      JSON.stringify(list.slice(0, 100))
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+  const listeners = localSupportListeners.get(uid);
+  if (listeners) {
+    listeners.forEach((fn) => fn());
+  }
+}
+
+function formatNowPtBr(): string {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm} ${hh}:${min}`;
+}
+
 export async function createSupportTicket(params: {
   userId: string;
   userName: string;
@@ -3233,11 +3332,12 @@ export async function createSupportTicket(params: {
   const ticketId = `sup_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const ticketCode = `SUP-${Math.floor(1000 + Math.random() * 9000)}`;
   const cleanDescription = params.description.trim().slice(0, 2000);
+  const cleanUserName = (params.userName.trim() || 'Usuário ChatFi').slice(0, 80);
 
   const payload: Record<string, unknown> = {
     ticketCode,
     userId: params.userId,
-    userName: (params.userName.trim() || 'Usuário ChatFi').slice(0, 80),
+    userName: cleanUserName,
     userRole: params.userRole,
     reason: params.reason,
     description: cleanDescription,
@@ -3259,7 +3359,29 @@ export async function createSupportTicket(params: {
   try {
     await setDoc(doc(db, 'support_tickets', ticketId), payload);
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `support_tickets/${ticketId}`);
+    const code = getErrorCodeString(error);
+    if (code !== 'permission-denied') {
+      handleFirestoreError(error, OperationType.CREATE, `support_tickets/${ticketId}`);
+    }
+    const nowLabel = formatNowPtBr();
+    const localTicket: SupportTicket = {
+      id: ticketId,
+      ticketCode,
+      userId: params.userId,
+      userName: cleanUserName,
+      userVirtualLine: params.userVirtualLine?.trim() || undefined,
+      userRole: params.userRole,
+      reason: params.reason,
+      orderId: params.orderId?.trim() || undefined,
+      orderCode: params.orderCode?.trim() || undefined,
+      description: cleanDescription,
+      status: 'Aberto',
+      createdAt: nowLabel,
+      updatedAt: nowLabel,
+      createdAtMs: Date.now(),
+    };
+    const existing = loadLocalSupportTickets(params.userId);
+    saveLocalSupportTickets(params.userId, [localTicket, ...existing]);
   }
 
   return { id: ticketId, ticketCode };
@@ -3269,11 +3391,31 @@ export function subscribeUserSupportTickets(
   uid: string,
   callback: (tickets: SupportTicket[]) => void
 ): () => void {
+  let remoteTickets: SupportTicket[] = [];
+  const emitMerged = () => {
+    const localTickets = loadLocalSupportTickets(uid);
+    const byId = new Map<string, SupportTicket>();
+    for (const t of localTickets) byId.set(t.id, t);
+    for (const t of remoteTickets) byId.set(t.id, t);
+    const merged = Array.from(byId.values()).sort(
+      (a, b) => b.createdAtMs - a.createdAtMs
+    );
+    callback(merged);
+  };
+
+  let set = localSupportListeners.get(uid);
+  if (!set) {
+    set = new Set();
+    localSupportListeners.set(uid, set);
+  }
+  set.add(emitMerged);
+  emitMerged();
+
   const qTickets = query(collection(db, 'support_tickets'), where('userId', '==', uid));
-  return onSnapshot(
+  const unsubRemote = onSnapshot(
     qTickets,
     (snap) => {
-      const list: SupportTicket[] = snap.docs.map((docSnap) => {
+      remoteTickets = snap.docs.map((docSnap) => {
         const d = docSnap.data();
         const createdAtTs = d.createdAt as Timestamp | undefined;
         const updatedAtTs = d.updatedAt as Timestamp | undefined;
@@ -3294,20 +3436,58 @@ export function subscribeUserSupportTickets(
           createdAtMs: timestampToMs(createdAtTs),
         };
       });
-      list.sort((a, b) => b.createdAtMs - a.createdAtMs);
-      callback(list);
+      emitMerged();
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, 'support_tickets')
+    (error) => {
+      const code = getErrorCodeString(error);
+      if (code === 'permission-denied') {
+        console.warn('[support_tickets] Using local support fallback while Firestore rules are pending.');
+        emitMerged();
+        return;
+      }
+      console.warn('[support_tickets] Listener warning:', error);
+    }
   );
+
+  return () => {
+    unsubRemote();
+    const listeners = localSupportListeners.get(uid);
+    if (listeners) {
+      listeners.delete(emitMerged);
+      if (listeners.size === 0) localSupportListeners.delete(uid);
+    }
+  };
 }
 
-export async function resolveSupportTicket(ticketId: string): Promise<void> {
+export async function resolveSupportTicket(
+  ticketId: string,
+  userId?: string
+): Promise<void> {
+  if (userId) {
+    const localList = loadLocalSupportTickets(userId);
+    const hasLocal = localList.some((t) => t.id === ticketId);
+    if (hasLocal) {
+      const nowLabel = formatNowPtBr();
+      saveLocalSupportTickets(
+        userId,
+        localList.map((t) =>
+          t.id === ticketId
+            ? { ...t, status: 'Resolvido', updatedAt: nowLabel }
+            : t
+        )
+      );
+    }
+  }
   try {
     await updateDoc(doc(db, 'support_tickets', ticketId), {
       status: 'Resolvido',
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
+    const code = getErrorCodeString(error);
+    if (code === 'permission-denied' || code === 'not-found') {
+      return;
+    }
     handleFirestoreError(error, OperationType.UPDATE, `support_tickets/${ticketId}`);
   }
 }

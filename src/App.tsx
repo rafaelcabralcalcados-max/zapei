@@ -25,12 +25,14 @@ import {
   createRealProduct,
   createSupportTicket,
   db,
+  deleteCallHistoryRecord,
   deletePhonebookContact,
   disconnectUserDevice,
   ensureCurrentDeviceRegisteredSilently,
   fetchPublicUserStorefront,
   fetchUserProfileOnce,
   getDeterministicChatId,
+  getDismissedCallIds,
   lookupRegisteredUserByPhone,
   markContactInvited,
   registerOrCheckCurrentDevice,
@@ -81,7 +83,6 @@ import {
   answerRealIncomingCall,
   installAudioUnlockListeners,
   playMessageNotificationSound,
-  playMessageSentSound,
   queryMediaPermissionSnapshot,
   startRealOutgoingCall,
   updateRealCallStatus,
@@ -265,6 +266,7 @@ export default function App() {
   const [directoryUsers, setDirectoryUsers] = useState<PublicDirectoryUser[]>([]);
   const [chats, setChats] = useState<ChatThreadSummary[]>([]);
   const [calls, setCalls] = useState<CallSessionRecord[]>([]);
+  const [dismissedCallIds, setDismissedCallIds] = useState<Set<string>>(() => new Set());
   const [products, setProducts] = useState<Product[]>([]);
   const [connections, setConnections] = useState<FactoryConnection[]>([]);
   const [orders, setOrders] = useState<MixedOrder[]>([]);
@@ -310,7 +312,14 @@ export default function App() {
   } | null>(null);
   const seenChatSigRef = useRef<Map<string, string>>(new Map());
   const chatsSubStartedAtRef = useRef<number>(0);
+  const chatsHydratedRef = useRef(false);
   const seenActiveMsgIdsRef = useRef<Set<string>>(new Set());
+  const activeChatHydratedRef = useRef(false);
+  const activeChatOpenedAtRef = useRef<number>(0);
+  const lastIncomingChimeKeyRef = useRef<{ key: string; at: number }>({
+    key: '',
+    at: 0,
+  });
   const incomingBannerTimerRef = useRef<number | null>(null);
 
   const showIncomingMsgBanner = useCallback(
@@ -765,7 +774,9 @@ export default function App() {
     if (!authUid || !profileUid || deviceAuthState !== 'authorized') return undefined;
     const uid = authUid;
     chatsSubStartedAtRef.current = Date.now();
+    chatsHydratedRef.current = false;
     seenChatSigRef.current.clear();
+    setDismissedCallIds(getDismissedCallIds(uid));
     const unsubs = [
       subscribeUserContacts(uid, setContacts),
       subscribePublicDirectory(uid, setDirectoryUsers),
@@ -861,10 +872,14 @@ export default function App() {
     if (!authUser || !selectedPeer) {
       setActiveMessages([]);
       seenActiveMsgIdsRef.current.clear();
+      activeChatHydratedRef.current = false;
+      activeChatOpenedAtRef.current = 0;
       return undefined;
     }
     const chatId = getDeterministicChatId(authUser.uid, selectedPeer.uid);
     seenActiveMsgIdsRef.current.clear();
+    activeChatHydratedRef.current = false;
+    activeChatOpenedAtRef.current = Date.now();
     return subscribeChatMessages(chatId, authUser.uid, setActiveMessages);
   }, [authUser, selectedPeer?.uid]);
 
@@ -872,21 +887,36 @@ export default function App() {
   useEffect(() => {
     if (!profile) {
       seenChatSigRef.current.clear();
+      chatsHydratedRef.current = false;
       return;
     }
 
-    const isInitialHydrationWindow = Date.now() - chatsSubStartedAtRef.current < 2500;
+    const isBootWindow = Date.now() - chatsSubStartedAtRef.current < 2500;
+    if (!chatsHydratedRef.current) {
+      for (const c of chats) {
+        seenChatSigRef.current.set(c.id, `${c.lastSenderId || ''}|${c.lastMessage || ''}`);
+      }
+      if (chats.length > 0 || !isBootWindow) {
+        chatsHydratedRef.current = true;
+      }
+      return;
+    }
+
+    const nowMs = Date.now();
     let newestIncoming: ChatThreadSummary | null = null;
     for (const c of chats) {
-      const sig = `${c.updatedAtMs}|${c.lastSenderId || ''}|${c.lastMessage}`;
+      const sig = `${c.lastSenderId || ''}|${c.lastMessage || ''}`;
       const prevSig = seenChatSigRef.current.get(c.id);
       seenChatSigRef.current.set(c.id, sig);
 
-      const isBrandNewChatAfterBoot = prevSig === undefined && !isInitialHydrationWindow;
+      const isBrandNewChatAfterBoot = prevSig === undefined && !isBootWindow;
       const isUpdatedExistingChat = prevSig !== undefined && prevSig !== sig;
+      const isRecentMessage =
+        c.updatedAtMs === 0 || nowMs - c.updatedAtMs < 120_000;
 
       if (
         (isBrandNewChatAfterBoot || isUpdatedExistingChat) &&
+        isRecentMessage &&
         c.lastSenderId &&
         c.lastSenderId !== profile.uid &&
         c.lastMessage
@@ -898,13 +928,21 @@ export default function App() {
     }
 
     if (newestIncoming) {
-      const lowerPreview = (newestIncoming.lastMessage || '').toLowerCase();
-      const isIncomingAudio =
-        lowerPreview.startsWith('mensagem de voz') ||
-        lowerPreview.startsWith('áudio') ||
-        lowerPreview.startsWith('audio') ||
-        newestIncoming.lastMessage.startsWith('🎤');
-      playMessageNotificationSound(isIncomingAudio ? 'audio' : 'text');
+      const chimeKey = `${newestIncoming.otherUid}|${newestIncoming.lastMessage}`;
+      const alreadyChimed =
+        lastIncomingChimeKeyRef.current.key === chimeKey &&
+        nowMs - lastIncomingChimeKeyRef.current.at < 2000;
+
+      if (!alreadyChimed) {
+        lastIncomingChimeKeyRef.current = { key: chimeKey, at: nowMs };
+        const lowerPreview = (newestIncoming.lastMessage || '').toLowerCase();
+        const isIncomingAudio =
+          lowerPreview.startsWith('mensagem de voz') ||
+          lowerPreview.startsWith('áudio') ||
+          lowerPreview.startsWith('audio') ||
+          newestIncoming.lastMessage.startsWith('🎤');
+        playMessageNotificationSound(isIncomingAudio ? 'audio' : 'text');
+      }
 
       const viewingSameChat =
         activeTab === 'chats' && selectedPeer?.uid === newestIncoming.otherUid;
@@ -925,24 +963,38 @@ export default function App() {
     }
   }, [chats, profile, activeTab, selectedPeer?.uid, contacts, directoryUsers, showIncomingMsgBanner]);
 
-  // 4c. Chime when a new text/audio/photo arrives inside the currently open chat thread
+  // 4c. Chime ONLY when a genuinely new message arrives from another user inside the open chat
   useEffect(() => {
-    if (!profile || !selectedPeer || activeMessages.length === 0) return;
-    if (seenActiveMsgIdsRef.current.size === 0) {
+    if (!profile || !selectedPeer) return;
+    if (!activeChatHydratedRef.current) {
       for (const m of activeMessages) seenActiveMsgIdsRef.current.add(m.id);
+      if (activeMessages.length > 0 || Date.now() - activeChatOpenedAtRef.current > 1200) {
+        activeChatHydratedRef.current = true;
+      }
       return;
     }
+    const nowMs = Date.now();
+    // Skip chime during the first 1.2s after switching/opening a conversation so hydration never chimes
+    const inOpenSettlingWindow = nowMs - activeChatOpenedAtRef.current < 1200;
     let newPeerKind: 'text' | 'audio' | null = null;
+    let newPeerChimeKey = '';
     for (const m of activeMessages) {
       if (!seenActiveMsgIdsRef.current.has(m.id)) {
         seenActiveMsgIdsRef.current.add(m.id);
-        if (m.senderId !== profile.uid) {
+        if (!inOpenSettlingWindow && m.senderId !== profile.uid) {
           newPeerKind = m.type === 'audio' ? 'audio' : 'text';
+          newPeerChimeKey = `${m.senderId}|${m.text || ''}`;
         }
       }
     }
     if (newPeerKind) {
-      playMessageNotificationSound(newPeerKind);
+      const alreadyChimed =
+        lastIncomingChimeKeyRef.current.key === newPeerChimeKey &&
+        nowMs - lastIncomingChimeKeyRef.current.at < 2000;
+      if (!alreadyChimed) {
+        lastIncomingChimeKeyRef.current = { key: newPeerChimeKey, at: nowMs };
+        playMessageNotificationSound(newPeerKind);
+      }
     }
   }, [activeMessages, profile, selectedPeer]);
 
@@ -1324,9 +1376,18 @@ export default function App() {
 
   const openChatWithPeer = useCallback(
     async (peer: ActiveChatPeer) => {
-      const livePhoto =
-        peer.avatarUrl || directoryUsers.find((u) => u.uid === peer.uid)?.avatarUrl;
-      setSelectedPeer({ ...peer, avatarUrl: livePhoto });
+      const dirEntry = directoryUsers.find((u) => u.uid === peer.uid);
+      const contactEntry = contacts.find((c) => c.matchedUid === peer.uid);
+      const livePhoto = peer.avatarUrl || dirEntry?.avatarUrl;
+      const resolvedPhone =
+        peer.phone || contactEntry?.phone || dirEntry?.virtualLine;
+      const resolvedVirtualLine = peer.virtualLine || dirEntry?.virtualLine;
+      setSelectedPeer({
+        ...peer,
+        avatarUrl: livePhoto,
+        phone: resolvedPhone,
+        virtualLine: resolvedVirtualLine,
+      });
       setActiveTab('chats');
       if (peer.uid === OFFICIAL_SUPPORT_UID) return;
       // Refresh live storefront info for this peer
@@ -1351,7 +1412,7 @@ export default function App() {
         );
       }
     },
-    [directoryUsers]
+    [directoryUsers, contacts]
   );
 
   const openHelpCenter = useCallback((ctx?: HelpCenterContext) => {
@@ -1808,7 +1869,6 @@ export default function App() {
         }
       }
 
-      playMessageSentSound();
       const ids = pendingSharedPayloads.map((p) => p.id);
       setPendingSharedPayloads([]);
       await clearPendingSharedPayloads(ids);
@@ -2863,7 +2923,9 @@ export default function App() {
                     initials: profile.initials,
                     avatarBg: profile.avatarBg,
                     avatarUrl: profile.avatarUrl,
-                    subtitle: profile.virtualLine || profile.phone,
+                    phone: profile.phone,
+                    virtualLine: profile.virtualLine,
+                    subtitle: profile.statusMessage,
                   })
                 }
                 title="Ampliar foto de perfil"
@@ -2954,7 +3016,7 @@ export default function App() {
         {/* Floating Incoming Message Alert Banner */}
         {incomingMsgBanner && (
           <div className="fixed left-3 right-3 sm:left-auto sm:right-4 top-3 z-50 sm:w-96 pt-safe">
-            <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+            <div className="flex items-center gap-3 rounded-2xl border border-emerald-200/80 bg-white p-3 shadow-lg">
               <button
                 type="button"
                 onClick={() => {
@@ -3126,7 +3188,10 @@ export default function App() {
                                   initials: getInitials(displayName),
                                   avatarBg,
                                   avatarUrl: photoUrl,
-                                  subtitle: matchedContact?.phone || dir?.virtualLine,
+                                  phone: matchedContact?.phone || dir?.virtualLine,
+                                  virtualLine: dir?.virtualLine,
+                                  subtitle:
+                                    matchedContact?.storefrontName || dir?.storefrontName,
                                 })
                               }
                               title={`Ver foto de ${displayName}`}
@@ -3230,7 +3295,8 @@ export default function App() {
                                   initials: person.initials,
                                   avatarBg: person.avatarBg || '#0E7A34',
                                   avatarUrl: person.avatarUrl,
-                                  subtitle: person.phone || person.subtitle,
+                                  phone: person.phone,
+                                  subtitle: person.subtitle,
                                 })
                               }
                               title={`Ver foto de ${person.name}`}
@@ -3356,7 +3422,6 @@ export default function App() {
                         },
                         authUser
                       );
-                      playMessageSentSound();
                       if (queuedOffline) {
                         showToast('Salva na fila — será enviada assim que o sinal voltar.');
                       }
@@ -3380,7 +3445,6 @@ export default function App() {
                             },
                             authUser
                           );
-                          playMessageSentSound();
                           showToast('Áudio salvo na fila — será enviado assim que o sinal voltar.');
                           return;
                         }
@@ -3397,7 +3461,6 @@ export default function App() {
                         durationLabel: audioDuration,
                         authUser,
                       });
-                      playMessageSentSound();
                     }}
                     onSendImage={async (imageBlob, caption) => {
                       if (!isOnline) {
@@ -3417,7 +3480,6 @@ export default function App() {
                             },
                             authUser
                           );
-                          playMessageSentSound();
                           showToast('Foto salva na fila — será enviada assim que o sinal voltar.');
                           return;
                         }
@@ -3434,7 +3496,6 @@ export default function App() {
                         caption: caption || 'Foto',
                         authUser,
                       });
-                      playMessageSentSound();
                     }}
                     onSendVideo={async (videoBlob, videoDuration, caption) => {
                       if (!isOnline) {
@@ -3452,7 +3513,6 @@ export default function App() {
                         caption: caption || undefined,
                         authUser,
                       });
-                      playMessageSentSound();
                     }}
                     onForwardMessage={async (target, msg) => {
                       if (msg.type === 'image' || msg.type === 'audio' || msg.type === 'video') {
@@ -3489,7 +3549,6 @@ export default function App() {
                               : undefined,
                           authUser,
                         });
-                        playMessageSentSound();
                         showToast(`Encaminhado para ${target.name}!`);
                         return;
                       }
@@ -3507,7 +3566,6 @@ export default function App() {
                         },
                         authUser
                       );
-                      playMessageSentSound();
                       showToast(
                         queuedOffline
                           ? `Salvo na fila para ${target.name} (aguardando rede).`
@@ -3526,7 +3584,7 @@ export default function App() {
                   />
                 ) : (
                   <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-                    <ChatFiLogo className="h-20 w-20 rounded-3xl shadow-md ring-8 ring-emerald-50" />
+                    <ChatFiLogo className="h-20 w-20 rounded-3xl border border-slate-200/80 shadow-xs" />
                     <h2 className="mt-5 text-lg font-bold text-slate-900">
                       ChatFi Mensageiro em Tempo Real
                     </h2>
@@ -3542,9 +3600,19 @@ export default function App() {
           {activeTab === 'calls' && (
             <CallsView
               myUid={profile.uid}
-              calls={calls}
+              calls={calls.filter((c) => !dismissedCallIds.has(c.id))}
               zapeiContacts={zapeiContacts}
               directoryUsers={directoryUsers}
+              onPreviewAvatar={setAvatarPreview}
+              onDeleteCall={async (callId) => {
+                setDismissedCallIds((prev) => {
+                  const next = new Set(prev);
+                  next.add(callId);
+                  return next;
+                });
+                await deleteCallHistoryRecord(callId, profile.uid);
+                showToast('Chamada removida do histórico.');
+              }}
               onStartCallWithPeer={(peer, type) => void handleStartCall(peer, type)}
             />
           )}
@@ -4142,7 +4210,7 @@ export default function App() {
           return res;
         }}
         onResolveTicket={async (ticketId) => {
-          await resolveSupportTicket(ticketId);
+          await resolveSupportTicket(ticketId, profile.uid);
           showToast('Chamado marcado como resolvido.');
         }}
         onOpenOfficialSupportChat={handleOpenOfficialSupportChat}

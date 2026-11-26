@@ -173,7 +173,7 @@ export const StorageManagerCard: React.FC<StorageManagerCardProps> = ({ onNotify
               Armazenamento e Dados
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Fotos, vídeos e áudios ficam salvos permanentemente neste aparelho para abrir na hora, igual ao WhatsApp.
+              Fotos, vídeos e áudios ficam salvos permanentemente neste aparelho para abrir na hora.
             </p>
           </div>
         </div>

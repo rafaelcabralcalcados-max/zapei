@@ -25,14 +25,7 @@ export const ChatFiLogo: React.FC<ChatFiLogoProps> = ({
         role="img"
         aria-label={alt}
       >
-        <defs>
-          <radialGradient id="chatfiFallbackBg" cx="50%" cy="22%" r="78%">
-            <stop offset="0%" stopColor="#129640" />
-            <stop offset="52%" stopColor="#0E7A34" />
-            <stop offset="100%" stopColor="#074B1F" />
-          </radialGradient>
-        </defs>
-        <rect x="0" y="0" width="512" height="512" rx="116" fill="url(#chatfiFallbackBg)" />
+        <rect x="0" y="0" width="512" height="512" rx="116" fill="#0E7A34" />
         <path
           fill="#FFFFFF"
           fillRule="evenodd"

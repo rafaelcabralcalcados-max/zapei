@@ -99,9 +99,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
   return (
-    <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-4 py-4 sm:py-5 pb-safe-nav md:pb-8 space-y-5">
+    <div className="mx-auto w-full max-w-4xl overflow-x-hidden px-3.5 sm:px-5 py-4 sm:py-6 pb-safe-nav md:pb-8 space-y-5">
       {/* User Identity Card */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3.5">
             <button
@@ -112,7 +112,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   initials: profile.initials,
                   avatarBg: profile.avatarBg,
                   avatarUrl: profile.avatarUrl,
-                  subtitle: profile.virtualLine || profile.phone,
+                  phone: profile.phone,
+                  virtualLine: profile.virtualLine,
+                  subtitle: cleanStatus,
                 })
               }
               title="Ampliar foto de perfil"
@@ -123,7 +125,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <img
                   src={profile.avatarUrl}
                   alt={profile.name}
-                  className="h-14 w-14 shrink-0 rounded-full object-cover ring-2 ring-slate-100"
+                  className="h-14 w-14 shrink-0 rounded-full object-cover border border-slate-200"
                 />
               ) : (
                 <div
@@ -549,16 +551,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </section>
       )}
 
-      {/* PWA Install & WhatsApp Share Target Info */}
+      {/* PWA Install & Mobile Share Target Info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-2.5">
           <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#0E7A34]" />
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Instalar ChatFi e Receber do WhatsApp
+              Instalar ChatFi no Aparelho
             </h3>
             <p className="text-xs text-slate-500">
-              Adicione o ChatFi na tela inicial para abrir em tela cheia e fazê-lo aparecer automaticamente no botão <strong>Compartilhar</strong> do WhatsApp para enviar imagens e áudios direto para suas conversas.
+              Adicione o ChatFi na tela inicial para abrir em tela cheia e fazê-lo aparecer automaticamente no botão <strong>Compartilhar</strong> do seu celular para enviar imagens, vídeos e áudios direto para suas conversas.
             </p>
           </div>
         </div>

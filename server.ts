@@ -80,7 +80,7 @@ function sanitizeVapidSubject(raw: string | undefined): string {
   if (cleaned.startsWith('mailto:') || cleaned.startsWith('https://')) {
     return cleaned;
   }
-  return 'mailto:contato@chatfi.app';
+  return 'mailto:suporte.chatfi@gmail.com';
 }
 
 function loadOrCreateVapidKeys(): VapidKeys {

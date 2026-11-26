@@ -984,16 +984,13 @@ let sharedAudioCtx: AudioContext | null = null;
 let cachedRingtoneUrl: string | null = null;
 let primedRingtoneEl: HTMLAudioElement | null = null;
 let primedRingtoneSrc: string | null = null;
-let ringtoneElementPrimed = false;
 let isCurrentlyRinging = false;
 let cachedMsgChimeUrl: string | null = null;
 let cachedAudioMsgChimeUrl: string | null = null;
 let primedMsgChimeEl: HTMLAudioElement | null = null;
 let primedMsgChimeSrc: string | null = null;
-let msgChimeElementPrimed = false;
 let primedAudioMsgChimeEl: HTMLAudioElement | null = null;
 let primedAudioMsgChimeSrc: string | null = null;
-let audioMsgChimeElementPrimed = false;
 let customSoundSubscriptionActive = false;
 let activePreviewStop: (() => void) | null = null;
 let lastMsgChimeMs = 0;
@@ -1017,9 +1014,6 @@ function getOrCreateAudioContext(): AudioContext | null {
  * AudioContext into 'interrupted' state after mic/camera capture, silencing future ringtones).
  */
 function recoverAudioAfterMediaSession(): void {
-  ringtoneElementPrimed = false;
-  msgChimeElementPrimed = false;
-  audioMsgChimeElementPrimed = false;
   if (sharedAudioCtx && (sharedAudioCtx.state as string) === 'interrupted') {
     void sharedAudioCtx.resume().catch(() => {});
   }
@@ -1330,8 +1324,8 @@ function ensureCustomSoundsWired(): void {
 }
 
 /**
- * Unlocks Web Audio API AND persistent HTMLAudioElements (ringtone + text/audio chimes)
- * on the user's first touch/click so iOS Safari and Android Chrome play both loudly.
+ * Unlocks Web Audio API silently on the user's first gesture without playing
+ * any chime or ringtone elements on regular UI clicks.
  */
 export function unlockCallAudio(): void {
   ensureCustomSoundsWired();
@@ -1347,62 +1341,6 @@ export function unlockCallAudio(): void {
       src.connect(ctx.destination);
       src.start(0);
       audioCtxUnlocked = true;
-    }
-
-    const el = getOrCreatePrimedAudioElement();
-    if (el && !ringtoneElementPrimed && !isCurrentlyRinging) {
-      el.muted = true;
-      el.volume = 0;
-      const p = el.play();
-      if (p && typeof p.then === 'function') {
-        p.then(() => {
-          ringtoneElementPrimed = true;
-          if (!isCurrentlyRinging) {
-            el.pause();
-            el.currentTime = 0;
-            el.muted = false;
-            el.volume = 1.0;
-          }
-        }).catch(() => {
-          // Will retry on next user tap
-        });
-      }
-    }
-
-    const msgEl = getOrCreatePrimedMessageChimeElement('text');
-    if (msgEl && !msgChimeElementPrimed) {
-      msgEl.muted = true;
-      msgEl.volume = 0;
-      const mp = msgEl.play();
-      if (mp && typeof mp.then === 'function') {
-        mp.then(() => {
-          msgChimeElementPrimed = true;
-          msgEl.pause();
-          msgEl.currentTime = 0;
-          msgEl.muted = false;
-          msgEl.volume = 1.0;
-        }).catch(() => {
-          // Will retry on next user tap
-        });
-      }
-    }
-
-    const audioMsgEl = getOrCreatePrimedMessageChimeElement('audio');
-    if (audioMsgEl && !audioMsgChimeElementPrimed) {
-      audioMsgEl.muted = true;
-      audioMsgEl.volume = 0;
-      const amp = audioMsgEl.play();
-      if (amp && typeof amp.then === 'function') {
-        amp.then(() => {
-          audioMsgChimeElementPrimed = true;
-          audioMsgEl.pause();
-          audioMsgEl.currentTime = 0;
-          audioMsgEl.muted = false;
-          audioMsgEl.volume = 1.0;
-        }).catch(() => {
-          // Will retry on next user tap
-        });
-      }
     }
   } catch {
     // Non-fatal
@@ -1598,14 +1536,18 @@ export function previewCustomSoundSlot(
 export function installAudioUnlockListeners(): () => void {
   if (typeof window === 'undefined') return () => {};
   ensureCustomSoundsWired();
-  const handler = () => {
-    unlockCallAudio();
-  };
   const events: Array<keyof WindowEventMap> = ['pointerdown', 'touchstart', 'click', 'keydown'];
-  events.forEach((ev) => window.addEventListener(ev, handler, { passive: true }));
-  return () => {
+  const cleanup = () => {
     events.forEach((ev) => window.removeEventListener(ev, handler));
   };
+  const handler = () => {
+    unlockCallAudio();
+    if (audioCtxUnlocked) {
+      cleanup();
+    }
+  };
+  events.forEach((ev) => window.addEventListener(ev, handler, { passive: true }));
+  return cleanup;
 }
 
 /**
