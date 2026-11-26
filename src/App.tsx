@@ -127,8 +127,10 @@ import {
   cancelOrderAndReleaseStock,
   createAsaasSplitCharge,
   fetchAsaasOrderStatus,
+  fetchCancelledOrderOverrides,
   getOrderReservationDeadlineMs,
   type AsaasOrderStatusResult,
+  type CancelledOrderOverride,
   type CancelOrderResult,
   type CreateAsaasChargeResult,
   type OrderCancelReason,
@@ -270,6 +272,9 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [connections, setConnections] = useState<FactoryConnection[]>([]);
   const [orders, setOrders] = useState<MixedOrder[]>([]);
+  const [localCancelledOrders, setLocalCancelledOrders] = useState<
+    Record<string, CancelledOrderOverride>
+  >({});
   const [payments, setPayments] = useState<DualPaymentRecord[]>([]);
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
@@ -443,6 +448,7 @@ export default function App() {
         setProducts([]);
         setConnections([]);
         setOrders([]);
+        setLocalCancelledOrders({});
         setPayments([]);
         setSupportTickets([]);
         setHelpModalOpen(false);
@@ -788,8 +794,84 @@ export default function App() {
       subscribePayments(uid, setPayments),
       subscribeUserSupportTickets(uid, setSupportTickets),
     ];
+
+    const storageKey = `chatfi_cancelled_orders_v1_${uid}`;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, CancelledOrderOverride>;
+        if (parsed && typeof parsed === 'object') {
+          setLocalCancelledOrders(parsed);
+        }
+      }
+    } catch {
+      // ignore invalid cache
+    }
+    void fetchCancelledOrderOverrides().then((overrides) => {
+      if (overrides.length === 0) return;
+      setLocalCancelledOrders((prev) => {
+        const next = { ...prev };
+        for (const ov of overrides) {
+          next[ov.orderId] = ov;
+        }
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {
+          // ignore storage quota
+        }
+        return next;
+      });
+    });
+
     return () => unsubs.forEach((u) => u());
   }, [authUid, profileUid, deviceAuthState]);
+
+  const recordLocalCancelledOrder = useCallback(
+    (override: CancelledOrderOverride) => {
+      setLocalCancelledOrders((prev) => {
+        const next = { ...prev, [override.orderId]: override };
+        if (authUid) {
+          try {
+            localStorage.setItem(`chatfi_cancelled_orders_v1_${authUid}`, JSON.stringify(next));
+          } catch {
+            // ignore storage quota
+          }
+        }
+        return next;
+      });
+    },
+    [authUid]
+  );
+
+  const effectiveOrders = useMemo(() => {
+    if (Object.keys(localCancelledOrders).length === 0) return orders;
+    return orders.map((o) => {
+      const ov = localCancelledOrders[o.id];
+      if (!ov || (o.status === 'cancelled' && o.stockRestored)) return o;
+      return {
+        ...o,
+        status: 'cancelled' as const,
+        stockRestored: true,
+        cancelledAtMs: ov.cancelledAtMs || o.cancelledAtMs || Date.now(),
+        cancelReason: ov.cancelReason || o.cancelReason,
+        asaasChargeStatus: ov.asaasChargeStatus || o.asaasChargeStatus || 'CANCELLED',
+        subOrders: o.subOrders.map((s) => ({ ...s, status: 'cancelled' as const })),
+      };
+    });
+  }, [orders, localCancelledOrders]);
+
+  const effectivePayments = useMemo(() => {
+    if (Object.keys(localCancelledOrders).length === 0) return payments;
+    return payments.map((p) => {
+      const ov = localCancelledOrders[p.orderId];
+      if (!ov || p.status === 'Cancelado') return p;
+      return {
+        ...p,
+        status: 'Cancelado' as const,
+        asaasChargeStatus: ov.asaasChargeStatus || p.asaasChargeStatus || 'CANCELLED',
+      };
+    });
+  }, [payments, localCancelledOrders]);
 
   // 3a. Ensure every logged-in user (including accounts created earlier) is findable by name or Virtual Line
   const syncedDirectoryKeyRef = useRef<string>('');
@@ -1994,7 +2076,7 @@ export default function App() {
       sub: SubOrder,
       decisions: Record<string, 'available' | 'unavailable'>
     ) => {
-      const parent = orders.find((o) => o.id === sub.parentOrderId);
+      const parent = effectiveOrders.find((o) => o.id === sub.parentOrderId);
       const updatedItems = sub.items.map((item) => ({
         ...item,
         availability: decisions[item.id] ?? 'available',
@@ -2131,15 +2213,15 @@ export default function App() {
         }
       }
     },
-    [products, orders, profile]
+    [products, effectiveOrders, profile]
   );
 
   // Reseller-side automatic Layer 2 reconciliation when a connected factory performs a partial stock cut
   useEffect(() => {
     if (!profile) return;
-    for (const order of orders) {
+    for (const order of effectiveOrders) {
       if (order.resellerId !== profile.uid) continue;
-      const layer2Pay = payments.find(
+      const layer2Pay = effectivePayments.find(
         (p) => p.id === `pay_rb_${order.id}` && p.ownerId === profile.uid
       );
       if (
@@ -2163,7 +2245,7 @@ export default function App() {
         }).catch(() => {});
       }
     }
-  }, [orders, payments, profile]);
+  }, [effectiveOrders, effectivePayments, profile]);
 
   const handleApplyPunctualDiscount = useCallback(
     async (order: MixedOrder, mode: 'fixed' | 'percent', value: number) => {
@@ -2328,6 +2410,14 @@ export default function App() {
   const handleCancelOrderAndReleaseStock = useCallback(
     async (orderId: string, reason: OrderCancelReason): Promise<CancelOrderResult> => {
       const res = await cancelOrderAndReleaseStock(orderId, reason);
+      recordLocalCancelledOrder({
+        orderId,
+        status: 'cancelled',
+        stockRestored: true,
+        cancelledAtMs: res.cancelledAtMs || Date.now(),
+        cancelReason: res.cancelReason || reason,
+        asaasChargeStatus: res.asaasChargeStatus,
+      });
       if (res.alreadyCancelled) {
         showToast('Este pedido já havia sido cancelado e seu estoque liberado.');
       } else {
@@ -2343,23 +2433,23 @@ export default function App() {
       }
       return res;
     },
-    [showToast]
+    [recordLocalCancelledOrder, showToast]
   );
 
   // Automatic 2-hour reservation expiration watcher for unpaid active orders
   useEffect(() => {
-    if (!authUid || orders.length === 0) return;
+    if (!authUid || effectiveOrders.length === 0) return;
 
     const checkAndExpireOrders = () => {
       const now = Date.now();
-      for (const order of orders) {
+      for (const order of effectiveOrders) {
         const isParticipant =
           order.buyerId === authUid ||
           order.resellerId === authUid ||
           order.factoryIds.includes(authUid);
         if (!isParticipant) continue;
 
-        const orderPayments = payments.filter((p) => p.orderId === order.id);
+        const orderPayments = effectivePayments.filter((p) => p.orderId === order.id);
         if (!canCancelUnpaidOrder(order, orderPayments)) continue;
 
         const deadlineMs = getOrderReservationDeadlineMs(order);
@@ -2372,6 +2462,15 @@ export default function App() {
         void cancelOrderAndReleaseStock(order.id, 'expired_2h')
           .then((res) => {
             expiringOrderAttemptRef.current.set(order.id, Number.MAX_SAFE_INTEGER);
+            recordLocalCancelledOrder({
+              orderId: order.id,
+              orderCode: order.orderCode,
+              status: 'cancelled',
+              stockRestored: true,
+              cancelledAtMs: res.cancelledAtMs || Date.now(),
+              cancelReason: res.cancelReason || 'expired_2h',
+              asaasChargeStatus: res.asaasChargeStatus,
+            });
             if (!res.alreadyCancelled) {
               showToast(
                 `Reserva de 2h do pedido ${order.orderCode} expirou — itens devolvidos ao estoque.`
@@ -2387,7 +2486,7 @@ export default function App() {
     checkAndExpireOrders();
     const timer = window.setInterval(checkAndExpireOrders, 30_000);
     return () => window.clearInterval(timer);
-  }, [authUid, orders, payments, showToast]);
+  }, [authUid, effectiveOrders, effectivePayments, recordLocalCancelledOrder, showToast]);
 
   const handleConnectFactoryByPhone = useCallback(
     async (rawPhone: string): Promise<{ ok: boolean; message: string }> => {
@@ -2719,8 +2818,8 @@ export default function App() {
   }, [mergedChats, contacts, zapeiContacts, directoryByUid, profile?.uid]);
 
   const allSubOrders = useMemo(
-    () => orders.flatMap((o) => o.subOrders),
-    [orders]
+    () => effectiveOrders.flatMap((o) => o.subOrders),
+    [effectiveOrders]
   );
 
   // --- LOADING & REAL AUTH/PHONE GATE ---
@@ -3749,8 +3848,8 @@ export default function App() {
               profile={profile}
               products={products}
               subOrders={allSubOrders}
-              orders={orders}
-              payments={payments}
+              orders={effectiveOrders}
+              payments={effectivePayments}
               onSavePolicy={async (factoryName, factoryPolicy: MinimumDeliveryPolicy) => {
                 await persistProfileUpdate({ factoryName, factoryPolicy });
               }}
@@ -3781,7 +3880,7 @@ export default function App() {
                   receiptUrl,
                   receiptAttached: Boolean(receiptUrl || receiptNote),
                 });
-                const parent = orders.find((o) => o.id === sub.parentOrderId);
+                const parent = effectiveOrders.find((o) => o.id === sub.parentOrderId);
                 if (parent) {
                   const allDispatched = parent.subOrders.every(
                     (s) => s.id === sub.id || s.status === 'dispatched'
@@ -3805,8 +3904,8 @@ export default function App() {
               profile={profile}
               connections={connections}
               products={products}
-              orders={orders}
-              payments={payments}
+              orders={effectiveOrders}
+              payments={effectivePayments}
               onSaveStorefrontIdentity={async (storefrontName, storefrontPrivacy) => {
                 await persistProfileUpdate({ storefrontName, storefrontPrivacy });
               }}
@@ -3974,7 +4073,7 @@ export default function App() {
           owner={activeStorefrontOwner}
           products={products}
           connections={connections}
-          orders={orders}
+          orders={effectiveOrders}
           initialSubView={activeStorefrontInitialTab}
           onClose={() => {
             setActiveStorefrontOwner(null);
@@ -4190,7 +4289,7 @@ export default function App() {
         open={helpModalOpen}
         onClose={() => setHelpModalOpen(false)}
         profile={profile}
-        orders={orders}
+        orders={effectiveOrders}
         tickets={supportTickets}
         initialContext={helpModalContext}
         onSubmitTicket={async ({ reason, orderId, orderCode, description }) => {

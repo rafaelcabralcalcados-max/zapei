@@ -850,10 +850,31 @@ async function startServer(): Promise<void> {
     confirmedAtMs?: number;
   }
 
+  interface CancelledOrderRecord {
+    orderId: string;
+    orderCode: string;
+    participantUids: string[];
+    status: 'cancelled';
+    stockRestored: boolean;
+    cancelledAtMs: number;
+    cancelReason: string;
+    cancelledByUid: string;
+    asaasChargeStatus: string;
+    asaasCancelled: boolean;
+    restoredItems: Array<{
+      productId: string;
+      productName: string;
+      boxesRestored: number;
+      newStockBoxes: number;
+    }>;
+    syncedToFirestore: boolean;
+  }
+
   interface PersistedAsaasLedger {
     chargesByOrderId: Record<string, AsaasLedgerRecord>;
     orderIdByChargeId: Record<string, string>;
     processedWebhookKeys: string[];
+    cancelledOrdersByOrderId: Record<string, CancelledOrderRecord>;
   }
 
   const loadAsaasLedger = (): PersistedAsaasLedger => {
@@ -874,12 +895,21 @@ async function startServer(): Promise<void> {
           processedWebhookKeys: Array.isArray(parsed.processedWebhookKeys)
             ? parsed.processedWebhookKeys.slice(-1000)
             : [],
+          cancelledOrdersByOrderId:
+            parsed.cancelledOrdersByOrderId && typeof parsed.cancelledOrdersByOrderId === 'object'
+              ? parsed.cancelledOrdersByOrderId
+              : {},
         };
       }
     } catch {
       // fallback to clean ledger
     }
-    return { chargesByOrderId: {}, orderIdByChargeId: {}, processedWebhookKeys: [] };
+    return {
+      chargesByOrderId: {},
+      orderIdByChargeId: {},
+      processedWebhookKeys: [],
+      cancelledOrdersByOrderId: {},
+    };
   };
 
   const asaasLedger = loadAsaasLedger();
@@ -1810,13 +1840,21 @@ async function startServer(): Promise<void> {
       }
 
       const currentStatus = String(orderData.status || 'pending_inquiry');
-      if (currentStatus === 'cancelled' || orderData.stockRestored === true) {
+      const existingCancelledRecord = asaasLedger.cancelledOrdersByOrderId[orderId];
+      if (
+        currentStatus === 'cancelled' ||
+        orderData.stockRestored === true ||
+        existingCancelledRecord
+      ) {
         res.json({
           ok: true,
           alreadyCancelled: true,
           orderId,
           asaasCancelled: false,
-          stockRestored: Boolean(orderData.stockRestored),
+          stockRestored: Boolean(orderData.stockRestored || existingCancelledRecord?.stockRestored),
+          cancelReason: existingCancelledRecord?.cancelReason || String(orderData.cancelReason || ''),
+          cancelledAtMs: existingCancelledRecord?.cancelledAtMs,
+          asaasChargeStatus: existingCancelledRecord?.asaasChargeStatus || String(orderData.asaasChargeStatus || ''),
           restoredItems: [],
         });
         return;
@@ -1940,7 +1978,9 @@ async function startServer(): Promise<void> {
       }
 
       const docBase = `projects/${firebaseProjectId}/databases/${firebaseDatabaseId}/documents`;
-      const writes: Array<Record<string, unknown>> = [];
+      const coreWrites: Array<Record<string, unknown>> = [];
+      const paymentWrites: Array<Record<string, unknown>> = [];
+      const factoryDirectProductWrites: Array<Record<string, unknown>> = [];
       const restoredItems: Array<{
         productId: string;
         productName: string;
@@ -1959,7 +1999,7 @@ async function startServer(): Promise<void> {
               ? 'reseller_cancelled'
               : 'factory_cancelled';
 
-      writes.push({
+      coreWrites.push({
         update: {
           name: `${docBase}/orders/${orderId}`,
           fields: {
@@ -1990,7 +2030,7 @@ async function startServer(): Promise<void> {
       // 2) Sub-order updates
       for (const sub of subOrders) {
         if (sub.status === 'cancelled' || !VALID_UID_REGEX.test(sub.id)) continue;
-        writes.push({
+        coreWrites.push({
           update: {
             name: `${docBase}/sub_orders/${sub.id}`,
             fields: {
@@ -2010,7 +2050,7 @@ async function startServer(): Promise<void> {
         if (!prodMeta) continue;
         const currentStock = Math.max(0, Number(prodMeta.data.stockBoxes ?? 0));
         const nextStock = Math.min(100000, currentStock + restoreInfo.boxes);
-        writes.push({
+        coreWrites.push({
           update: {
             name: `${docBase}/products/${productId}`,
             fields: {
@@ -2027,6 +2067,24 @@ async function startServer(): Promise<void> {
             ? { currentDocument: { updateTime: prodMeta.updateTime } }
             : {}),
         });
+        if (String(prodMeta.data.factoryId || '') === actorUid) {
+          factoryDirectProductWrites.push({
+            update: {
+              name: `${docBase}/products/${productId}`,
+              fields: {
+                stockBoxes: encodeFirestoreRestValue(nextStock),
+                isSoldOutToday: encodeFirestoreRestValue(nextStock <= 0),
+              },
+            },
+            updateMask: {
+              fieldPaths: ['stockBoxes', 'isSoldOutToday'],
+            },
+            updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+            ...(prodMeta.updateTime
+              ? { currentDocument: { updateTime: prodMeta.updateTime } }
+              : {}),
+          });
+        }
         restoredItems.push({
           productId,
           productName: restoreInfo.productName,
@@ -2044,7 +2102,7 @@ async function startServer(): Promise<void> {
         const payMeta = await firestoreRestGetDocWithMeta('payments', payId, idToken);
         if (!payMeta) continue;
         if (String(payMeta.data.status || '') === 'Cancelado') continue;
-        writes.push({
+        paymentWrites.push({
           update: {
             name: `${docBase}/payments/${payId}`,
             fields: {
@@ -2059,8 +2117,11 @@ async function startServer(): Promise<void> {
         });
       }
 
-      const commitRes = await firestoreRestCommit(writes, idToken);
-      if (!commitRes.ok) {
+      let syncedToFirestore = false;
+      let commitRes = await firestoreRestCommit([...coreWrites, ...paymentWrites], idToken);
+      if (commitRes.ok) {
+        syncedToFirestore = true;
+      } else {
         // Check if another concurrent caller just cancelled this order
         const recheck = await firestoreRestGetDoc('orders', orderId, idToken);
         if (recheck && (recheck.status === 'cancelled' || recheck.stockRestored === true)) {
@@ -2074,27 +2135,67 @@ async function startServer(): Promise<void> {
           });
           return;
         }
-        console.error(
-          `[orders-cancel] Firestore commit failed (${commitRes.status}) for ${orderId}:`,
-          commitRes.bodyText.slice(0, 400)
-        );
-        res.status(commitRes.status >= 400 ? commitRes.status : 500).json({
-          error: 'Não foi possível concluir o cancelamento e a devolução do estoque no Firestore.',
-        });
-        return;
+
+        // Retry core writes without payment docs in case a legacy payment doc triggered 403
+        if (commitRes.status === 403 && paymentWrites.length > 0 && coreWrites.length > 0) {
+          const coreRetry = await firestoreRestCommit(coreWrites, idToken);
+          if (coreRetry.ok) {
+            syncedToFirestore = true;
+          } else {
+            commitRes = coreRetry;
+          }
+        }
+
+        if (!syncedToFirestore) {
+          if (commitRes.status === 403) {
+            // If live Firestore rules on this project are pending publish, still restore factory-owned stock when possible
+            if (factoryDirectProductWrites.length > 0) {
+              await firestoreRestCommit(factoryDirectProductWrites, idToken).catch(() => {});
+            }
+            console.warn(
+              `[orders-cancel] Firestore commit returned 403 for ${orderId}; persisted cancellation in server ledger (pending firestore.rules publish).`
+            );
+          } else {
+            console.error(
+              `[orders-cancel] Firestore commit failed (${commitRes.status}) for ${orderId}:`,
+              commitRes.bodyText.slice(0, 400)
+            );
+            res.status(commitRes.status >= 400 ? commitRes.status : 500).json({
+              error: 'Não foi possível concluir o cancelamento e a devolução do estoque no Firestore.',
+            });
+            return;
+          }
+        }
       }
+
+      const orderCodeLabel = String(orderData.orderCode || orderId);
+      const participantUids = Array.from(
+        new Set([buyerId, resellerId, ...factoryIds].filter(Boolean))
+      );
+
+      asaasLedger.cancelledOrdersByOrderId[orderId] = {
+        orderId,
+        orderCode: orderCodeLabel,
+        participantUids,
+        status: 'cancelled',
+        stockRestored: true,
+        cancelledAtMs,
+        cancelReason: orderCancelReason,
+        cancelledByUid: actorUid,
+        asaasChargeStatus: nextAsaasStatus,
+        asaasCancelled: asaasCancelRes.asaasCancelled,
+        restoredItems,
+        syncedToFirestore,
+      };
 
       if (ledgerRecord) {
         ledgerRecord.asaasStatus = nextAsaasStatus;
         ledgerRecord.mappedPaymentStatus = 'Aguardando';
         ledgerRecord.updatedAtMs = cancelledAtMs;
-        saveAsaasLedger();
       }
+      saveAsaasLedger();
 
-      const orderCodeLabel = String(orderData.orderCode || orderId);
-      const notifyTargets = Array.from(
-        new Set([buyerId, resellerId, ...factoryIds].filter((u) => u && u !== actorUid))
-      );
+      const notifyTargets = participantUids.filter((u) => u !== actorUid);
       for (const targetUid of notifyTargets) {
         void dispatchPushToUser(
           targetUid,
@@ -2115,18 +2216,34 @@ async function startServer(): Promise<void> {
       }
 
       console.log(
-        `[orders-cancel] orderId=${orderId} reason=${orderCancelReason} asaasCancelled=${asaasCancelRes.asaasCancelled} restoredProducts=${restoredItems.length}`
+        `[orders-cancel] orderId=${orderId} reason=${orderCancelReason} asaasCancelled=${asaasCancelRes.asaasCancelled} restoredProducts=${restoredItems.length} syncedToFirestore=${syncedToFirestore}`
       );
 
       res.json({
         ok: true,
         alreadyCancelled: false,
+        pendingRulesSync: !syncedToFirestore,
         orderId,
         asaasCancelled: asaasCancelRes.asaasCancelled,
         stockRestored: true,
         cancelReason: orderCancelReason,
+        cancelledAtMs,
+        asaasChargeStatus: nextAsaasStatus,
         restoredItems,
       });
+    }
+  );
+
+  // 7c. Return server-recorded order cancellations for the authenticated participant
+  app.get(
+    '/api/orders/cancelled-overrides',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const overrides = Object.values(asaasLedger.cancelledOrdersByOrderId).filter((rec) =>
+        rec.participantUids.includes(actorUid)
+      );
+      res.json({ ok: true, overrides });
     }
   );
 

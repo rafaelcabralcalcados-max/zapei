@@ -112,16 +112,49 @@ export type OrderCancelReason =
 export interface CancelOrderResult {
   ok: boolean;
   alreadyCancelled?: boolean;
+  pendingRulesSync?: boolean;
   orderId: string;
   asaasCancelled?: boolean;
   stockRestored?: boolean;
   cancelReason?: string;
+  cancelledAtMs?: number;
+  asaasChargeStatus?: string;
   restoredItems?: Array<{
     productId: string;
     productName: string;
     boxesRestored: number;
     newStockBoxes: number;
   }>;
+}
+
+export interface CancelledOrderOverride {
+  orderId: string;
+  orderCode?: string;
+  status: 'cancelled';
+  stockRestored: boolean;
+  cancelledAtMs?: number;
+  cancelReason?: string;
+  asaasChargeStatus?: string;
+}
+
+export async function fetchCancelledOrderOverrides(): Promise<CancelledOrderOverride[]> {
+  const user = auth.currentUser;
+  if (!user) return [];
+  try {
+    const idToken = await user.getIdToken();
+    const res = await fetch('/api/orders/cancelled-overrides', {
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => ({}))) as {
+      overrides?: CancelledOrderOverride[];
+    };
+    return Array.isArray(data.overrides) ? data.overrides : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function cancelOrderAndReleaseStock(
