@@ -27,7 +27,7 @@ export type SubscriptionStatus = 'free' | 'trial' | 'active' | 'expired';
 
 export type PaymentMethod = 'À vista' | 'Cartão' | 'Cheque' | 'Notinha';
 
-export type PaymentStatus = 'Aguardando' | 'Parcial' | 'Quitado' | 'Em Atraso';
+export type PaymentStatus = 'Aguardando' | 'Parcial' | 'Quitado' | 'Em Atraso' | 'Cancelado';
 
 export type LogisticsType = 'none' | 'transportadora' | 'distribuidora';
 
@@ -152,6 +152,7 @@ export interface Product {
   imageUrl: string;
   isSoldOutToday: boolean;
   moderationStatus: 'approved' | 'flagged';
+  lastStockOrderId?: string;
   createdAt: string;
 }
 
@@ -289,6 +290,13 @@ export interface MixedOrder {
   asaasChargeStatus?: string;
   asaasInvoiceUrl?: string;
   asaasPixPayload?: string;
+  createdAtMs?: number;
+  stockReserved?: boolean;
+  stockRestored?: boolean;
+  reservationExpiresAtMs?: number;
+  cancelledAtMs?: number;
+  cancelReason?: string;
+  cancelledByUid?: string;
 }
 
 export interface DualPaymentRecord {
@@ -371,6 +379,32 @@ export interface DeviceAuthRequest {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   approvedByDeviceId?: string;
   expiresAtMs: number;
+  createdAtMs: number;
+}
+
+export type SupportTicketReason =
+  | 'Problema com Pagamento / Pix'
+  | 'Dúvida sobre Pedido'
+  | 'Configuração de Wallet ID Asaas'
+  | 'Denúncia / Segurança'
+  | 'Outros';
+
+export type SupportTicketStatus = 'Aberto' | 'Em análise' | 'Resolvido';
+
+export interface SupportTicket {
+  id: string;
+  ticketCode: string;
+  userId: string;
+  userName: string;
+  userVirtualLine?: string;
+  userRole: CommercialMode;
+  reason: SupportTicketReason;
+  orderId?: string;
+  orderCode?: string;
+  description: string;
+  status: SupportTicketStatus;
+  createdAt: string;
+  updatedAt: string;
   createdAtMs: number;
 }
 

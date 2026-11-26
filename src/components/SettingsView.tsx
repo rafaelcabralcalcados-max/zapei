@@ -8,6 +8,8 @@ import {
   Eye,
   EyeOff,
   Factory,
+  HelpCircle,
+  LifeBuoy,
   LogOut,
   MessageSquare,
   ShieldCheck,
@@ -41,6 +43,8 @@ interface SettingsViewProps {
   onSaveWalletId?: (walletId: string) => Promise<void>;
   onOpenBilling: () => void;
   onOpenCommercialPanel: () => void;
+  onOpenHelp?: () => void;
+  openTicketCount?: number;
   onNotify?: (message: string) => void;
   onSignOut: () => Promise<void>;
 }
@@ -59,6 +63,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onSaveWalletId,
   onOpenBilling,
   onOpenCommercialPanel,
+  onOpenHelp,
+  openTicketCount = 0,
   onNotify,
   onSignOut,
 }) => {
@@ -510,6 +516,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         consent={policyConsent}
         onOpenPolicies={onOpenPolicies}
       />
+
+      {/* Central de Ajuda e Suporte */}
+      {onOpenHelp && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-[#0E7A34]">
+              <LifeBuoy className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">
+                Central de Ajuda e Suporte
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Tire dúvidas por perfil (Comprador, Revendedor ou Fabricante), abra chamados ou fale diretamente com o Suporte Oficial ChatFi.
+                {openTicketCount > 0 && (
+                  <span className="font-semibold text-[#0E7A34]">
+                    {' '}· {openTicketCount} chamado(s) em andamento
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenHelp}
+            className="inline-flex min-h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#0D2B3E] px-4 text-xs font-semibold text-white transition hover:bg-[#143d57]"
+          >
+            <HelpCircle className="h-4 w-4" />
+            Abrir Ajuda e Suporte
+          </button>
+        </section>
+      )}
 
       {/* PWA Install & WhatsApp Share Target Info */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

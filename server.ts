@@ -933,11 +933,32 @@ async function startServer(): Promise<void> {
     return out;
   };
 
-  const firestoreRestGetDoc = async (
+  const ORDER_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
+
+  const isAsaasPaidStatus = (rawStatus?: string): boolean => {
+    const normalized = (rawStatus || '').trim().toUpperCase();
+    return (
+      normalized === 'CONFIRMED' ||
+      normalized === 'RECEIVED' ||
+      normalized === 'RECEIVED_IN_CASH' ||
+      normalized === 'PAYMENT_CONFIRMED' ||
+      normalized === 'PAYMENT_RECEIVED' ||
+      normalized === 'PAYMENT_ANTICIPATED' ||
+      normalized === 'QUITADO'
+    );
+  };
+
+  interface FirestoreDocWithMeta {
+    data: Record<string, unknown>;
+    updateTime?: string;
+    createTime?: string;
+  }
+
+  const firestoreRestGetDocWithMeta = async (
     collectionPath: string,
     docId: string,
     idToken: string
-  ): Promise<Record<string, unknown> | null> => {
+  ): Promise<FirestoreDocWithMeta | null> => {
     if (!firebaseProjectId || !VALID_UID_REGEX.test(docId)) return null;
     const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
       firebaseProjectId
@@ -951,24 +972,105 @@ async function startServer(): Promise<void> {
     if (!res.ok) return null;
     const json = (await res.json()) as {
       fields?: Record<string, FirestoreRestValue>;
+      updateTime?: string;
+      createTime?: string;
     };
-    return decodeFirestoreFields(json.fields);
+    return {
+      data: decodeFirestoreFields(json.fields),
+      updateTime: json.updateTime,
+      createTime: json.createTime,
+    };
+  };
+
+  const firestoreRestGetDoc = async (
+    collectionPath: string,
+    docId: string,
+    idToken: string
+  ): Promise<Record<string, unknown> | null> => {
+    const meta = await firestoreRestGetDocWithMeta(collectionPath, docId, idToken);
+    return meta ? meta.data : null;
+  };
+
+  const encodeFirestoreRestValue = (val: unknown): FirestoreRestValue => {
+    if (typeof val === 'boolean') return { booleanValue: val };
+    if (typeof val === 'number') {
+      return Number.isInteger(val)
+        ? { integerValue: String(val) }
+        : { doubleValue: val };
+    }
+    return { stringValue: String(val ?? '') };
+  };
+
+  const firestoreRestCommit = async (
+    writes: Array<Record<string, unknown>>,
+    idToken: string
+  ): Promise<{ ok: boolean; status: number; bodyText: string }> => {
+    if (!firebaseProjectId || writes.length === 0) {
+      return { ok: true, status: 200, bodyText: '' };
+    }
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseProjectId
+    )}/databases/${encodeURIComponent(firebaseDatabaseId)}/documents:commit`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ writes }),
+    });
+    const bodyText = await res.text().catch(() => '');
+    return { ok: res.ok, status: res.status, bodyText };
+  };
+
+  interface QueriedSubOrder {
+    id: string;
+    subOrderCode: string;
+    factoryId: string;
+    factoryName: string;
+    factoryCost: number;
+    status: string;
+    items: Array<{
+      productId: string;
+      productName: string;
+      boxesRequested: number;
+      availability: string;
+    }>;
+    updateTime?: string;
+  }
+
+  const parseQueriedSubOrder = (
+    docId: string,
+    d: Record<string, unknown>,
+    updateTime?: string
+  ): QueriedSubOrder => {
+    const rawItems = Array.isArray(d.items) ? d.items : [];
+    const items = rawItems
+      .filter((it): it is Record<string, unknown> => Boolean(it && typeof it === 'object'))
+      .map((it) => ({
+        productId: String(it.productId || ''),
+        productName: String(it.productName || 'Produto'),
+        boxesRequested: Math.max(0, Math.round(Number(it.boxesRequested || 0))),
+        availability: String(it.availability || 'pending'),
+      }));
+    return {
+      id: docId,
+      subOrderCode: String(d.subOrderCode || ''),
+      factoryId: String(d.factoryId || ''),
+      factoryName: String(d.factoryName || 'Fábrica'),
+      factoryCost: Number(d.factoryCost || 0),
+      status: String(d.status || 'pending_inquiry'),
+      items,
+      updateTime,
+    };
   };
 
   const firestoreRestQuerySubOrdersForActor = async (
     parentOrderId: string,
-    actorField: 'buyerId' | 'resellerId',
+    actorField: 'buyerId' | 'resellerId' | 'factoryId',
     actorUid: string,
     idToken: string
-  ): Promise<
-    Array<{
-      id: string;
-      subOrderCode: string;
-      factoryId: string;
-      factoryName: string;
-      factoryCost: number;
-    }>
-  > => {
+  ): Promise<QueriedSubOrder[]> => {
     if (!firebaseProjectId) return [];
     const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
       firebaseProjectId
@@ -998,27 +1100,16 @@ async function startServer(): Promise<void> {
       document?: {
         name?: string;
         fields?: Record<string, FirestoreRestValue>;
+        updateTime?: string;
       };
     }>;
-    const out: Array<{
-      id: string;
-      subOrderCode: string;
-      factoryId: string;
-      factoryName: string;
-      factoryCost: number;
-    }> = [];
+    const out: QueriedSubOrder[] = [];
     for (const row of rows) {
       if (!row.document?.fields || !row.document.name) continue;
       const d = decodeFirestoreFields(row.document.fields);
       if (String(d.parentOrderId || '') !== parentOrderId) continue;
       const docId = row.document.name.split('/').pop() || '';
-      out.push({
-        id: docId,
-        subOrderCode: String(d.subOrderCode || ''),
-        factoryId: String(d.factoryId || ''),
-        factoryName: String(d.factoryName || 'Fábrica'),
-        factoryCost: Number(d.factoryCost || 0),
-      });
+      out.push(parseQueriedSubOrder(docId, d, row.document.updateTime));
     }
     return out;
   };
@@ -1030,6 +1121,90 @@ async function startServer(): Promise<void> {
     return env === 'production'
       ? 'https://api.asaas.com/v3'
       : 'https://api-sandbox.asaas.com/v3';
+  };
+
+  const cancelAsaasPaymentIfPresent = async (
+    asaasPaymentId: string
+  ): Promise<{
+    alreadyPaid: boolean;
+    asaasCancelled: boolean;
+    asaasStatus: string;
+    errorMessage?: string;
+  }> => {
+    const cleanId = asaasPaymentId.trim();
+    const asaasApiKey = (process.env.ASAAS_API_KEY || '').trim();
+    if (!cleanId || cleanId.startsWith('asaas_preview_') || !asaasApiKey) {
+      return {
+        alreadyPaid: false,
+        asaasCancelled: false,
+        asaasStatus: cleanId ? 'CANCELLED' : 'CANCELLED',
+      };
+    }
+
+    const baseUrl = getAsaasBaseUrl();
+    try {
+      const checkRes = await fetch(`${baseUrl}/payments/${encodeURIComponent(cleanId)}`, {
+        headers: {
+          access_token: asaasApiKey,
+          'User-Agent': 'ChatFi/1.0',
+        },
+      });
+      if (checkRes.status === 404) {
+        return { alreadyPaid: false, asaasCancelled: true, asaasStatus: 'DELETED' };
+      }
+      if (checkRes.ok) {
+        const current = (await checkRes.json().catch(() => ({}))) as {
+          status?: string;
+          deleted?: boolean;
+        };
+        if (current.deleted || String(current.status || '').toUpperCase() === 'DELETED') {
+          return { alreadyPaid: false, asaasCancelled: true, asaasStatus: 'DELETED' };
+        }
+        if (isAsaasPaidStatus(current.status)) {
+          return {
+            alreadyPaid: true,
+            asaasCancelled: false,
+            asaasStatus: String(current.status || 'CONFIRMED'),
+          };
+        }
+      }
+
+      const delRes = await fetch(`${baseUrl}/payments/${encodeURIComponent(cleanId)}`, {
+        method: 'DELETE',
+        headers: {
+          access_token: asaasApiKey,
+          'User-Agent': 'ChatFi/1.0',
+        },
+      });
+      if (delRes.ok || delRes.status === 404) {
+        return { alreadyPaid: false, asaasCancelled: true, asaasStatus: 'DELETED' };
+      }
+      const delJson = (await delRes.json().catch(() => ({}))) as {
+        errors?: Array<{ description?: string }>;
+      };
+      const errDesc = delJson.errors?.[0]?.description || '';
+      if (/recebid|confirmad|paid|confirmed|received/i.test(errDesc)) {
+        return {
+          alreadyPaid: true,
+          asaasCancelled: false,
+          asaasStatus: 'CONFIRMED',
+          errorMessage: errDesc,
+        };
+      }
+      return {
+        alreadyPaid: false,
+        asaasCancelled: false,
+        asaasStatus: 'CANCELLED',
+        errorMessage: errDesc || `Asaas HTTP ${delRes.status}`,
+      };
+    } catch (err) {
+      return {
+        alreadyPaid: false,
+        asaasCancelled: false,
+        asaasStatus: 'CANCELLED',
+        errorMessage: err instanceof Error ? err.message : 'Falha de comunicação com Asaas',
+      };
+    }
   };
 
   const mapAsaasEventToStatus = (
@@ -1116,6 +1291,8 @@ async function startServer(): Promise<void> {
             factoryId: factoryIds[0],
             factoryName: 'Fábrica',
             factoryCost: factoryCostTotal,
+            status: 'pending_inquiry',
+            items: [],
           },
         ];
       }
@@ -1591,6 +1768,407 @@ async function startServer(): Promise<void> {
       });
     }
   );
+
+  // 7b. Cancel unpaid order, delete pending Asaas payment, mark cancelled, and atomically return stock without duplication
+  app.post(
+    '/api/orders/:orderId/cancel',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const idToken = req.idToken || '';
+      const orderId = typeof req.params?.orderId === 'string' ? req.params.orderId.trim() : '';
+      const rawReason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+      const cancelReason =
+        rawReason === 'expired_2h' ||
+        rawReason === 'buyer_cancelled' ||
+        rawReason === 'reseller_cancelled' ||
+        rawReason === 'factory_cancelled'
+          ? rawReason
+          : 'manual_cancelled';
+
+      if (!VALID_UID_REGEX.test(orderId)) {
+        res.status(400).json({ error: 'ID do pedido inválido.' });
+        return;
+      }
+
+      const orderMeta = await firestoreRestGetDocWithMeta('orders', orderId, idToken);
+      if (!orderMeta) {
+        res.status(404).json({ error: 'Pedido não encontrado no Firestore.' });
+        return;
+      }
+
+      const orderData = orderMeta.data;
+      const buyerId = String(orderData.buyerId || '');
+      const resellerId = String(orderData.resellerId || '');
+      const factoryIds = Array.isArray(orderData.factoryIds)
+        ? orderData.factoryIds.map((id) => String(id))
+        : [];
+
+      if (actorUid !== buyerId && actorUid !== resellerId && !factoryIds.includes(actorUid)) {
+        res.status(403).json({ error: 'Sem permissão para cancelar este pedido.' });
+        return;
+      }
+
+      const currentStatus = String(orderData.status || 'pending_inquiry');
+      if (currentStatus === 'cancelled' || orderData.stockRestored === true) {
+        res.json({
+          ok: true,
+          alreadyCancelled: true,
+          orderId,
+          asaasCancelled: false,
+          stockRestored: Boolean(orderData.stockRestored),
+          restoredItems: [],
+        });
+        return;
+      }
+
+      if (currentStatus === 'dispatched' || currentStatus === 'completed') {
+        res.status(400).json({
+          error: 'Pedidos já despachados ou concluídos não podem ser cancelados.',
+        });
+        return;
+      }
+
+      const ledgerRecord = asaasLedger.chargesByOrderId[orderId];
+      if (
+        isAsaasPaidStatus(String(orderData.asaasChargeStatus || '')) ||
+        isAsaasPaidStatus(ledgerRecord?.asaasStatus) ||
+        ledgerRecord?.mappedPaymentStatus === 'Quitado'
+      ) {
+        res.status(409).json({
+          error: 'Pagamento já confirmado no Asaas. Não é possível cancelar como não pago.',
+        });
+        return;
+      }
+
+      if (cancelReason === 'expired_2h') {
+        const createdMsFromDoc =
+          typeof orderData.createdAtMs === 'number' && orderData.createdAtMs > 0
+            ? orderData.createdAtMs
+            : orderMeta.createTime
+              ? Date.parse(orderMeta.createTime)
+              : 0;
+        const expiresAtMs =
+          typeof orderData.reservationExpiresAtMs === 'number' &&
+          orderData.reservationExpiresAtMs > 0
+            ? orderData.reservationExpiresAtMs
+            : createdMsFromDoc > 0
+              ? createdMsFromDoc + ORDER_RESERVATION_TTL_MS
+              : 0;
+        if (expiresAtMs > 0 && Date.now() + 5000 < expiresAtMs) {
+          res.status(400).json({
+            error: 'A reserva de 2 horas para este pedido ainda está vigente.',
+          });
+          return;
+        }
+      }
+
+      const asaasPaymentId = String(
+        orderData.asaasChargeId || ledgerRecord?.chargeId || ''
+      ).trim();
+
+      const asaasCancelRes = await cancelAsaasPaymentIfPresent(asaasPaymentId);
+      if (asaasCancelRes.alreadyPaid) {
+        res.status(409).json({
+          error:
+            asaasCancelRes.errorMessage ||
+            'A cobrança já foi paga no Asaas e não pode ser cancelada.',
+        });
+        return;
+      }
+
+      const nextAsaasStatus =
+        cancelReason === 'expired_2h'
+          ? 'CANCELLED_EXPIRED'
+          : asaasCancelRes.asaasStatus || 'DELETED';
+
+      // Gather all sub-orders authorized for this caller
+      const actorField: 'buyerId' | 'resellerId' | 'factoryId' =
+        actorUid === buyerId
+          ? 'buyerId'
+          : actorUid === resellerId
+            ? 'resellerId'
+            : 'factoryId';
+      const queriedSubs = await firestoreRestQuerySubOrdersForActor(
+        orderId,
+        actorField,
+        actorUid,
+        idToken
+      );
+      const subById = new Map<string, QueriedSubOrder>();
+      for (const s of queriedSubs) {
+        subById.set(s.id, s);
+      }
+
+      // If a manufacturer cancels a multi-factory order, probe deterministic sibling sub-order IDs too
+      if (actorField === 'factoryId' && factoryIds.length > subById.size) {
+        const probeCount = Math.min(10, factoryIds.length + 1);
+        for (let idx = 0; idx < probeCount; idx += 1) {
+          const candidateId = `sub_${orderId}_${idx}`;
+          if (subById.has(candidateId)) continue;
+          const subMeta = await firestoreRestGetDocWithMeta('sub_orders', candidateId, idToken);
+          if (subMeta && String(subMeta.data.parentOrderId || '') === orderId) {
+            subById.set(
+              candidateId,
+              parseQueriedSubOrder(candidateId, subMeta.data, subMeta.updateTime)
+            );
+          }
+        }
+      }
+
+      const subOrders = Array.from(subById.values());
+      const boxesToRestoreByProduct = new Map<string, { productName: string; boxes: number }>();
+
+      for (const sub of subOrders) {
+        if (sub.status === 'cancelled') continue;
+        const wasStockDeducted =
+          orderData.stockReserved === true ||
+          sub.status === 'confirmed' ||
+          sub.status === 'partial_confirmed' ||
+          sub.status === 'logistics_sent';
+        if (!wasStockDeducted) continue;
+
+        for (const item of sub.items) {
+          if (item.availability === 'unavailable') continue;
+          if (!VALID_UID_REGEX.test(item.productId) || item.boxesRequested <= 0) continue;
+          const prev = boxesToRestoreByProduct.get(item.productId);
+          boxesToRestoreByProduct.set(item.productId, {
+            productName: item.productName,
+            boxes: (prev?.boxes || 0) + item.boxesRequested,
+          });
+        }
+      }
+
+      const docBase = `projects/${firebaseProjectId}/databases/${firebaseDatabaseId}/documents`;
+      const writes: Array<Record<string, unknown>> = [];
+      const restoredItems: Array<{
+        productId: string;
+        productName: string;
+        boxesRestored: number;
+        newStockBoxes: number;
+      }> = [];
+
+      // 1) Order update (with updateTime precondition so duplicate/concurrent cancellation is impossible)
+      const cancelledAtMs = Date.now();
+      const orderCancelReason =
+        cancelReason === 'expired_2h'
+          ? 'expired_2h'
+          : actorUid === buyerId
+            ? 'buyer_cancelled'
+            : actorUid === resellerId
+              ? 'reseller_cancelled'
+              : 'factory_cancelled';
+
+      writes.push({
+        update: {
+          name: `${docBase}/orders/${orderId}`,
+          fields: {
+            status: encodeFirestoreRestValue('cancelled'),
+            stockRestored: encodeFirestoreRestValue(true),
+            cancelledAtMs: encodeFirestoreRestValue(cancelledAtMs),
+            cancelReason: encodeFirestoreRestValue(orderCancelReason),
+            cancelledByUid: encodeFirestoreRestValue(actorUid),
+            asaasChargeStatus: encodeFirestoreRestValue(nextAsaasStatus),
+          },
+        },
+        updateMask: {
+          fieldPaths: [
+            'status',
+            'stockRestored',
+            'cancelledAtMs',
+            'cancelReason',
+            'cancelledByUid',
+            'asaasChargeStatus',
+          ],
+        },
+        updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        ...(orderMeta.updateTime
+          ? { currentDocument: { updateTime: orderMeta.updateTime } }
+          : {}),
+      });
+
+      // 2) Sub-order updates
+      for (const sub of subOrders) {
+        if (sub.status === 'cancelled' || !VALID_UID_REGEX.test(sub.id)) continue;
+        writes.push({
+          update: {
+            name: `${docBase}/sub_orders/${sub.id}`,
+            fields: {
+              status: encodeFirestoreRestValue('cancelled'),
+            },
+          },
+          updateMask: {
+            fieldPaths: ['status'],
+          },
+          updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        });
+      }
+
+      // 3) Product stock restoration updates (read latest stock + updateTime precondition)
+      for (const [productId, restoreInfo] of boxesToRestoreByProduct.entries()) {
+        const prodMeta = await firestoreRestGetDocWithMeta('products', productId, idToken);
+        if (!prodMeta) continue;
+        const currentStock = Math.max(0, Number(prodMeta.data.stockBoxes ?? 0));
+        const nextStock = Math.min(100000, currentStock + restoreInfo.boxes);
+        writes.push({
+          update: {
+            name: `${docBase}/products/${productId}`,
+            fields: {
+              stockBoxes: encodeFirestoreRestValue(nextStock),
+              isSoldOutToday: encodeFirestoreRestValue(nextStock <= 0),
+              lastStockOrderId: encodeFirestoreRestValue(orderId),
+            },
+          },
+          updateMask: {
+            fieldPaths: ['stockBoxes', 'isSoldOutToday', 'lastStockOrderId'],
+          },
+          updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+          ...(prodMeta.updateTime
+            ? { currentDocument: { updateTime: prodMeta.updateTime } }
+            : {}),
+        });
+        restoredItems.push({
+          productId,
+          productName: restoreInfo.productName,
+          boxesRestored: restoreInfo.boxes,
+          newStockBoxes: nextStock,
+        });
+      }
+
+      // 4) Payment status sync -> 'Cancelado'
+      const paymentIdsToCheck = [
+        `pay_rb_${orderId}`,
+        ...subOrders.map((s) => `pay_fr_${s.id}`),
+      ];
+      for (const payId of paymentIdsToCheck) {
+        const payMeta = await firestoreRestGetDocWithMeta('payments', payId, idToken);
+        if (!payMeta) continue;
+        if (String(payMeta.data.status || '') === 'Cancelado') continue;
+        writes.push({
+          update: {
+            name: `${docBase}/payments/${payId}`,
+            fields: {
+              status: encodeFirestoreRestValue('Cancelado'),
+              asaasChargeStatus: encodeFirestoreRestValue(nextAsaasStatus),
+            },
+          },
+          updateMask: {
+            fieldPaths: ['status', 'asaasChargeStatus'],
+          },
+          updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+        });
+      }
+
+      const commitRes = await firestoreRestCommit(writes, idToken);
+      if (!commitRes.ok) {
+        // Check if another concurrent caller just cancelled this order
+        const recheck = await firestoreRestGetDoc('orders', orderId, idToken);
+        if (recheck && (recheck.status === 'cancelled' || recheck.stockRestored === true)) {
+          res.json({
+            ok: true,
+            alreadyCancelled: true,
+            orderId,
+            asaasCancelled: asaasCancelRes.asaasCancelled,
+            stockRestored: Boolean(recheck.stockRestored),
+            restoredItems: [],
+          });
+          return;
+        }
+        console.error(
+          `[orders-cancel] Firestore commit failed (${commitRes.status}) for ${orderId}:`,
+          commitRes.bodyText.slice(0, 400)
+        );
+        res.status(commitRes.status >= 400 ? commitRes.status : 500).json({
+          error: 'Não foi possível concluir o cancelamento e a devolução do estoque no Firestore.',
+        });
+        return;
+      }
+
+      if (ledgerRecord) {
+        ledgerRecord.asaasStatus = nextAsaasStatus;
+        ledgerRecord.mappedPaymentStatus = 'Aguardando';
+        ledgerRecord.updatedAtMs = cancelledAtMs;
+        saveAsaasLedger();
+      }
+
+      const orderCodeLabel = String(orderData.orderCode || orderId);
+      const notifyTargets = Array.from(
+        new Set([buyerId, resellerId, ...factoryIds].filter((u) => u && u !== actorUid))
+      );
+      for (const targetUid of notifyTargets) {
+        void dispatchPushToUser(
+          targetUid,
+          {
+            type: 'new_message',
+            senderId: 'chatfi-orders',
+            senderName: 'Pedidos ChatFi',
+            body:
+              cancelReason === 'expired_2h'
+                ? `Reserva de 2h do pedido ${orderCodeLabel} expirou. Itens devolvidos ao estoque.`
+                : `Pedido ${orderCodeLabel} foi cancelado e os itens voltaram ao estoque.`,
+            messageType: 'text',
+            messageId: `cancel-${orderId}-${cancelledAtMs}`,
+          },
+          { ttl: 3600, urgency: 'normal' },
+          idToken
+        ).catch(() => {});
+      }
+
+      console.log(
+        `[orders-cancel] orderId=${orderId} reason=${orderCancelReason} asaasCancelled=${asaasCancelRes.asaasCancelled} restoredProducts=${restoredItems.length}`
+      );
+
+      res.json({
+        ok: true,
+        alreadyCancelled: false,
+        orderId,
+        asaasCancelled: asaasCancelRes.asaasCancelled,
+        stockRestored: true,
+        cancelReason: orderCancelReason,
+        restoredItems,
+      });
+    }
+  );
+
+  // Background 60s sweeper: expires unpaid Asaas charges older than 2 hours
+  const sweepExpiredAsaasReservations = async (): Promise<void> => {
+    const now = Date.now();
+    let changed = false;
+    for (const rec of Object.values(asaasLedger.chargesByOrderId)) {
+      if (
+        isAsaasPaidStatus(rec.asaasStatus) ||
+        rec.mappedPaymentStatus === 'Quitado' ||
+        rec.asaasStatus === 'DELETED' ||
+        rec.asaasStatus === 'CANCELLED_EXPIRED' ||
+        rec.asaasStatus === 'CANCELLED'
+      ) {
+        continue;
+      }
+      if (now - rec.createdAtMs < ORDER_RESERVATION_TTL_MS) continue;
+      const cancelRes = await cancelAsaasPaymentIfPresent(rec.chargeId);
+      if (cancelRes.alreadyPaid) {
+        rec.asaasStatus = cancelRes.asaasStatus;
+        rec.mappedPaymentStatus = 'Quitado';
+        rec.confirmedAtMs = rec.confirmedAtMs || now;
+        rec.updatedAtMs = now;
+        changed = true;
+        continue;
+      }
+      rec.asaasStatus = 'CANCELLED_EXPIRED';
+      rec.updatedAtMs = now;
+      changed = true;
+      console.log(
+        `[asaas-expiry] Charge ${rec.chargeId} for order ${rec.orderId} expired after 2h without payment.`
+      );
+    }
+    if (changed) saveAsaasLedger();
+  };
+
+  setInterval(() => {
+    void sweepExpiredAsaasReservations().catch((err) => {
+      console.warn('[asaas-expiry] Sweeper error:', err);
+    });
+  }, 60_000);
 
   // Fallback for PWA Web Share Target if invoked before Service Worker intercepts POST /share-target
   app.all('/share-target', (_req: Request, res: Response) => {

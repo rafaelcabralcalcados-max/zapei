@@ -8,6 +8,7 @@ import {
   CreditCard,
   ExternalLink,
   Eye,
+  HelpCircle,
   Image as ImageIcon,
   Layers,
   Link2,
@@ -23,6 +24,7 @@ import {
   Tag,
   Truck,
   X,
+  XCircle,
 } from 'lucide-react';
 import type {
   CategoryMargin,
@@ -39,8 +41,12 @@ import type {
   UserProfile,
 } from '../types/zapei';
 import {
+  canCancelUnpaidOrder,
   formatAsaasStatusLabel,
+  formatReservationRemaining,
+  getOrderReservationDeadlineMs,
   type AsaasOrderStatusResult,
+  type CancelOrderResult,
   type CreateAsaasChargeResult,
 } from '../lib/asaasService';
 import {
@@ -72,6 +78,7 @@ import {
 import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
+import type { HelpCenterContext } from './HelpCenterModal';
 
 interface ResellerPanelProps {
   profile: UserProfile;
@@ -118,8 +125,13 @@ interface ResellerPanelProps {
     installments: number
   ) => Promise<CreateAsaasChargeResult>;
   onSyncAsaasStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
+  onCancelOrder?: (
+    orderId: string,
+    reason: 'reseller_cancelled'
+  ) => Promise<CancelOrderResult>;
   onOpenMyStorefrontPreview: () => void;
   onOpenBilling: () => void;
+  onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
 type ResellerTab = 'connections' | 'review' | 'orders' | 'finance' | 'identity';
@@ -141,8 +153,10 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   onSendBillingReminder,
   onGenerateAsaasCharge,
   onSyncAsaasStatus,
+  onCancelOrder,
   onOpenMyStorefrontPreview,
   onOpenBilling,
+  onOpenHelp,
 }) => {
   const [activeTab, setActiveTab] = useState<ResellerTab>('connections');
   const [feedback, setFeedback] = useState('');
@@ -190,6 +204,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const [chargeResultsByOrder, setChargeResultsByOrder] = useState<
     Record<string, CreateAsaasChargeResult>
   >({});
+  const [confirmCancelOrderId, setConfirmCancelOrderId] = useState<string | null>(null);
+  const [cancelLoadingId, setCancelLoadingId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
   const [activeModalCharge, setActiveModalCharge] =
     useState<AsaasChargeModalData | null>(null);
 
@@ -242,8 +263,12 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
     [payments, profile.uid]
   );
 
-  const totalReceivable = receivables.reduce((acc, p) => acc + p.amount, 0);
-  const totalPayable = payables.reduce((acc, p) => acc + p.amount, 0);
+  const totalReceivable = receivables
+    .filter((p) => p.status !== 'Cancelado')
+    .reduce((acc, p) => acc + p.amount, 0);
+  const totalPayable = payables
+    .filter((p) => p.status !== 'Cancelado')
+    .reduce((acc, p) => acc + p.amount, 0);
   const estimatedNetProfit = Math.max(0, totalReceivable - totalPayable);
 
   const handleSelectAnchorDiscount = async (pct: number) => {
@@ -924,6 +949,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               const dMode = discountModeMap[order.id] ?? order.discountMode;
               const dValStr =
                 discountValueMap[order.id] ?? String(order.discountValue || '');
+              const orderPayments = payments.filter((p) => p.orderId === order.id);
+              const canCancel = canCancelUnpaidOrder(order, orderPayments);
+              const reservationDeadlineMs = getOrderReservationDeadlineMs(order);
+              const reservationStatus = formatReservationRemaining(
+                reservationDeadlineMs,
+                nowMs
+              );
 
               return (
                 <div
@@ -932,9 +964,17 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
                     <div>
-                      <h3 className="text-base font-bold text-slate-900">
-                        Pedido {order.orderCode} · Cliente: {order.buyerName}
-                      </h3>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-bold text-slate-900">
+                          Pedido {order.orderCode} · Cliente: {order.buyerName}
+                        </h3>
+                        {order.status === 'cancelled' && (
+                          <span className="inline-flex items-center gap-1 rounded-lg bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                            <XCircle className="h-3 w-3" />
+                            Cancelado
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500">
                         Criado em {order.createdAt} · {order.subOrders.length} subpedido(s)
                       </p>
@@ -943,13 +983,104 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       <p className="text-slate-500">
                         Custo Fábricas: <strong>{formatBRL(order.factoryCostTotal)}</strong>
                       </p>
-                      <p className="text-sm font-bold text-[#0E7A34]">
+                      <p
+                        className={`text-sm font-bold ${
+                          order.status === 'cancelled'
+                            ? 'text-slate-400 line-through'
+                            : 'text-[#0E7A34]'
+                        }`}
+                      >
                         Total Cliente: {formatBRL(order.buyerFinalTotal)}
                       </p>
                     </div>
                   </div>
 
+                  {order.status === 'cancelled' && (
+                    <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800">
+                      <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                      <div>
+                        <p className="font-bold">
+                          {order.cancelReason === 'expired_2h'
+                            ? 'Reserva de 2h expirada — Pedido cancelado e estoque devolvido ao fabricante'
+                            : 'Pedido cancelado · Estoque devolvido ao fabricante'}
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-red-700">
+                          Os itens reservados foram liberados automaticamente e eventuais cobranças pendentes no Asaas foram encerradas.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {canCancel && (
+                    <div className="flex flex-col gap-2.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-start gap-2 text-xs text-amber-900">
+                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                        <div>
+                          <p className="font-semibold">
+                            Reserva de estoque válida por 2h enquanto aguarda pagamento
+                          </p>
+                          <p className="font-mono text-[11px] text-amber-800">
+                            {reservationStatus.label}
+                          </p>
+                        </div>
+                      </div>
+
+                      {onCancelOrder && (
+                        confirmCancelOrderId === order.id ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={cancelLoadingId === order.id}
+                              onClick={async () => {
+                                setCancelLoadingId(order.id);
+                                try {
+                                  await onCancelOrder(order.id, 'reseller_cancelled');
+                                  setConfirmCancelOrderId(null);
+                                  setFeedback(
+                                    `Pedido ${order.orderCode} cancelado e estoque devolvido ao fabricante.`
+                                  );
+                                } catch (err) {
+                                  setFeedback(
+                                    err instanceof Error
+                                      ? err.message
+                                      : 'Falha ao cancelar pedido.'
+                                  );
+                                } finally {
+                                  setCancelLoadingId(null);
+                                }
+                              }}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                            >
+                              <XCircle className="h-3.5 w-3.5" />
+                              {cancelLoadingId === order.id
+                                ? 'Cancelando...'
+                                : 'Sim, Cancelar e Liberar Estoque'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={cancelLoadingId === order.id}
+                              onClick={() => setConfirmCancelOrderId(null)}
+                              className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              Manter Pedido
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmCancelOrderId(order.id)}
+                            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white transition hover:bg-red-700"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            Cancelar Pedido e Liberar Estoque
+                          </button>
+                        )
+                      )}
+                    </div>
+                  )}
+
                   {/* Punctual commission-only discount (R04) */}
+                  {order.status !== 'cancelled' && (
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
@@ -1007,9 +1138,10 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       </div>
                     </div>
                   </div>
+                  )}
 
                   {/* Split Breakdown & Asaas Payment Issuance */}
-                  {(() => {
+                  {order.status !== 'cancelled' && (() => {
                     const selectedMethod =
                       orderPayMethodMap[order.id] ?? order.paymentMethod ?? 'pix';
                     const selectedInst =
@@ -1267,7 +1399,9 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                         ? 'Logística enviada à fábrica'
                                         : sub.status === 'dispatched'
                                           ? 'Despachado pela fábrica'
-                                          : sub.status}
+                                          : sub.status === 'cancelled'
+                                            ? 'Cancelado'
+                                            : sub.status}
                               </span>
                             </div>
                             <span className="font-mono text-xs font-bold text-slate-700 tabular-nums">
@@ -1275,7 +1409,12 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                             </span>
                           </div>
 
-                          {!unlocked ? (
+                          {order.status === 'cancelled' || sub.status === 'cancelled' ? (
+                            <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                              <XCircle className="h-4 w-4 shrink-0 text-red-500" />
+                              <span>Subpedido cancelado e itens liberados para o estoque da fábrica.</span>
+                            </div>
+                          ) : !unlocked ? (
                             <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
                               <Lock className="h-4 w-4 shrink-0 text-slate-400" />
                               <span>
@@ -1360,6 +1499,26 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       );
                     })}
                   </div>
+
+                  {onOpenHelp && (
+                    <div className="flex justify-end border-t border-slate-100 pt-2.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenHelp({
+                            defaultTab: 'ticket',
+                            orderId: order.id,
+                            orderCode: order.orderCode,
+                            reason: 'Dúvida sobre Pedido',
+                          })
+                        }
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
+                      >
+                        <HelpCircle className="h-3.5 w-3.5" />
+                        Precisa de ajuda?
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })
@@ -1495,78 +1654,87 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
-                        {onSyncAsaasStatus && linkedOrder?.asaasChargeId && (
-                          <button
-                            type="button"
-                            disabled={syncLoadingId === linkedOrder.id}
-                            onClick={async () => {
-                              setSyncLoadingId(linkedOrder.id);
-                              try {
-                                await onSyncAsaasStatus(linkedOrder);
-                                setFeedback(
-                                  `Status Asaas do pedido ${pay.orderCode} atualizado.`
-                                );
-                              } finally {
-                                setSyncLoadingId(null);
+                        {pay.status === 'Cancelado' || linkedOrder?.status === 'cancelled' ? (
+                          <span className="inline-flex h-9 items-center gap-1 rounded-lg bg-red-100 px-3 text-xs font-bold text-red-700">
+                            <XCircle className="h-3.5 w-3.5" />
+                            Cancelado
+                          </span>
+                        ) : (
+                          <>
+                            {onSyncAsaasStatus && linkedOrder?.asaasChargeId && (
+                              <button
+                                type="button"
+                                disabled={syncLoadingId === linkedOrder.id}
+                                onClick={async () => {
+                                  setSyncLoadingId(linkedOrder.id);
+                                  try {
+                                    await onSyncAsaasStatus(linkedOrder);
+                                    setFeedback(
+                                      `Status Asaas do pedido ${pay.orderCode} atualizado.`
+                                    );
+                                  } finally {
+                                    setSyncLoadingId(null);
+                                  }
+                                }}
+                                className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                              >
+                                <RefreshCw
+                                  className={`h-3.5 w-3.5 ${
+                                    syncLoadingId === linkedOrder.id ? 'animate-spin' : ''
+                                  }`}
+                                />
+                                Verificar Status
+                              </button>
+                            )}
+                            <select
+                              value={pay.method}
+                              onChange={(e) =>
+                                void onUpdatePayment(pay.id, {
+                                  method: e.target.value as PaymentMethod,
+                                })
                               }
-                            }}
-                            className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-                          >
-                            <RefreshCw
-                              className={`h-3.5 w-3.5 ${
-                                syncLoadingId === linkedOrder.id ? 'animate-spin' : ''
-                              }`}
-                            />
-                            Verificar Status
-                          </button>
+                              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"
+                            >
+                              {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
+                                (m) => (
+                                  <option key={m} value={m}>
+                                    {m}
+                                  </option>
+                                )
+                              )}
+                            </select>
+                            <select
+                              value={pay.status}
+                              onChange={(e) =>
+                                void onUpdatePayment(pay.id, {
+                                  status: e.target.value as PaymentStatus,
+                                })
+                              }
+                              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
+                            >
+                              {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso', 'Cancelado'] as PaymentStatus[]).map(
+                                (s) => (
+                                  <option key={s} value={s}>
+                                    {s}
+                                  </option>
+                                )
+                              )}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await onSendBillingReminder(pay);
+                                setFeedback(
+                                  `Lembrete financeiro do pedido ${pay.orderCode} enviado no chat de ${pay.counterpartyName}.`
+                                );
+                              }}
+                              className="inline-flex h-9 items-center gap-1 rounded-lg bg-[#F97316] px-3 text-xs font-semibold text-white hover:bg-orange-600"
+                            >
+                              <Send className="h-3.5 w-3.5" />
+                              Cobrar no Chat
+                            </button>
+                          </>
                         )}
-                        <select
-                          value={pay.method}
-                          onChange={(e) =>
-                            void onUpdatePayment(pay.id, {
-                              method: e.target.value as PaymentMethod,
-                            })
-                          }
-                          className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs"
-                        >
-                          {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
-                            (m) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            )
-                          )}
-                        </select>
-                        <select
-                          value={pay.status}
-                          onChange={(e) =>
-                            void onUpdatePayment(pay.id, {
-                              status: e.target.value as PaymentStatus,
-                            })
-                          }
-                          className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
-                        >
-                          {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
-                            (s) => (
-                              <option key={s} value={s}>
-                                {s}
-                              </option>
-                            )
-                          )}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await onSendBillingReminder(pay);
-                            setFeedback(
-                              `Lembrete financeiro do pedido ${pay.orderCode} enviado no chat de ${pay.counterpartyName}.`
-                            );
-                          }}
-                          className="inline-flex h-9 items-center gap-1 rounded-lg bg-[#F97316] px-3 text-xs font-semibold text-white hover:bg-orange-600"
-                        >
-                          <Send className="h-3.5 w-3.5" />
-                          Cobrar no Chat
-                        </button>
                       </div>
                     </div>
                   );

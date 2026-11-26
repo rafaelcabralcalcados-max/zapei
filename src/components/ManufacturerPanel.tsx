@@ -8,6 +8,7 @@ import {
   Clock,
   CreditCard,
   Factory,
+  HelpCircle,
   Minus,
   Package,
   Plus,
@@ -58,10 +59,18 @@ import {
   PIX_MIN_GROSS_BRL,
 } from '../lib/splitCalculator';
 import { compressImageFileToDataUrl } from '../lib/phoneUtils';
-import { formatAsaasStatusLabel, type AsaasOrderStatusResult } from '../lib/asaasService';
+import {
+  canCancelUnpaidOrder,
+  formatAsaasStatusLabel,
+  formatReservationRemaining,
+  getOrderReservationDeadlineMs,
+  type AsaasOrderStatusResult,
+  type CancelOrderResult,
+} from '../lib/asaasService';
 import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
+import type { HelpCenterContext } from './HelpCenterModal';
 
 interface ManufacturerPanelProps {
   profile: UserProfile;
@@ -101,7 +110,12 @@ interface ManufacturerPanelProps {
     paymentId: string,
     updates: { method?: PaymentMethod; status?: PaymentStatus }
   ) => Promise<void>;
+  onCancelOrder?: (
+    orderId: string,
+    reason: 'factory_cancelled'
+  ) => Promise<CancelOrderResult>;
   onOpenBilling: () => void;
+  onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
 type FactoryTab = 'catalog' | 'conference' | 'dispatch' | 'finance' | 'policy';
@@ -121,11 +135,20 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   onConfirmConference,
   onDispatchSubOrder,
   onUpdatePayment,
+  onCancelOrder,
   onOpenBilling,
+  onOpenHelp,
 }) => {
   const [activeTab, setActiveTab] = useState<FactoryTab>('catalog');
   const [feedback, setFeedback] = useState('');
   const [syncingPayId, setSyncingPayId] = useState<string | null>(null);
+  const [confirmCancelOrderId, setConfirmCancelOrderId] = useState<string | null>(null);
+  const [cancelLoadingId, setCancelLoadingId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   // F01 Policy state
   const [factoryName, setFactoryName] = useState(profile.factoryName || profile.name);
@@ -233,22 +256,27 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 
   const pendingConference = useMemo(
     () =>
-      mySubOrders.filter(
-        (s) => s.status === 'pending_inquiry' || s.status === 'checking_stock'
-      ),
-    [mySubOrders]
+      mySubOrders.filter((s) => {
+        const parent = orders.find((o) => o.id === s.parentOrderId);
+        if (parent?.status === 'cancelled') return false;
+        return s.status === 'pending_inquiry' || s.status === 'checking_stock';
+      }),
+    [mySubOrders, orders]
   );
 
   const dispatchQueue = useMemo(
     () =>
-      mySubOrders.filter(
-        (s) =>
+      mySubOrders.filter((s) => {
+        const parent = orders.find((o) => o.id === s.parentOrderId);
+        if (parent?.status === 'cancelled') return false;
+        return (
           s.status === 'confirmed' ||
           s.status === 'partial_confirmed' ||
           s.status === 'logistics_sent' ||
           s.status === 'dispatched'
-      ),
-    [mySubOrders]
+        );
+      }),
+    [mySubOrders, orders]
   );
 
   const myPayments = useMemo(
@@ -260,7 +288,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   );
 
   const totalToReceive = myPayments
-    .filter((p) => p.status !== 'Quitado')
+    .filter((p) => p.status !== 'Quitado' && p.status !== 'Cancelado')
     .reduce((acc, p) => acc + p.amount, 0);
   const totalReceived = myPayments
     .filter((p) => p.status === 'Quitado')
@@ -1280,6 +1308,23 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           ) : (
             pendingConference.map((sub) => {
               const decisions = confDecisions[sub.id] ?? {};
+              const linkedOrder = orders.find((o) => o.id === sub.parentOrderId);
+              const orderPayments = payments.filter(
+                (p) => p.orderId === sub.parentOrderId
+              );
+              const canCancel =
+                Boolean(onCancelOrder) &&
+                (linkedOrder
+                  ? canCancelUnpaidOrder(linkedOrder, orderPayments)
+                  : !orderPayments.some((p) => p.status === 'Quitado'));
+              const reservationDeadlineMs = linkedOrder
+                ? getOrderReservationDeadlineMs(linkedOrder)
+                : null;
+              const reservationStatus = formatReservationRemaining(
+                reservationDeadlineMs,
+                nowMs
+              );
+
               return (
                 <div
                   key={sub.id}
@@ -1312,6 +1357,73 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       </span>
                     </div>
                   </div>
+
+                  {canCancel && (
+                    <div className="flex flex-col gap-2.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-start gap-2 text-xs text-amber-900">
+                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                        <div>
+                          <p className="font-semibold">
+                            Reserva de estoque válida por 2h enquanto aguarda pagamento
+                          </p>
+                          <p className="font-mono text-[11px] text-amber-800">
+                            {reservationStatus.label}
+                          </p>
+                        </div>
+                      </div>
+
+                      {confirmCancelOrderId === sub.parentOrderId ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={cancelLoadingId === sub.parentOrderId}
+                            onClick={async () => {
+                              if (!onCancelOrder) return;
+                              setCancelLoadingId(sub.parentOrderId);
+                              try {
+                                await onCancelOrder(sub.parentOrderId, 'factory_cancelled');
+                                setConfirmCancelOrderId(null);
+                                setFeedback(
+                                  `Pedido ${sub.subOrderCode} cancelado e itens devolvidos ao estoque.`
+                                );
+                              } catch (err) {
+                                setFeedback(
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Não foi possível cancelar o pedido.'
+                                );
+                              } finally {
+                                setCancelLoadingId(null);
+                              }
+                            }}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            {cancelLoadingId === sub.parentOrderId
+                              ? 'Cancelando...'
+                              : 'Sim, Cancelar e Liberar Estoque'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={cancelLoadingId === sub.parentOrderId}
+                            onClick={() => setConfirmCancelOrderId(null)}
+                            className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Voltar
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmCancelOrderId(sub.parentOrderId)}
+                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white transition hover:bg-red-700"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          Cancelar Pedido e Liberar Estoque
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   <div className="space-y-2.5">
                     {sub.items.map((item) => {
@@ -1395,8 +1507,30 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     }}
                     className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
                   >
-                    Confirmar Conferência e Baixar Estoque
+                    {linkedOrder?.stockReserved
+                      ? 'Confirmar Conferência e Disponibilidade'
+                      : 'Confirmar Conferência e Baixar Estoque'}
                   </button>
+
+                  {onOpenHelp && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenHelp({
+                            defaultTab: 'ticket',
+                            orderId: sub.parentOrderId,
+                            orderCode: sub.subOrderCode,
+                            reason: 'Dúvida sobre Pedido',
+                          })
+                        }
+                        className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
+                      >
+                        <HelpCircle className="h-3.5 w-3.5" />
+                        Precisa de ajuda?
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })
@@ -1418,7 +1552,26 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               </p>
             </div>
           ) : (
-            dispatchQueue.map((sub) => (
+            dispatchQueue.map((sub) => {
+              const linkedOrder = orders.find((o) => o.id === sub.parentOrderId);
+              const orderPayments = payments.filter(
+                (p) => p.orderId === sub.parentOrderId
+              );
+              const canCancel =
+                Boolean(onCancelOrder) &&
+                sub.status !== 'dispatched' &&
+                (linkedOrder
+                  ? canCancelUnpaidOrder(linkedOrder, orderPayments)
+                  : !orderPayments.some((p) => p.status === 'Quitado'));
+              const reservationDeadlineMs = linkedOrder
+                ? getOrderReservationDeadlineMs(linkedOrder)
+                : null;
+              const reservationStatus = formatReservationRemaining(
+                reservationDeadlineMs,
+                nowMs
+              );
+
+              return (
               <div
                 key={sub.id}
                 className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3"
@@ -1440,6 +1593,73 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     {formatBRL(sub.factoryCost)}
                   </span>
                 </div>
+
+                {canCancel && (
+                  <div className="flex flex-col gap-2.5 rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-2 text-xs text-amber-900">
+                      <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                      <div>
+                        <p className="font-semibold">
+                          Reserva de estoque válida por 2h enquanto aguarda pagamento
+                        </p>
+                        <p className="font-mono text-[11px] text-amber-800">
+                          {reservationStatus.label}
+                        </p>
+                      </div>
+                    </div>
+
+                    {confirmCancelOrderId === sub.parentOrderId ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={cancelLoadingId === sub.parentOrderId}
+                          onClick={async () => {
+                            if (!onCancelOrder) return;
+                            setCancelLoadingId(sub.parentOrderId);
+                            try {
+                              await onCancelOrder(sub.parentOrderId, 'factory_cancelled');
+                              setConfirmCancelOrderId(null);
+                              setFeedback(
+                                `Pedido ${sub.subOrderCode} cancelado e itens devolvidos ao estoque.`
+                              );
+                            } catch (err) {
+                              setFeedback(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'Não foi possível cancelar o pedido.'
+                              );
+                            } finally {
+                              setCancelLoadingId(null);
+                            }
+                          }}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          {cancelLoadingId === sub.parentOrderId
+                            ? 'Cancelando...'
+                            : 'Sim, Cancelar e Liberar Estoque'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={cancelLoadingId === sub.parentOrderId}
+                          onClick={() => setConfirmCancelOrderId(null)}
+                          className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Voltar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmCancelOrderId(sub.parentOrderId)}
+                        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white transition hover:bg-red-700"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Cancelar Pedido e Liberar Estoque
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {sub.logisticsAddress && (
                   <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-700">
@@ -1508,8 +1728,29 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     </button>
                   </div>
                 )}
+
+                {onOpenHelp && (
+                  <div className="flex justify-end border-t border-slate-100 pt-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenHelp({
+                          defaultTab: 'ticket',
+                          orderId: sub.parentOrderId,
+                          orderCode: sub.subOrderCode,
+                          reason: 'Dúvida sobre Pedido',
+                        })
+                      }
+                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
+                    >
+                      <HelpCircle className="h-3.5 w-3.5" />
+                      Precisa de ajuda?
+                    </button>
+                  </div>
+                )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
@@ -1631,65 +1872,92 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {onSyncAsaasStatus && linkedOrder && (
+                      {pay.status === 'Cancelado' || linkedOrder?.status === 'cancelled' ? (
+                        <span className="inline-flex h-9 items-center gap-1 rounded-lg bg-red-100 px-3 text-xs font-bold text-red-700">
+                          <XCircle className="h-3.5 w-3.5" />
+                          Cancelado
+                        </span>
+                      ) : (
+                        <>
+                          {onSyncAsaasStatus && linkedOrder && (
+                            <button
+                              type="button"
+                              disabled={syncingPayId === pay.id}
+                              onClick={async () => {
+                                setSyncingPayId(pay.id);
+                                try {
+                                  await onSyncAsaasStatus(linkedOrder);
+                                  setFeedback(
+                                    `Status Asaas de ${pay.subOrderCode || pay.orderCode} atualizado.`
+                                  );
+                                } finally {
+                                  setSyncingPayId(null);
+                                }
+                              }}
+                              className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                            >
+                              <RefreshCw
+                                className={`h-3.5 w-3.5 ${
+                                  syncingPayId === pay.id ? 'animate-spin' : ''
+                                }`}
+                              />
+                              Verificar Asaas
+                            </button>
+                          )}
+                          <select
+                            value={pay.method}
+                            onChange={(e) =>
+                              void onUpdatePayment(pay.id, {
+                                method: e.target.value as PaymentMethod,
+                              })
+                            }
+                            className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700"
+                          >
+                            {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
+                              (m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              )
+                            )}
+                          </select>
+                          <select
+                            value={pay.status}
+                            onChange={(e) =>
+                              void onUpdatePayment(pay.id, {
+                                status: e.target.value as PaymentStatus,
+                              })
+                            }
+                            className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800"
+                          >
+                            {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso', 'Cancelado'] as PaymentStatus[]).map(
+                              (s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </>
+                      )}
+
+                      {onOpenHelp && (
                         <button
                           type="button"
-                          disabled={syncingPayId === pay.id}
-                          onClick={async () => {
-                            setSyncingPayId(pay.id);
-                            try {
-                              await onSyncAsaasStatus(linkedOrder);
-                              setFeedback(
-                                `Status Asaas de ${pay.subOrderCode || pay.orderCode} atualizado.`
-                              );
-                            } finally {
-                              setSyncingPayId(null);
-                            }
-                          }}
-                          className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                          onClick={() =>
+                            onOpenHelp({
+                              defaultTab: 'ticket',
+                              orderId: pay.orderId,
+                              orderCode: pay.subOrderCode || pay.orderCode,
+                              reason: 'Problema com Pagamento / Pix',
+                            })
+                          }
+                          className="inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
                         >
-                          <RefreshCw
-                            className={`h-3.5 w-3.5 ${
-                              syncingPayId === pay.id ? 'animate-spin' : ''
-                            }`}
-                          />
-                          Verificar Asaas
+                          <HelpCircle className="h-3.5 w-3.5" />
+                          Precisa de ajuda?
                         </button>
                       )}
-                      <select
-                        value={pay.method}
-                        onChange={(e) =>
-                          void onUpdatePayment(pay.id, {
-                            method: e.target.value as PaymentMethod,
-                          })
-                        }
-                        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700"
-                      >
-                        {(['À vista', 'Cartão', 'Cheque', 'Notinha'] as PaymentMethod[]).map(
-                          (m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          )
-                        )}
-                      </select>
-                      <select
-                        value={pay.status}
-                        onChange={(e) =>
-                          void onUpdatePayment(pay.id, {
-                            status: e.target.value as PaymentStatus,
-                          })
-                        }
-                        className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800"
-                      >
-                        {(['Aguardando', 'Parcial', 'Quitado', 'Em Atraso'] as PaymentStatus[]).map(
-                          (s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          )
-                        )}
-                      </select>
                     </div>
                   </div>
                 );

@@ -186,6 +186,7 @@
         "imageUrl": { "type": "string", "minLength": 1, "maxLength": 350000 },
         "isSoldOutToday": { "type": "boolean" },
         "moderationStatus": { "type": "string", "enum": ["approved", "flagged"] },
+        "lastStockOrderId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -222,6 +223,13 @@
         "asaasChargeStatus": { "type": "string", "maxLength": 40 },
         "asaasInvoiceUrl": { "type": "string", "maxLength": 500 },
         "asaasPixPayload": { "type": "string", "maxLength": 1000 },
+        "createdAtMs": { "type": "number" },
+        "stockReserved": { "type": "boolean" },
+        "stockRestored": { "type": "boolean" },
+        "reservationExpiresAtMs": { "type": "number" },
+        "cancelledAtMs": { "type": "number" },
+        "cancelReason": { "type": "string", "maxLength": 80 },
+        "cancelledByUid": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -277,7 +285,7 @@
         "asaasChargeId": { "type": "string", "maxLength": 128 },
         "asaasChargeStatus": { "type": "string", "maxLength": 40 },
         "method": { "type": "string", "enum": ["À vista", "Cartão", "Cheque", "Notinha"] },
-        "status": { "type": "string", "enum": ["Aguardando", "Parcial", "Quitado", "Em Atraso"] },
+        "status": { "type": "string", "enum": ["Aguardando", "Parcial", "Quitado", "Em Atraso", "Cancelado"] },
         "dueDate": { "type": "string", "maxLength": 24 },
         "lastReminderSent": { "type": "string", "maxLength": 40 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -427,6 +435,26 @@
         "updatedAtMs": { "type": "number" }
       },
       "required": ["ownerId", "ciphertext", "iv", "authTag", "deviceCount", "updatedAtMs"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "In-app support ticket created by a ChatFi user with optional linked order.",
+      "type": "object",
+      "properties": {
+        "ticketCode": { "type": "string", "minLength": 4, "maxLength": 24 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "userVirtualLine": { "type": "string", "maxLength": 32 },
+        "userRole": { "type": "string", "enum": ["buyer", "reseller", "manufacturer"] },
+        "reason": { "type": "string", "enum": ["Problema com Pagamento / Pix", "Dúvida sobre Pedido", "Configuração de Wallet ID Asaas", "Denúncia / Segurança", "Outros"] },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderCode": { "type": "string", "maxLength": 32 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "status": { "type": "string", "enum": ["Aberto", "Em análise", "Resolvido"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ticketCode", "userId", "userName", "userRole", "reason", "description", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -505,6 +533,10 @@
     "/calls/{callId}/calleeCandidates/{candidateId}": {
       "schema": { "$ref": "#/entities/IceCandidate" },
       "description": "WebRTC ICE candidates sent by the callee."
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "In-app help and support tickets submitted by ChatFi users."
     }
   }
 }

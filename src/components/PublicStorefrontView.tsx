@@ -7,6 +7,7 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  HelpCircle,
   Minus,
   Package,
   Plus,
@@ -19,6 +20,7 @@ import {
   Tag,
   Trash2,
   X,
+  XCircle,
 } from 'lucide-react';
 import type {
   CartItem,
@@ -50,8 +52,12 @@ import {
 } from '../lib/categories';
 import { CategoryIcon } from '../lib/categoryIcons';
 import {
+  canCancelUnpaidOrder,
   formatAsaasStatusLabel,
+  formatReservationRemaining,
+  getOrderReservationDeadlineMs,
   type AsaasOrderStatusResult,
+  type CancelOrderResult,
   type CreateAsaasChargeResult,
 } from '../lib/asaasService';
 import {
@@ -71,6 +77,7 @@ import {
   type AsaasChargeModalData,
 } from './AsaasChargeModal';
 import { GradeVisualGrid } from './GradeVisualGrid';
+import type { HelpCenterContext } from './HelpCenterModal';
 
 export interface PublicStorefrontOwner {
   uid: string;
@@ -118,6 +125,11 @@ interface PublicStorefrontViewProps {
     installments: number
   ) => Promise<CreateAsaasChargeResult>;
   onSyncOrderStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
+  onCancelOrder?: (
+    orderId: string,
+    reason: 'buyer_cancelled'
+  ) => Promise<CancelOrderResult>;
+  onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
 export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
@@ -131,6 +143,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   onCheckoutMixedOrder,
   onGenerateOrderCharge,
   onSyncOrderStatus,
+  onCancelOrder,
+  onOpenHelp,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<'Todas' | MainCategoryId>('Todas');
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('Todas');
@@ -153,6 +167,13 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const [chargeResultsByOrder, setChargeResultsByOrder] = useState<
     Record<string, CreateAsaasChargeResult>
   >({});
+  const [confirmCancelOrderId, setConfirmCancelOrderId] = useState<string | null>(null);
+  const [cancelLoadingOrderId, setCancelLoadingOrderId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
   const [activeModalCharge, setActiveModalCharge] =
     useState<AsaasChargeModalData | null>(null);
   const [selectedProductListing, setSelectedProductListing] =
@@ -1233,6 +1254,13 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                   );
                   const canPayOrder =
                     order.status !== 'cancelled' && order.status !== 'completed';
+                  const canBuyerCancel =
+                    Boolean(onCancelOrder) && canCancelUnpaidOrder(order);
+                  const reservationDeadlineMs = getOrderReservationDeadlineMs(order);
+                  const reservationStatus = formatReservationRemaining(
+                    reservationDeadlineMs,
+                    nowMs
+                  );
 
                   return (
                     <div
@@ -1288,6 +1316,22 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         <p className="text-xs font-semibold text-[#0E7A34]">
                           Desconto aplicado: -{formatBRL(order.discountAmount)}
                         </p>
+                      )}
+
+                      {order.status === 'cancelled' && (
+                        <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800">
+                          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                          <div>
+                            <p className="font-bold">
+                              {order.cancelReason === 'expired_2h'
+                                ? 'Reserva expirada (2h) — Compra cancelada e estoque liberado'
+                                : 'Compra cancelada · Estoque liberado'}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-red-700">
+                              A cobrança pendente foi cancelada e os itens retornaram ao catálogo disponível.
+                            </p>
+                          </div>
+                        </div>
                       )}
 
                       {/* Checkout e Pagamento no Pedido (Comprador) */}
@@ -1535,6 +1579,71 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                               </button>
                             )}
                           </div>
+
+                          {canBuyerCancel && (
+                            <div className="mt-2 flex flex-col gap-2 border-t border-emerald-200/70 pt-2.5 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                                <Clock className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                <span>
+                                  Reserva de estoque válida por 2h enquanto aguarda pagamento{' '}
+                                  <strong className="font-mono text-slate-800">
+                                    ({reservationStatus.label})
+                                  </strong>
+                                </span>
+                              </div>
+
+                              {confirmCancelOrderId === order.id ? (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={cancelLoadingOrderId === order.id}
+                                    onClick={async () => {
+                                      if (!onCancelOrder) return;
+                                      setCancelLoadingOrderId(order.id);
+                                      try {
+                                        await onCancelOrder(order.id, 'buyer_cancelled');
+                                        setConfirmCancelOrderId(null);
+                                        setOrderNotice(
+                                          `Compra ${order.orderCode} cancelada e estoque liberado.`
+                                        );
+                                      } catch (err) {
+                                        setOrderNotice(
+                                          err instanceof Error
+                                            ? err.message
+                                            : 'Não foi possível cancelar o pedido.'
+                                        );
+                                      } finally {
+                                        setCancelLoadingOrderId(null);
+                                      }
+                                    }}
+                                    className="inline-flex h-9 items-center gap-1 rounded-lg bg-red-600 px-3 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                                  >
+                                    <XCircle className="h-3.5 w-3.5" />
+                                    {cancelLoadingOrderId === order.id
+                                      ? 'Cancelando...'
+                                      : 'Confirmar Cancelamento'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={cancelLoadingOrderId === order.id}
+                                    onClick={() => setConfirmCancelOrderId(null)}
+                                    className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                  >
+                                    Manter Compra
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmCancelOrderId(order.id)}
+                                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 text-[11px] font-semibold text-red-700 transition hover:bg-red-50"
+                                >
+                                  <XCircle className="h-3.5 w-3.5" />
+                                  Desistir / Cancelar Compra
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </section>
                       )}
 
@@ -1557,7 +1666,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         ? 'Preparando despacho'
                                         : sub.status === 'dispatched'
                                           ? 'Despachado'
-                                          : sub.status}
+                                          : sub.status === 'cancelled'
+                                            ? 'Cancelado'
+                                            : sub.status}
                               </span>
                             </div>
                             {sub.status === 'dispatched' && sub.receiptNote && (
@@ -1568,6 +1679,26 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           </div>
                         ))}
                       </div>
+
+                      {onOpenHelp && (
+                        <div className="flex justify-end border-t border-slate-100 pt-2.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onOpenHelp({
+                                defaultTab: 'ticket',
+                                orderId: order.id,
+                                orderCode: order.orderCode,
+                                reason: 'Dúvida sobre Pedido',
+                              })
+                            }
+                            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
+                          >
+                            <HelpCircle className="h-3.5 w-3.5" />
+                            Precisa de ajuda?
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })

@@ -63,6 +63,9 @@ import type {
   SubOrder,
   SubOrderLineItem,
   SubscriptionStatus,
+  SupportTicket,
+  SupportTicketReason,
+  SupportTicketStatus,
   UserProfile,
 } from '../types/zapei';
 import { buildDefaultMarginsMap } from './categories';
@@ -1910,6 +1913,14 @@ export function subscribeOrdersAndSubOrders(
       asaasChargeStatus: d.asaasChargeStatus ? String(d.asaasChargeStatus) : undefined,
       asaasInvoiceUrl: d.asaasInvoiceUrl ? String(d.asaasInvoiceUrl) : undefined,
       asaasPixPayload: d.asaasPixPayload ? String(d.asaasPixPayload) : undefined,
+      createdAtMs: typeof d.createdAtMs === 'number' ? d.createdAtMs : undefined,
+      stockReserved: typeof d.stockReserved === 'boolean' ? d.stockReserved : undefined,
+      stockRestored: typeof d.stockRestored === 'boolean' ? d.stockRestored : undefined,
+      reservationExpiresAtMs:
+        typeof d.reservationExpiresAtMs === 'number' ? d.reservationExpiresAtMs : undefined,
+      cancelledAtMs: typeof d.cancelledAtMs === 'number' ? d.cancelledAtMs : undefined,
+      cancelReason: d.cancelReason ? String(d.cancelReason) : undefined,
+      cancelledByUid: d.cancelledByUid ? String(d.cancelledByUid) : undefined,
     };
   };
 
@@ -1974,6 +1985,22 @@ export async function createRealMixedOrder(params: {
 }): Promise<void> {
   const factoryIds = Array.from(new Set(params.subOrders.map((s) => s.factoryId)));
 
+  const nowMs = Date.now();
+  const reservationExpiresAtMs = nowMs + 2 * 60 * 60 * 1000;
+
+  // Aggregate requested quantities per product so checkout atomically reserves stock for 2h
+  const requestedByProduct = new Map<string, { qty: number; name: string }>();
+  for (const sub of params.subOrders) {
+    for (const item of sub.items) {
+      if (!item.productId || item.boxesRequested <= 0) continue;
+      const prev = requestedByProduct.get(item.productId);
+      requestedByProduct.set(item.productId, {
+        qty: (prev?.qty || 0) + item.boxesRequested,
+        name: item.productName || prev?.name || 'Produto',
+      });
+    }
+  }
+
   try {
     const orderDoc: Record<string, unknown> = {
       orderCode: params.orderCode,
@@ -1989,6 +2016,10 @@ export async function createRealMixedOrder(params: {
       buyerSubtotal: params.buyerSubtotal,
       buyerFinalTotal: params.buyerFinalTotal,
       factoryCostTotal: params.factoryCostTotal,
+      createdAtMs: nowMs,
+      stockReserved: true,
+      stockRestored: false,
+      reservationExpiresAtMs,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -2011,7 +2042,45 @@ export async function createRealMixedOrder(params: {
     if (typeof params.splitResellerNet === 'number') {
       orderDoc.splitResellerNet = params.splitResellerNet;
     }
-    await setDoc(doc(db, 'orders', params.orderId), orderDoc);
+
+    await runTransaction(db, async (tx) => {
+      const productUpdates: Array<{
+        ref: ReturnType<typeof doc>;
+        nextStock: number;
+        soldOut: boolean;
+      }> = [];
+
+      for (const [productId, reqInfo] of requestedByProduct.entries()) {
+        const prodRef = doc(db, 'products', productId);
+        const prodSnap = await tx.get(prodRef);
+        if (!prodSnap.exists()) {
+          throw new Error(`Produto "${reqInfo.name}" não está mais disponível no catálogo.`);
+        }
+        const pData = prodSnap.data() as Record<string, unknown>;
+        const currentStock = Math.max(0, Number(pData.stockBoxes ?? 0));
+        if (currentStock < reqInfo.qty) {
+          throw new Error(
+            `Estoque insuficiente para "${reqInfo.name}". Disponível: ${currentStock}.`
+          );
+        }
+        const nextStock = currentStock - reqInfo.qty;
+        productUpdates.push({
+          ref: prodRef,
+          nextStock,
+          soldOut: nextStock <= 0 ? true : Boolean(pData.isSoldOutToday),
+        });
+      }
+
+      tx.set(doc(db, 'orders', params.orderId), orderDoc);
+      for (const pu of productUpdates) {
+        tx.update(pu.ref, {
+          stockBoxes: pu.nextStock,
+          isSoldOutToday: pu.soldOut,
+          lastStockOrderId: params.orderId,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `orders/${params.orderId}`);
   }
@@ -2128,6 +2197,7 @@ export async function updateRealOrder(
     minimumFeeApplied: boolean;
     splitFactoryNet: number;
     splitResellerNet: number;
+    stockReserved: boolean;
     asaasChargeId: string;
     asaasChargeStatus: string;
     asaasInvoiceUrl: string;
@@ -2948,5 +3018,100 @@ export async function takeOverAsPrimaryDevice(
     await deleteDoc(doc(db, 'auth_requests', pendingRequestId)).catch(() => {});
   }
 }
+
+// --- HELP CENTER & SUPPORT TICKETS (support_tickets) ---
+
+export async function createSupportTicket(params: {
+  userId: string;
+  userName: string;
+  userVirtualLine?: string;
+  userRole: CommercialMode;
+  reason: SupportTicketReason;
+  orderId?: string;
+  orderCode?: string;
+  description: string;
+}): Promise<{ id: string; ticketCode: string }> {
+  const ticketId = `sup_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const ticketCode = `SUP-${Math.floor(1000 + Math.random() * 9000)}`;
+  const cleanDescription = params.description.trim().slice(0, 2000);
+
+  const payload: Record<string, unknown> = {
+    ticketCode,
+    userId: params.userId,
+    userName: (params.userName.trim() || 'Usuário ChatFi').slice(0, 80),
+    userRole: params.userRole,
+    reason: params.reason,
+    description: cleanDescription,
+    status: 'Aberto',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (params.userVirtualLine && params.userVirtualLine.trim()) {
+    payload.userVirtualLine = params.userVirtualLine.trim().slice(0, 32);
+  }
+  if (params.orderId && params.orderId.trim()) {
+    payload.orderId = params.orderId.trim().slice(0, 128);
+  }
+  if (params.orderCode && params.orderCode.trim()) {
+    payload.orderCode = params.orderCode.trim().slice(0, 32);
+  }
+
+  try {
+    await setDoc(doc(db, 'support_tickets', ticketId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `support_tickets/${ticketId}`);
+  }
+
+  return { id: ticketId, ticketCode };
+}
+
+export function subscribeUserSupportTickets(
+  uid: string,
+  callback: (tickets: SupportTicket[]) => void
+): () => void {
+  const qTickets = query(collection(db, 'support_tickets'), where('userId', '==', uid));
+  return onSnapshot(
+    qTickets,
+    (snap) => {
+      const list: SupportTicket[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const createdAtTs = d.createdAt as Timestamp | undefined;
+        const updatedAtTs = d.updatedAt as Timestamp | undefined;
+        return {
+          id: docSnap.id,
+          ticketCode: String(d.ticketCode || docSnap.id),
+          userId: String(d.userId || uid),
+          userName: String(d.userName || ''),
+          userVirtualLine: d.userVirtualLine ? String(d.userVirtualLine) : undefined,
+          userRole: (d.userRole as CommercialMode) ?? 'buyer',
+          reason: (d.reason as SupportTicketReason) ?? 'Outros',
+          orderId: d.orderId ? String(d.orderId) : undefined,
+          orderCode: d.orderCode ? String(d.orderCode) : undefined,
+          description: String(d.description || ''),
+          status: (d.status as SupportTicketStatus) ?? 'Aberto',
+          createdAt: formatDateTimePtBr(createdAtTs),
+          updatedAt: formatDateTimePtBr(updatedAtTs),
+          createdAtMs: timestampToMs(createdAtTs),
+        };
+      });
+      list.sort((a, b) => b.createdAtMs - a.createdAtMs);
+      callback(list);
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, 'support_tickets')
+  );
+}
+
+export async function resolveSupportTicket(ticketId: string): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'support_tickets', ticketId), {
+      status: 'Resolvido',
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `support_tickets/${ticketId}`);
+  }
+}
+
 
 

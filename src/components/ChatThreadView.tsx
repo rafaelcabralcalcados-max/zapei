@@ -102,6 +102,7 @@ interface ChatThreadViewProps {
   onOpenStorefront: () => void;
   onInspectOrder: (orderId?: string) => void;
   onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
+  prefilledDraft?: { id: string; text: string } | null;
 }
 
 const QUICK_EMOJIS = [
@@ -400,6 +401,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   onOpenStorefront,
   onInspectOrder,
   onPreviewAvatar,
+  prefilledDraft,
 }) => {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -408,6 +410,14 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const [mediaError, setMediaError] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
+  const appliedPrefillIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!prefilledDraft || !prefilledDraft.text.trim()) return;
+    if (appliedPrefillIdRef.current === prefilledDraft.id) return;
+    appliedPrefillIdRef.current = prefilledDraft.id;
+    setDraft(prefilledDraft.text);
+  }, [prefilledDraft]);
 
   useEffect(() => {
     const id = window.setInterval(() => setPresenceNowMs(Date.now()), 30_000);

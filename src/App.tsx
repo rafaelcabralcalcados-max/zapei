@@ -22,6 +22,7 @@ import {
   createRealFactoryConnection,
   createRealMixedOrder,
   createRealProduct,
+  createSupportTicket,
   db,
   deletePhonebookContact,
   disconnectUserDevice,
@@ -35,6 +36,7 @@ import {
   registerOrUpdateUserProfile,
   rejectDeviceAuthRequest,
   resyncAllPhonebookContacts,
+  resolveSupportTicket,
   saveRealContactToPhonebook,
   sendRealChatMessage,
   signOutFirebase,
@@ -52,6 +54,7 @@ import {
   subscribeUserContacts,
   subscribeUserDevices,
   subscribeUserProfile,
+  subscribeUserSupportTickets,
   syncPublicDirectoryEntry,
   takeOverAsPrimaryDevice,
   updateRealConnection,
@@ -115,11 +118,21 @@ import {
 import { formatBRL, getInitials } from './lib/gradeParser';
 import { calculateOrderSplit } from './lib/splitCalculator';
 import {
+  canCancelUnpaidOrder,
+  cancelOrderAndReleaseStock,
   createAsaasSplitCharge,
   fetchAsaasOrderStatus,
+  getOrderReservationDeadlineMs,
   type AsaasOrderStatusResult,
+  type CancelOrderResult,
   type CreateAsaasChargeResult,
+  type OrderCancelReason,
 } from './lib/asaasService';
+import {
+  OFFICIAL_SUPPORT_NAME,
+  OFFICIAL_SUPPORT_UID,
+  OFFICIAL_SUPPORT_VIRTUAL_LINE,
+} from './lib/supportConfig';
 import {
   blobToDataUrl,
   compressImageFileToBlob,
@@ -150,6 +163,7 @@ import type {
   ProductCategory,
   SplitPaymentMethod,
   SubOrder,
+  SupportTicket,
   UserProfile,
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
@@ -167,6 +181,10 @@ import {
 import { ContactsView } from './components/ContactsView';
 import { DeviceApprovalModal } from './components/DeviceApprovalModal';
 import { DeviceAuthorizationGate } from './components/DeviceAuthorizationGate';
+import {
+  HelpCenterModal,
+  type HelpCenterContext,
+} from './components/HelpCenterModal';
 import { ManufacturerPanel } from './components/ManufacturerPanel';
 import { PhoneOnboardingModal } from './components/PhoneOnboardingModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -247,6 +265,13 @@ export default function App() {
   const [connections, setConnections] = useState<FactoryConnection[]>([]);
   const [orders, setOrders] = useState<MixedOrder[]>([]);
   const [payments, setPayments] = useState<DualPaymentRecord[]>([]);
+  const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [helpModalContext, setHelpModalContext] = useState<HelpCenterContext | null>(null);
+  const [chatPrefilledDraft, setChatPrefilledDraft] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
 
   // Active Chat Thread & Messages
   const [selectedPeer, setSelectedPeer] = useState<ActiveChatPeer | null>(null);
@@ -313,6 +338,7 @@ export default function App() {
   const [outboxPackets, setOutboxPackets] = useState<ZapeiMessagePacket[]>([]);
   const authUserRef = useRef<User | null>(null);
   authUserRef.current = authUser;
+  const expiringOrderAttemptRef = useRef<Map<string, number>>(new Map());
 
   // Unlock mobile browser audio on first touch/click so incoming calls & messages always ring loudly
   useEffect(() => {
@@ -405,9 +431,14 @@ export default function App() {
         setConnections([]);
         setOrders([]);
         setPayments([]);
+        setSupportTickets([]);
+        setHelpModalOpen(false);
+        setHelpModalContext(null);
+        setChatPrefilledDraft(null);
         setSelectedPeer(null);
         setActiveMessages([]);
         setActiveStorefrontOwner(null);
+        expiringOrderAttemptRef.current.clear();
         webrtcHandleRef.current?.cleanup();
         webrtcHandleRef.current = null;
         setActiveCall(null);
@@ -740,6 +771,7 @@ export default function App() {
       subscribeConnections(uid, setConnections),
       subscribeOrdersAndSubOrders(uid, setOrders),
       subscribePayments(uid, setPayments),
+      subscribeUserSupportTickets(uid, setSupportTickets),
     ];
     return () => unsubs.forEach((u) => u());
   }, [authUid, profileUid, deviceAuthState]);
@@ -1292,6 +1324,7 @@ export default function App() {
         peer.avatarUrl || directoryUsers.find((u) => u.uid === peer.uid)?.avatarUrl;
       setSelectedPeer({ ...peer, avatarUrl: livePhoto });
       setActiveTab('chats');
+      if (peer.uid === OFFICIAL_SUPPORT_UID) return;
       // Refresh live storefront info for this peer
       const live = await fetchPublicUserStorefront(peer.uid);
       if (live) {
@@ -1315,6 +1348,32 @@ export default function App() {
       }
     },
     [directoryUsers]
+  );
+
+  const openHelpCenter = useCallback((ctx?: HelpCenterContext) => {
+    setHelpModalContext(ctx ?? null);
+    setHelpModalOpen(true);
+  }, []);
+
+  const handleOpenOfficialSupportChat = useCallback(
+    (prefillMessage: string) => {
+      setActiveStorefrontOwner(null);
+      setChatPrefilledDraft({
+        id: `sup_${Date.now()}`,
+        text: prefillMessage,
+      });
+      void openChatWithPeer({
+        uid: OFFICIAL_SUPPORT_UID,
+        name: OFFICIAL_SUPPORT_NAME,
+        initials: 'CF',
+        avatarBg: '#0D2B3E',
+        phone: OFFICIAL_SUPPORT_VIRTUAL_LINE,
+        role: 'normal',
+        hasStorefront: false,
+        deliveryPolicyLabel: `Linha Virtual Oficial: ${OFFICIAL_SUPPORT_VIRTUAL_LINE}`,
+      });
+    },
+    [openChatWithPeer]
   );
 
   // 6. Handle closed-app / locked-screen wake-up via Web Push deep link or Service Worker postMessage
@@ -1871,22 +1930,36 @@ export default function App() {
       sub: SubOrder,
       decisions: Record<string, 'available' | 'unavailable'>
     ) => {
+      const parent = orders.find((o) => o.id === sub.parentOrderId);
       const updatedItems = sub.items.map((item) => ({
         ...item,
         availability: decisions[item.id] ?? 'available',
       }));
 
-      // Deduct stock for confirmed available items
-      for (const item of updatedItems) {
-        if (item.availability === 'available') {
-          const prod = products.find((p) => p.id === item.productId);
-          if (prod) {
-            const nextStock = Math.max(0, prod.stockBoxes - item.boxesRequested);
-            await updateRealProductStock(
-              prod.id,
-              nextStock,
-              nextStock === 0 ? true : prod.isSoldOutToday
-            );
+      // Deduct stock only for legacy orders that didn't reserve stock atomically at checkout
+      if (!parent?.stockReserved) {
+        for (const item of updatedItems) {
+          if (item.availability === 'available') {
+            const prod = products.find((p) => p.id === item.productId);
+            if (prod) {
+              const nextStock = Math.max(0, prod.stockBoxes - item.boxesRequested);
+              await updateRealProductStock(
+                prod.id,
+                nextStock,
+                nextStock === 0 ? true : prod.isSoldOutToday
+              );
+            }
+          }
+        }
+      } else {
+        // Restore any item marked unavailable during partial conference back to product stock
+        for (const item of updatedItems) {
+          if (item.availability === 'unavailable') {
+            const prod = products.find((p) => p.id === item.productId);
+            if (prod && item.boxesRequested > 0) {
+              const nextStock = prod.stockBoxes + item.boxesRequested;
+              await updateRealProductStock(prod.id, nextStock, false);
+            }
           }
         }
       }
@@ -1918,10 +1991,10 @@ export default function App() {
       // Update Layer 1 payment for this sub-order
       await updateRealPayment(`pay_fr_${sub.id}`, {
         amount: newFactoryCost,
+        ...(newSubStatus === 'cancelled' ? { status: 'Cancelado' as PaymentStatus } : {}),
       });
 
       // Recompute parent order totals & Split breakdown & Layer 2 payment
-      const parent = orders.find((o) => o.id === sub.parentOrderId);
       if (parent) {
         const mergedSubs = parent.subOrders.map((s) =>
           s.id === sub.id
@@ -1970,6 +2043,9 @@ export default function App() {
           discountAmount: clampedDiscount,
           buyerFinalTotal: finalBuyer,
           status: newSubStatus,
+          ...(availableItems.length > 0 && !parent.stockReserved
+            ? { stockReserved: true }
+            : {}),
           buyerChargedTotal: nextBreakdown.buyerChargedTotal,
           gatewayFee: nextBreakdown.gatewayFee,
           platformFeeGross: nextBreakdown.platformGrossFee,
@@ -1986,6 +2062,7 @@ export default function App() {
             platformFeeGross: nextBreakdown.platformGrossFee,
             platformFeeNet: nextBreakdown.platformNetFee,
             netAmount: nextBreakdown.resellerNetTotal,
+            ...(newSubStatus === 'cancelled' ? { status: 'Cancelado' as PaymentStatus } : {}),
           });
         }
       }
@@ -2183,6 +2260,70 @@ export default function App() {
     },
     [profile?.uid, showToast]
   );
+
+  const handleCancelOrderAndReleaseStock = useCallback(
+    async (orderId: string, reason: OrderCancelReason): Promise<CancelOrderResult> => {
+      const res = await cancelOrderAndReleaseStock(orderId, reason);
+      if (res.alreadyCancelled) {
+        showToast('Este pedido já havia sido cancelado e seu estoque liberado.');
+      } else {
+        const totalReturned = (res.restoredItems || []).reduce(
+          (acc, it) => acc + it.boxesRestored,
+          0
+        );
+        showToast(
+          totalReturned > 0
+            ? `Pedido cancelado! ${totalReturned} caixa(s)/unid. devolvida(s) ao estoque${res.asaasCancelled ? ' e cobrança Asaas cancelada' : ''}.`
+            : `Pedido cancelado${res.asaasCancelled ? ' e cobrança Asaas cancelada' : ''}.`
+        );
+      }
+      return res;
+    },
+    [showToast]
+  );
+
+  // Automatic 2-hour reservation expiration watcher for unpaid active orders
+  useEffect(() => {
+    if (!authUid || orders.length === 0) return;
+
+    const checkAndExpireOrders = () => {
+      const now = Date.now();
+      for (const order of orders) {
+        const isParticipant =
+          order.buyerId === authUid ||
+          order.resellerId === authUid ||
+          order.factoryIds.includes(authUid);
+        if (!isParticipant) continue;
+
+        const orderPayments = payments.filter((p) => p.orderId === order.id);
+        if (!canCancelUnpaidOrder(order, orderPayments)) continue;
+
+        const deadlineMs = getOrderReservationDeadlineMs(order);
+        if (!deadlineMs || now < deadlineMs) continue;
+
+        const lastAttempt = expiringOrderAttemptRef.current.get(order.id) ?? 0;
+        if (now - lastAttempt < 60_000) continue;
+
+        expiringOrderAttemptRef.current.set(order.id, now);
+        void cancelOrderAndReleaseStock(order.id, 'expired_2h')
+          .then((res) => {
+            expiringOrderAttemptRef.current.set(order.id, Number.MAX_SAFE_INTEGER);
+            if (!res.alreadyCancelled) {
+              showToast(
+                `Reserva de 2h do pedido ${order.orderCode} expirou — itens devolvidos ao estoque.`
+              );
+            }
+          })
+          .catch(() => {
+            // Allow retry after 60s cooldown if transient failure occurred
+          });
+      }
+    };
+
+    checkAndExpireOrders();
+    const timer = window.setInterval(checkAndExpireOrders, 30_000);
+    return () => window.clearInterval(timer);
+  }, [authUid, orders, payments, showToast]);
 
   const handleConnectFactoryByPhone = useCallback(
     async (rawPhone: string): Promise<{ ok: boolean; message: string }> => {
@@ -3160,6 +3301,11 @@ export default function App() {
                     }
                     onNotify={showToast}
                     onBack={() => setSelectedPeer(null)}
+                    prefilledDraft={
+                      selectedPeer.uid === OFFICIAL_SUPPORT_UID
+                        ? chatPrefilledDraft
+                        : null
+                    }
                     onSendText={async (text) => {
                       const { queuedOffline } = await sendOrQueueMessage(
                         {
@@ -3544,7 +3690,9 @@ export default function App() {
               onUpdatePayment={(paymentId, updates) =>
                 updateRealPayment(paymentId, updates)
               }
+              onCancelOrder={handleCancelOrderAndReleaseStock}
               onOpenBilling={() => setShowBillingModal(true)}
+              onOpenHelp={(ctx) => openHelpCenter(ctx)}
             />
           )}
 
@@ -3611,8 +3759,10 @@ export default function App() {
               }}
               onGenerateAsaasCharge={handleGenerateAsaasChargeForOrder}
               onSyncAsaasStatus={handleSyncAsaasOrderStatus}
+              onCancelOrder={handleCancelOrderAndReleaseStock}
               onOpenMyStorefrontPreview={() => void openStorefrontByUid(profile.uid)}
               onOpenBilling={() => setShowBillingModal(true)}
+              onOpenHelp={(ctx) => openHelpCenter(ctx)}
             />
           )}
 
@@ -3662,6 +3812,10 @@ export default function App() {
               }}
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenCommercialPanel={() => setActiveTab('commercial')}
+              onOpenHelp={() => openHelpCenter({ defaultTab: 'faq' })}
+              openTicketCount={
+                supportTickets.filter((t) => t.status !== 'Resolvido').length
+              }
               onNotify={showToast}
               onSignOut={async () => {
                 await updateUserPresenceHeartbeat(profile.uid, {
@@ -3724,6 +3878,8 @@ export default function App() {
           }}
           onGenerateOrderCharge={handleGenerateAsaasChargeForOrder}
           onSyncOrderStatus={handleSyncAsaasOrderStatus}
+          onCancelOrder={handleCancelOrderAndReleaseStock}
+          onOpenHelp={(ctx) => openHelpCenter(ctx)}
           onCheckoutMixedOrder={async ({
             ownerUid,
             storefrontName,
@@ -3924,6 +4080,37 @@ export default function App() {
           onClose={() => setAvatarPreview(null)}
         />
       )}
+
+      {/* Central de Ajuda e Suporte */}
+      <HelpCenterModal
+        open={helpModalOpen}
+        onClose={() => setHelpModalOpen(false)}
+        profile={profile}
+        orders={orders}
+        tickets={supportTickets}
+        initialContext={helpModalContext}
+        onSubmitTicket={async ({ reason, orderId, orderCode, description }) => {
+          const res = await createSupportTicket({
+            userId: profile.uid,
+            userName: profile.name,
+            userVirtualLine: profile.virtualLine || profile.phone,
+            userRole: profile.commercialMode,
+            reason,
+            orderId,
+            orderCode,
+            description,
+          });
+          showToast(
+            `Chamado ${res.ticketCode} aberto! Nossa equipe analisará em breve.`
+          );
+          return res;
+        }}
+        onResolveTicket={async (ticketId) => {
+          await resolveSupportTicket(ticketId);
+          showToast('Chamado marcado como resolvido.');
+        }}
+        onOpenOfficialSupportChat={handleOpenOfficialSupportChat}
+      />
     </div>
   );
 }

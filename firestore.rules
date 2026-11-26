@@ -40,6 +40,18 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    function isBootstrappedAdmin() {
+      return isSignedIn()
+        && 'email' in request.auth.token
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'rafaelcabralrobo@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
     // --- Validation Blueprints ---
     function isValidUserPublic(data) {
       return data.keys().hasAll(['uid', 'displayName', 'initials', 'commercialMode', 'hasStorefront', 'subscriptionStatus', 'createdAt', 'updatedAt'])
@@ -208,7 +220,7 @@ service cloud.firestore {
           'factoryId', 'factoryName', 'name', 'sku', 'category', 'subcategory',
           'unitType', 'quantityPerPack', 'packLabel', 'specsSummary',
           'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl',
-          'isSoldOutToday', 'moderationStatus', 'createdAt', 'updatedAt'
+          'isSoldOutToday', 'moderationStatus', 'lastStockOrderId', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.factoryId)
         && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
@@ -232,6 +244,7 @@ service cloud.firestore {
         && data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 350000
         && data.isSoldOutToday is bool
         && data.moderationStatus in ['approved', 'flagged']
+        && (!('lastStockOrderId' in data) || isValidId(data.lastStockOrderId))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -246,6 +259,8 @@ service cloud.firestore {
           'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
           'splitFactoryNet', 'splitResellerNet',
           'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
+          'createdAtMs', 'stockReserved', 'stockRestored', 'reservationExpiresAtMs',
+          'cancelledAtMs', 'cancelReason', 'cancelledByUid',
           'createdAt', 'updatedAt'
         ])
         && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
@@ -274,6 +289,13 @@ service cloud.firestore {
         && (!('asaasChargeStatus' in data) || (data.asaasChargeStatus is string && data.asaasChargeStatus.size() <= 40))
         && (!('asaasInvoiceUrl' in data) || (data.asaasInvoiceUrl is string && data.asaasInvoiceUrl.size() <= 500))
         && (!('asaasPixPayload' in data) || (data.asaasPixPayload is string && data.asaasPixPayload.size() <= 1000))
+        && (!('createdAtMs' in data) || (data.createdAtMs is number && data.createdAtMs >= 0))
+        && (!('stockReserved' in data) || data.stockReserved is bool)
+        && (!('stockRestored' in data) || data.stockRestored is bool)
+        && (!('reservationExpiresAtMs' in data) || (data.reservationExpiresAtMs is number && data.reservationExpiresAtMs >= 0))
+        && (!('cancelledAtMs' in data) || (data.cancelledAtMs is number && data.cancelledAtMs >= 0))
+        && (!('cancelReason' in data) || (data.cancelReason is string && data.cancelReason.size() <= 80))
+        && (!('cancelledByUid' in data) || isValidId(data.cancelledByUid))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -335,7 +357,7 @@ service cloud.firestore {
         && (!('asaasChargeId' in data) || (data.asaasChargeId is string && data.asaasChargeId.size() <= 128))
         && (!('asaasChargeStatus' in data) || (data.asaasChargeStatus is string && data.asaasChargeStatus.size() <= 40))
         && data.method in ['À vista', 'Cartão', 'Cheque', 'Notinha']
-        && data.status in ['Aguardando', 'Parcial', 'Quitado', 'Em Atraso']
+        && data.status in ['Aguardando', 'Parcial', 'Quitado', 'Em Atraso', 'Cancelado']
         && data.dueDate is string && data.dueDate.size() >= 4 && data.dueDate.size() <= 24
         && (!('lastReminderSent' in data) || (data.lastReminderSent is string && data.lastReminderSent.size() <= 40))
         && data.createdAt is timestamp
@@ -481,6 +503,32 @@ service cloud.firestore {
         && data.authTag is string && data.authTag.size() >= 16 && data.authTag.size() <= 64
         && data.deviceCount is number && data.deviceCount >= 0 && data.deviceCount <= 10
         && data.updatedAtMs is number && data.updatedAtMs > 0;
+    }
+
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll(['ticketCode', 'userId', 'userName', 'userRole', 'reason', 'description', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ticketCode', 'userId', 'userName', 'userVirtualLine', 'userRole',
+          'reason', 'orderId', 'orderCode', 'description', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.ticketCode is string && data.ticketCode.size() >= 4 && data.ticketCode.size() <= 24
+        && isValidId(data.userId)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80
+        && (!('userVirtualLine' in data) || (data.userVirtualLine is string && data.userVirtualLine.size() <= 32))
+        && data.userRole in ['buyer', 'reseller', 'manufacturer']
+        && data.reason in [
+          'Problema com Pagamento / Pix',
+          'Dúvida sobre Pedido',
+          'Configuração de Wallet ID Asaas',
+          'Denúncia / Segurança',
+          'Outros'
+        ]
+        && (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 128))
+        && (!('orderCode' in data) || (data.orderCode is string && data.orderCode.size() <= 32))
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 2000
+        && data.status in ['Aberto', 'Em análise', 'Resolvido']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     // --- Collection Rules ---
@@ -703,13 +751,41 @@ service cloud.firestore {
         && incoming().updatedAt == request.time;
       allow update: if isVerified() && isValidId(productId)
         && isValidProduct(incoming())
-        && existing().factoryId == request.auth.uid
         && incoming().factoryId == existing().factoryId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'subcategory', 'unitType', 'quantityPerPack', 'packLabel', 'specsSummary', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'updatedAt'])
+          // Action: Manufacturer updates own stock or product catalog fields
+          (existing().factoryId == request.auth.uid
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'updatedAt']) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'subcategory', 'unitType', 'quantityPerPack', 'packLabel', 'specsSummary', 'factoryPrice', 'stockBoxes', 'gradeRaw', 'imageUrl', 'isSoldOutToday', 'moderationStatus', 'updatedAt'])
+            )) ||
+          // Action: Atomic stock reservation at checkout tied to newly created order
+          (incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'lastStockOrderId', 'updatedAt'])
+            && 'lastStockOrderId' in incoming()
+            && incoming().stockBoxes < existing().stockBoxes
+            && incoming().stockBoxes >= 0
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.buyerId == request.auth.uid
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.stockReserved == true
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.createdAt == request.time) ||
+          // Action: Atomic idempotent stock restoration on unpaid order cancellation or 2h reservation expiration
+          (incoming().diff(existing()).affectedKeys().hasOnly(['stockBoxes', 'isSoldOutToday', 'lastStockOrderId', 'updatedAt'])
+            && 'lastStockOrderId' in incoming()
+            && incoming().stockBoxes >= existing().stockBoxes
+            && incoming().stockBoxes <= existing().stockBoxes + 10000
+            && exists(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId))
+            && (
+              get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.buyerId == request.auth.uid ||
+              get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.resellerId == request.auth.uid ||
+              request.auth.uid in get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.factoryIds
+            )
+            && !(get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.status in ['dispatched', 'completed', 'cancelled'])
+            && (!('stockRestored' in get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data)
+              || get(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.stockRestored == false)
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.status == 'cancelled'
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.stockRestored == true
+            && getAfter(/databases/$(database)/documents/orders/$(incoming().lastStockOrderId)).data.updatedAt == request.time)
         );
       allow delete: if isVerified() && isValidId(productId) && existing().factoryId == request.auth.uid;
     }
@@ -741,7 +817,7 @@ service cloud.firestore {
               'buyerFinalTotal', 'buyerSubtotal', 'factoryCostTotal',
               'paymentMethod', 'installments', 'buyerChargedTotal', 'gatewayFee',
               'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
-              'splitFactoryNet', 'splitResellerNet',
+              'splitFactoryNet', 'splitResellerNet', 'stockReserved',
               'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
               'updatedAt'
             ])) ||
@@ -750,22 +826,30 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'buyerFinalTotal', 'buyerSubtotal', 'factoryCostTotal', 'discountAmount',
               'buyerChargedTotal', 'gatewayFee', 'platformFeeGross', 'platformFeeNet',
-              'minimumFeeApplied', 'splitFactoryNet', 'splitResellerNet', 'updatedAt'
+              'minimumFeeApplied', 'splitFactoryNet', 'splitResellerNet', 'stockReserved', 'updatedAt'
             ])) ||
-          // Action: Buyer cancels pending order or records generated Asaas charge details
+          // Action: Buyer records generated Asaas charge details
           (existing().buyerId == request.auth.uid
-            && (
-              (existing().status == 'pending_inquiry'
-                && incoming().status == 'cancelled'
-                && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
-              incoming().diff(existing()).affectedKeys().hasOnly([
-                'paymentMethod', 'installments', 'buyerChargedTotal', 'gatewayFee',
-                'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
-                'splitFactoryNet', 'splitResellerNet',
-                'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
-                'updatedAt'
-              ])
-            ))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'paymentMethod', 'installments', 'buyerChargedTotal', 'gatewayFee',
+              'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
+              'splitFactoryNet', 'splitResellerNet',
+              'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
+              'updatedAt'
+            ])) ||
+          // Action: Buyer, Reseller, or Participating Manufacturer cancels unpaid order and marks stockRestored atomically
+          ((existing().buyerId == request.auth.uid
+              || existing().resellerId == request.auth.uid
+              || request.auth.uid in existing().factoryIds)
+            && !(existing().status in ['dispatched', 'completed', 'cancelled'])
+            && (!('stockRestored' in existing()) || existing().stockRestored == false)
+            && incoming().status == 'cancelled'
+            && incoming().stockRestored == true
+            && (!('cancelledByUid' in incoming()) || incoming().cancelledByUid == request.auth.uid)
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'stockRestored', 'cancelledAtMs', 'cancelReason',
+              'cancelledByUid', 'asaasChargeStatus', 'updatedAt'
+            ]))
         );
       allow delete: if false;
     }
@@ -773,7 +857,10 @@ service cloud.firestore {
     // 6. Split Manufacturer Sub-Orders
     match /sub_orders/{subOrderId} {
       allow get: if isSignedIn() && isValidId(subOrderId)
-        && (existing().factoryId == request.auth.uid || existing().resellerId == request.auth.uid || existing().buyerId == request.auth.uid);
+        && (existing().factoryId == request.auth.uid
+          || existing().resellerId == request.auth.uid
+          || existing().buyerId == request.auth.uid
+          || request.auth.uid in get(/databases/$(database)/documents/orders/$(existing().parentOrderId)).data.factoryIds);
       allow list: if isSignedIn()
         && (existing().factoryId == request.auth.uid || existing().resellerId == request.auth.uid || existing().buyerId == request.auth.uid);
       allow create: if isVerified() && isValidId(subOrderId)
@@ -781,7 +868,8 @@ service cloud.firestore {
         && (incoming().buyerId == request.auth.uid || incoming().resellerId == request.auth.uid)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && exists(/databases/$(database)/documents/orders/$(incoming().parentOrderId));
+        && (exists(/databases/$(database)/documents/orders/$(incoming().parentOrderId))
+          || existsAfter(/databases/$(database)/documents/orders/$(incoming().parentOrderId)));
       allow update: if isVerified() && isValidId(subOrderId)
         && isValidSubOrder(incoming())
         && !(existing().status in ['completed', 'cancelled'])
@@ -798,7 +886,16 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'status', 'factoryCost', 'buyerSubtotal', 'receiptNote', 'receiptUrl', 'receiptAttached', 'updatedAt'])) ||
           // Action: Reseller forwards inquiry or attaches post-confirmation logistics
           (existing().resellerId == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'logisticsType', 'logisticsCompany', 'logisticsAddress', 'updatedAt']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'logisticsType', 'logisticsCompany', 'logisticsAddress', 'updatedAt'])) ||
+          // Action: Atomic sub-order cancellation synced with parent order cancellation
+          ((existing().buyerId == request.auth.uid
+              || existing().resellerId == request.auth.uid
+              || existing().factoryId == request.auth.uid
+              || request.auth.uid in get(/databases/$(database)/documents/orders/$(existing().parentOrderId)).data.factoryIds)
+            && !(existing().status in ['dispatched', 'completed', 'cancelled'])
+            && incoming().status == 'cancelled'
+            && getAfter(/databases/$(database)/documents/orders/$(existing().parentOrderId)).data.status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
         );
       allow delete: if false;
     }
@@ -806,7 +903,10 @@ service cloud.firestore {
     // 7. Dual Financial Layer Payments
     match /payments/{paymentId} {
       allow get: if isSignedIn() && isValidId(paymentId)
-        && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid);
+        && (existing().ownerId == request.auth.uid
+          || existing().counterpartyId == request.auth.uid
+          || ('buyerId' in existing() && existing().buyerId == request.auth.uid)
+          || request.auth.uid in get(/databases/$(database)/documents/orders/$(existing().orderId)).data.factoryIds);
       allow list: if isSignedIn()
         && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid);
       allow create: if isVerified() && isValidId(paymentId)
@@ -816,7 +916,10 @@ service cloud.firestore {
         && incoming().updatedAt == request.time;
       allow update: if isVerified() && isValidId(paymentId)
         && isValidPayment(incoming())
-        && (existing().ownerId == request.auth.uid || existing().counterpartyId == request.auth.uid)
+        && (existing().ownerId == request.auth.uid
+          || existing().counterpartyId == request.auth.uid
+          || ('buyerId' in existing() && existing().buyerId == request.auth.uid)
+          || request.auth.uid in get(/databases/$(database)/documents/orders/$(existing().orderId)).data.factoryIds)
         && incoming().orderId == existing().orderId
         && incoming().layer == existing().layer
         && incoming().ownerId == existing().ownerId
@@ -835,6 +938,12 @@ service cloud.firestore {
           (existing().counterpartyId == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'amount', 'costReference', 'asaasChargeId', 'asaasChargeStatus', 'updatedAt'
+            ])) ||
+          // Action: Atomic cancellation synced with cancelled parent order
+          (incoming().status == 'Cancelado'
+            && getAfter(/databases/$(database)/documents/orders/$(existing().orderId)).data.status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'asaasChargeStatus', 'updatedAt'
             ]))
         );
       allow delete: if false;
@@ -956,6 +1065,37 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/calls/$(callId)).data.callerId == incoming().receiverId;
         allow update, delete: if false;
       }
+    }
+
+    // 10. Help & Support Center Tickets
+    match /support_tickets/{ticketId} {
+      allow get: if isSignedIn() && isValidId(ticketId)
+        && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isVerified() && isValidId(ticketId)
+        && isValidSupportTicket(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'Aberto'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(ticketId)
+        && isValidSupportTicket(incoming())
+        && (isAdmin() || existing().status != 'Resolvido')
+        && incoming().ticketCode == existing().ticketCode
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Admin triages support ticket status
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+          // Action: Ticket creator marks their own ticket as resolved
+          (existing().userId == request.auth.uid
+            && incoming().status == 'Resolvido'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+        );
+      allow delete: if false;
     }
   }
 }
