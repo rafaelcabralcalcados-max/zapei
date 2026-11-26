@@ -28,6 +28,13 @@
         "trialEndsAt": { "type": "number" },
         "virtualLine": { "type": "string", "maxLength": 24 },
         "authMethod": { "type": "string", "enum": ["phone", "cpf"] },
+        "cpfVerified": { "type": "boolean" },
+        "ratingAverage": { "type": "number" },
+        "ratingCount": { "type": "number" },
+        "lastRatingReviewId": { "type": "string", "maxLength": 260 },
+        "commercialBanned": { "type": "boolean" },
+        "commercialBanReason": { "type": "string", "maxLength": 240 },
+        "commercialBanAtMs": { "type": "number" },
         "isOnline": { "type": "boolean" },
         "lastSeenAt": { "type": "number" },
         "showOnlineStatus": { "type": "boolean" },
@@ -94,6 +101,9 @@
         "deliveryPolicyValue": { "type": "number" },
         "deliveryPolicyPickup": { "type": "boolean" },
         "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
+        "ratingAverage": { "type": "number" },
+        "ratingCount": { "type": "number" },
+        "commercialBanned": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerId", "displayName", "initials", "role", "hasStorefront", "updatedAt"]
@@ -116,6 +126,10 @@
         "deliveryPolicyLabel": { "type": "string", "maxLength": 160 },
         "virtualLine": { "type": "string", "maxLength": 24 },
         "isDiscoverable": { "type": "boolean" },
+        "ratingAverage": { "type": "number" },
+        "ratingCount": { "type": "number" },
+        "lastRatingReviewId": { "type": "string", "maxLength": 260 },
+        "commercialBanned": { "type": "boolean" },
         "isOnline": { "type": "boolean" },
         "lastSeenAt": { "type": "number" },
         "showOnlineStatus": { "type": "boolean" },
@@ -446,7 +460,7 @@
         "userName": { "type": "string", "minLength": 1, "maxLength": 80 },
         "userVirtualLine": { "type": "string", "maxLength": 32 },
         "userRole": { "type": "string", "enum": ["buyer", "reseller", "manufacturer"] },
-        "reason": { "type": "string", "enum": ["Problema com Pagamento / Pix", "Dúvida sobre Pedido", "Configuração de Wallet ID Asaas", "Denúncia / Segurança", "Outros"] },
+        "reason": { "type": "string", "enum": ["Problema com Pagamento / Pix", "Dúvida sobre Pedido", "Configuração de Wallet ID Asaas", "Ocorrência de Entrega / Má-fé", "Recurso / Liberação Comercial", "Denúncia / Segurança", "Outros"] },
         "orderId": { "type": "string", "maxLength": 128 },
         "orderCode": { "type": "string", "maxLength": 32 },
         "description": { "type": "string", "minLength": 5, "maxLength": 2000 },
@@ -455,6 +469,107 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ticketCode", "userId", "userName", "userRole", "reason", "description", "status", "createdAt", "updatedAt"]
+    },
+    "CpfCommercialLink": {
+      "title": "CpfCommercialLink",
+      "description": "SHA-256 CPF binding for Manufacturer and Reseller role verification across accounts.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "virtualLine": { "type": "string", "maxLength": 24 },
+        "authMethod": { "type": "string", "enum": ["phone", "cpf"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "createdAt"]
+    },
+    "CommercialIdentityHashes": {
+      "title": "CommercialIdentityHashes",
+      "description": "Non-reversible SHA-256 identity hashes (CPF, phone, virtual line) enabling cross-identifier commercial ban enforcement without exposing PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "cpfHash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "phoneHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "virtualLineHash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "updatedAt"]
+    },
+    "CommercialReview": {
+      "title": "CommercialReview",
+      "description": "1-to-5 star review and optional comment submitted by an order participant for a Manufacturer or Reseller.",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "subOrderId": { "type": "string", "maxLength": 128 },
+        "reviewerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reviewerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "reviewerRole": { "type": "string", "enum": ["buyer", "reseller"] },
+        "targetUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "targetRole": { "type": "string", "enum": ["manufacturer", "reseller"] },
+        "stars": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "orderCode", "reviewerId", "reviewerName", "reviewerRole", "targetUid", "targetName", "targetRole", "stars", "comment", "createdAt", "updatedAt"]
+    },
+    "DeliveryReport": {
+      "title": "DeliveryReport",
+      "description": "Occurrence or bad-faith delivery report filed against a Manufacturer or Reseller and linked to an order/support ticket.",
+      "type": "object",
+      "properties": {
+        "reportCode": { "type": "string", "minLength": 4, "maxLength": 24 },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "subOrderId": { "type": "string", "maxLength": 128 },
+        "subOrderCode": { "type": "string", "maxLength": 32 },
+        "ticketId": { "type": "string", "maxLength": 128 },
+        "ticketCode": { "type": "string", "maxLength": 24 },
+        "reporterId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reporterName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "reporterRole": { "type": "string", "enum": ["buyer", "reseller"] },
+        "reportedUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reportedName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "reportedRole": { "type": "string", "enum": ["manufacturer", "reseller"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "status": { "type": "string", "enum": ["Aberto", "Em análise", "Banido", "Improcedente", "Resolvido"] },
+        "resolvedByUid": { "type": "string", "maxLength": 128 },
+        "resolutionNote": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportCode", "orderId", "orderCode", "reporterId", "reporterName", "reporterRole", "reportedUid", "reportedName", "reportedRole", "reason", "description", "status", "createdAt", "updatedAt"]
+    },
+    "CommercialBan": {
+      "title": "CommercialBan",
+      "description": "Exclusive commercial role restriction indexed by UID, CPF SHA-256 hash, phone hash, or virtual line hash.",
+      "type": "object",
+      "properties": {
+        "banKey": { "type": "string", "minLength": 4, "maxLength": 200 },
+        "identifierType": { "type": "string", "enum": ["uid", "cpf", "phone", "virtualLine"] },
+        "targetUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "cpfHash": { "type": "string", "maxLength": 64 },
+        "phoneHash": { "type": "string", "maxLength": 128 },
+        "virtualLineHash": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["active", "lifted"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 240 },
+        "reportId": { "type": "string", "maxLength": 128 },
+        "ticketId": { "type": "string", "maxLength": 128 },
+        "orderCode": { "type": "string", "maxLength": 32 },
+        "bannedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "bannedAtMs": { "type": "number" },
+        "liftedAtMs": { "type": "number" },
+        "liftedByUid": { "type": "string", "maxLength": 128 },
+        "liftNote": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["banKey", "identifierType", "targetUid", "targetName", "status", "reason", "bannedByUid", "bannedAtMs", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -537,6 +652,26 @@
     "/support_tickets/{ticketId}": {
       "schema": { "$ref": "#/entities/SupportTicket" },
       "description": "In-app help and support tickets submitted by ChatFi users."
+    },
+    "/cpf_commercial_links/{cpfHash}": {
+      "schema": { "$ref": "#/entities/CpfCommercialLink" },
+      "description": "SHA-256 CPF binding preventing multi-account commercial role evasion."
+    },
+    "/commercial_identity_hashes/{userId}": {
+      "schema": { "$ref": "#/entities/CommercialIdentityHashes" },
+      "description": "Non-PII SHA-256 identity hashes for cross-identifier commercial compliance."
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/CommercialReview" },
+      "description": "Star ratings and comments submitted for Manufacturers and Resellers after dispatch/completion."
+    },
+    "/delivery_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/DeliveryReport" },
+      "description": "Bad-faith delivery occurrence reports linked to orders and support tickets."
+    },
+    "/commercial_bans/{banKey}": {
+      "schema": { "$ref": "#/entities/CommercialBan" },
+      "description": "Exclusive commercial role bans indexed by UID, CPF hash, phone hash, and virtual line hash."
     }
   }
 }

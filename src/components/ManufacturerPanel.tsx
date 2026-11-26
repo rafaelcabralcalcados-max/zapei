@@ -20,6 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type {
+  CommercialReview,
   DualPaymentRecord,
   FavoriteGrade,
   MinimumDeliveryPolicy,
@@ -71,6 +72,7 @@ import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
 import type { HelpCenterContext } from './HelpCenterModal';
+import { StarRatingBadge } from './StarRatingBadge';
 
 interface ManufacturerPanelProps {
   profile: UserProfile;
@@ -78,6 +80,7 @@ interface ManufacturerPanelProps {
   subOrders: SubOrder[];
   orders?: MixedOrder[];
   payments: DualPaymentRecord[];
+  receivedReviews?: CommercialReview[];
   onSavePolicy: (factoryName: string, policy: MinimumDeliveryPolicy) => Promise<void>;
   onSaveWalletId: (walletId: string) => Promise<void>;
   onSyncAsaasStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
@@ -126,6 +129,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   subOrders,
   orders = [],
   payments,
+  receivedReviews = [],
   onSavePolicy,
   onSaveWalletId,
   onSyncAsaasStatus,
@@ -524,9 +528,24 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               <Factory className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900">
-                {profile.factoryName || profile.name}
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-lg font-bold text-slate-900">
+                  {profile.factoryName || profile.name}
+                </h1>
+                <StarRatingBadge
+                  average={
+                    profile.ratingCount
+                      ? profile.ratingAverage
+                      : receivedReviews.length > 0
+                        ? receivedReviews.reduce((acc, r) => acc + r.stars, 0) /
+                          receivedReviews.length
+                        : 0
+                  }
+                  count={profile.ratingCount || receivedReviews.length}
+                  variant="card"
+                  showEmpty
+                />
+              </div>
               <p className="text-xs text-slate-500">
                 Painel do Fabricante · {profile.factoryPolicy.label}
               </p>

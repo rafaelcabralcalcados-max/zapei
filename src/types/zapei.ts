@@ -323,6 +323,80 @@ export interface DualPaymentRecord {
   lastReminderSent?: string;
 }
 
+export type TargetCommercialRole = 'manufacturer' | 'reseller';
+
+export interface CommercialReview {
+  id: string;
+  orderId: string;
+  orderCode: string;
+  subOrderId?: string;
+  reviewerId: string;
+  reviewerName: string;
+  reviewerRole: 'buyer' | 'reseller';
+  targetUid: string;
+  targetName: string;
+  targetRole: TargetCommercialRole;
+  stars: 1 | 2 | 3 | 4 | 5;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  createdAtMs: number;
+}
+
+export type DeliveryReportStatus =
+  | 'Aberto'
+  | 'Em análise'
+  | 'Banido'
+  | 'Improcedente'
+  | 'Resolvido';
+
+export interface DeliveryReport {
+  id: string;
+  reportCode: string;
+  orderId: string;
+  orderCode: string;
+  subOrderId?: string;
+  subOrderCode?: string;
+  ticketId?: string;
+  ticketCode?: string;
+  reporterId: string;
+  reporterName: string;
+  reporterRole: 'buyer' | 'reseller';
+  reportedUid: string;
+  reportedName: string;
+  reportedRole: TargetCommercialRole;
+  reason: string;
+  description: string;
+  status: DeliveryReportStatus;
+  resolvedByUid?: string;
+  resolutionNote?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdAtMs: number;
+}
+
+export interface CommercialBanRecord {
+  banKey: string;
+  identifierType: 'uid' | 'cpf' | 'phone' | 'virtualLine';
+  targetUid: string;
+  targetName: string;
+  cpfHash?: string;
+  phoneHash?: string;
+  virtualLineHash?: string;
+  status: 'active' | 'lifted';
+  reason: string;
+  reportId?: string;
+  ticketId?: string;
+  orderCode?: string;
+  bannedByUid: string;
+  bannedAtMs: number;
+  liftedAtMs?: number;
+  liftedByUid?: string;
+  liftNote?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface UserProfile {
   uid: string;
   name: string;
@@ -331,6 +405,7 @@ export interface UserProfile {
   phoneHash: string;
   virtualLine?: string;
   authMethod?: 'phone' | 'cpf';
+  cpfVerified?: boolean;
   email: string;
   statusMessage: string;
   isOnline?: boolean;
@@ -353,6 +428,11 @@ export interface UserProfile {
   anchorDiscountPercent?: number;
   factoryPolicy: MinimumDeliveryPolicy;
   favoriteGrades: FavoriteGrade[];
+  ratingAverage?: number;
+  ratingCount?: number;
+  commercialBanned?: boolean;
+  commercialBanReason?: string;
+  commercialBanAtMs?: number;
 }
 
 export interface ConnectedDevice {
@@ -386,6 +466,8 @@ export type SupportTicketReason =
   | 'Problema com Pagamento / Pix'
   | 'Dúvida sobre Pedido'
   | 'Configuração de Wallet ID Asaas'
+  | 'Ocorrência de Entrega / Má-fé'
+  | 'Recurso / Liberação Comercial'
   | 'Denúncia / Segurança'
   | 'Outros';
 

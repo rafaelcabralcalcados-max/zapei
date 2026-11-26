@@ -18,6 +18,8 @@ import { doc, getDoc } from 'firebase/firestore';
 import {
   approveDeviceAuthRequest,
   auth,
+  banUserCommercialRoles,
+  checkCommercialBanStatus,
   confirmDeviceTakeoverSmsCode,
   createDeviceAuthRequest,
   createRealFactoryConnection,
@@ -33,8 +35,10 @@ import {
   fetchUserProfileOnce,
   getDeterministicChatId,
   getDismissedCallIds,
+  liftCommercialBan,
   lookupRegisteredUserByPhone,
   markContactInvited,
+  markOrderCompletedByParticipant,
   registerOrCheckCurrentDevice,
   registerOrUpdateUserProfile,
   rejectDeviceAuthRequest,
@@ -45,23 +49,32 @@ import {
   sendRealChatMessage,
   sendRecoveryEmailForSignedInCpfUser,
   signOutFirebase,
+  submitCommercialReview,
+  submitDeliveryBadFaithReport,
+  subscribeAllSupportTicketsForAdmin,
   subscribeAuthRequestById,
   subscribeChatMessages,
+  subscribeCommercialBansForAdmin,
   subscribeConnections,
+  subscribeDeliveryReports,
   subscribeFirebaseAuth,
+  subscribeMyWrittenReviews,
   subscribeOrdersAndSubOrders,
   subscribePayments,
   subscribePendingAuthRequestsForUser,
   subscribeProducts,
   subscribePublicDirectory,
+  subscribeReviewsForTarget,
   subscribeUserCalls,
   subscribeUserChats,
   subscribeUserContacts,
   subscribeUserDevices,
   subscribeUserProfile,
   subscribeUserSupportTickets,
+  syncCommercialIdentityHashes,
   syncPublicDirectoryEntry,
   takeOverAsPrimaryDevice,
+  updateDeliveryReportStatus,
   updateRealConnection,
   updateRealOrder,
   updateRealPayment,
@@ -69,6 +82,7 @@ import {
   updateRealSubOrder,
   updateUserPresenceHeartbeat,
   updateUserPresencePrivacy,
+  verifyAndBindCpfForCommercialRole,
   verifyCpfAccountForDeviceTakeover,
   type PublicDirectoryUser,
 } from './lib/firebase';
@@ -136,6 +150,7 @@ import {
   type OrderCancelReason,
 } from './lib/asaasService';
 import {
+  isSupportAdminEmail,
   OFFICIAL_SUPPORT_NAME,
   OFFICIAL_SUPPORT_UID,
   OFFICIAL_SUPPORT_VIRTUAL_LINE,
@@ -152,9 +167,12 @@ import type {
   CategoryMargin,
   ChatMessage,
   ChatThreadSummary,
+  CommercialBanRecord,
   CommercialMode,
+  CommercialReview,
   ConnectedDevice,
   Contact,
+  DeliveryReport,
   DeviceAuthRequest,
   DualPaymentRecord,
   FactoryConnection,
@@ -171,6 +189,7 @@ import type {
   SplitPaymentMethod,
   SubOrder,
   SupportTicket,
+  TargetCommercialRole,
   UserProfile,
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
@@ -277,6 +296,11 @@ export default function App() {
   >({});
   const [payments, setPayments] = useState<DualPaymentRecord[]>([]);
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
+  const [writtenReviews, setWrittenReviews] = useState<CommercialReview[]>([]);
+  const [receivedReviews, setReceivedReviews] = useState<CommercialReview[]>([]);
+  const [deliveryReports, setDeliveryReports] = useState<DeliveryReport[]>([]);
+  const [adminTickets, setAdminTickets] = useState<SupportTicket[]>([]);
+  const [commercialBans, setCommercialBans] = useState<CommercialBanRecord[]>([]);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [helpModalContext, setHelpModalContext] = useState<HelpCenterContext | null>(null);
   const [chatPrefilledDraft, setChatPrefilledDraft] = useState<{
@@ -451,6 +475,11 @@ export default function App() {
         setLocalCancelledOrders({});
         setPayments([]);
         setSupportTickets([]);
+        setWrittenReviews([]);
+        setReceivedReviews([]);
+        setDeliveryReports([]);
+        setAdminTickets([]);
+        setCommercialBans([]);
         setHelpModalOpen(false);
         setHelpModalContext(null);
         setChatPrefilledDraft(null);
@@ -793,6 +822,8 @@ export default function App() {
       subscribeOrdersAndSubOrders(uid, setOrders),
       subscribePayments(uid, setPayments),
       subscribeUserSupportTickets(uid, setSupportTickets),
+      subscribeMyWrittenReviews(uid, setWrittenReviews),
+      subscribeReviewsForTarget(uid, setReceivedReviews),
     ];
 
     const storageKey = `chatfi_cancelled_orders_v1_${uid}`;
@@ -825,6 +856,48 @@ export default function App() {
 
     return () => unsubs.forEach((u) => u());
   }, [authUid, profileUid, deviceAuthState]);
+
+  const isSupportAdmin = isSupportAdminEmail(profile?.email || authUser?.email);
+
+  // 3b. Delivery bad-faith reports & Support/Admin moderation subscriptions
+  useEffect(() => {
+    if (!authUid || !profileUid || deviceAuthState !== 'authorized') return undefined;
+    const unsubs = [
+      subscribeDeliveryReports(authUid, isSupportAdmin, setDeliveryReports),
+      subscribeAllSupportTicketsForAdmin(isSupportAdmin, setAdminTickets),
+      subscribeCommercialBansForAdmin(isSupportAdmin, setCommercialBans),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [authUid, profileUid, deviceAuthState, isSupportAdmin]);
+
+  // 3c. Cross-identifier commercial ban enforcement (UID, CPF hash, phone hash, virtualLine)
+  // Blocks ONLY Manufacturer & Reseller access/panels while preserving personal chat/calls/shopping.
+  useEffect(() => {
+    if (!profile?.uid || deviceAuthState !== 'authorized') return;
+    void syncCommercialIdentityHashes({
+      uid: profile.uid,
+      phoneHash: profile.phoneHash || undefined,
+      virtualLine: profile.virtualLine || undefined,
+    });
+    void checkCommercialBanStatus({
+      uid: profile.uid,
+      phone: profile.phone,
+      phoneHash: profile.phoneHash,
+      virtualLine: profile.virtualLine,
+    });
+  }, [
+    profile?.uid,
+    profile?.phone,
+    profile?.phoneHash,
+    profile?.virtualLine,
+    deviceAuthState,
+  ]);
+
+  useEffect(() => {
+    if (profile?.commercialBanned && activeTab === 'commercial') {
+      setActiveTab('settings');
+    }
+  }, [profile?.commercialBanned, activeTab]);
 
   const recordLocalCancelledOrder = useCallback(
     (override: CancelledOrderOverride) => {
@@ -1469,6 +1542,9 @@ export default function App() {
         avatarUrl: livePhoto,
         phone: resolvedPhone,
         virtualLine: resolvedVirtualLine,
+        hasStorefront: peer.hasStorefront && !dirEntry?.commercialBanned,
+        ratingAverage: peer.ratingAverage ?? dirEntry?.ratingAverage,
+        ratingCount: peer.ratingCount ?? dirEntry?.ratingCount,
       });
       setActiveTab('chats');
       if (peer.uid === OFFICIAL_SUPPORT_UID) return;
@@ -1480,15 +1556,20 @@ export default function App() {
             ? {
                 ...curr,
                 hasStorefront:
-                  live.hasStorefront && live.subscriptionStatus !== 'expired',
+                  live.hasStorefront &&
+                  live.subscriptionStatus !== 'expired' &&
+                  !live.commercialBanned,
                 storefrontName: live.storefrontName,
-                role:
-                  live.commercialMode === 'manufacturer'
+                role: live.commercialBanned
+                  ? 'normal'
+                  : live.commercialMode === 'manufacturer'
                     ? 'manufacturer'
                     : live.commercialMode === 'reseller'
                       ? 'reseller'
                       : 'normal',
                 deliveryPolicyLabel: live.deliveryPolicy.label,
+                ratingAverage: live.ratingAverage,
+                ratingCount: live.ratingCount,
               }
             : curr
         );
@@ -1675,15 +1756,21 @@ export default function App() {
               name: live.displayName,
               initials: getInitials(live.displayName),
               avatarBg: '#0E7A34',
-              role:
-                live.commercialMode === 'manufacturer'
+              role: live.commercialBanned
+                ? 'normal'
+                : live.commercialMode === 'manufacturer'
                   ? 'manufacturer'
                   : live.commercialMode === 'reseller'
                     ? 'reseller'
                     : 'normal',
-              hasStorefront: live.hasStorefront && live.subscriptionStatus !== 'expired',
+              hasStorefront:
+                live.hasStorefront &&
+                live.subscriptionStatus !== 'expired' &&
+                !live.commercialBanned,
               storefrontName: live.storefrontName,
               deliveryPolicyLabel: live.deliveryPolicy.label,
+              ratingAverage: live.ratingAverage,
+              ratingCount: live.ratingCount,
             });
           }
         }
@@ -2016,11 +2103,33 @@ export default function App() {
         return;
       }
 
+      if (profile.commercialBanned) {
+        showToast(
+          'Os modos Fabricante e Revendedor estão temporariamente suspensos para análise. Contate o suporte para revisão.'
+        );
+        return;
+      }
+
+      const banCheck = await checkCommercialBanStatus({
+        uid: profile.uid,
+        phone: profile.phone,
+        phoneHash: profile.phoneHash,
+        virtualLine: profile.virtualLine,
+      });
+      if (banCheck.banned) {
+        showToast(
+          banCheck.reason ||
+            'Os modos Fabricante e Revendedor estão temporariamente suspensos para esta conta.'
+        );
+        return;
+      }
+
       const alreadyActivated =
         (targetMode === 'manufacturer' && profile.manufacturerActivated) ||
         (targetMode === 'reseller' && profile.resellerActivated);
 
-      if (!alreadyActivated) {
+      // Require validated CPF before enabling or entering Manufacturer / Reseller modes
+      if (!alreadyActivated || !profile.cpfVerified) {
         setTrialPromptRole(targetMode);
         return;
       }
@@ -2034,8 +2143,45 @@ export default function App() {
   );
 
   const handleConfirmTrialActivation = useCallback(
-    async (businessName: string) => {
+    async (businessName: string, cpfRaw?: string) => {
       if (!profile || !trialPromptRole) return;
+
+      if (profile.commercialBanned) {
+        throw new Error(
+          'Os modos Fabricante e Revendedor estão suspensos para esta conta. Solicite revisão pela Central de Ajuda.'
+        );
+      }
+
+      if (!profile.cpfVerified) {
+        const res = await verifyAndBindCpfForCommercialRole({
+          uid: profile.uid,
+          cpfRaw: cpfRaw || '',
+          phone: profile.phone,
+          phoneHash: profile.phoneHash,
+          virtualLine: profile.virtualLine,
+          authMethod: profile.authMethod,
+        });
+        if (!res.ok) {
+          throw new Error(
+            res.message ||
+              'Não foi possível validar o CPF para liberar o modo comercial.'
+          );
+        }
+      } else {
+        const banCheck = await checkCommercialBanStatus({
+          uid: profile.uid,
+          phone: profile.phone,
+          phoneHash: profile.phoneHash,
+          virtualLine: profile.virtualLine,
+        });
+        if (banCheck.banned) {
+          throw new Error(
+            banCheck.reason ||
+              'Os modos Fabricante e Revendedor estão temporariamente suspensos para este CPF/conta.'
+          );
+        }
+      }
+
       const cleanedName = businessName.trim() || profile.name;
       const trialEndsAt =
         profile.trialEndsAt > Date.now()
@@ -2069,6 +2215,57 @@ export default function App() {
       );
     },
     [profile, trialPromptRole, persistProfileUpdate, showToast]
+  );
+
+  const handleSubmitCommercialReview = useCallback(
+    async (params: {
+      orderId: string;
+      orderCode: string;
+      subOrderId?: string;
+      targetUid: string;
+      targetName: string;
+      targetRole: TargetCommercialRole;
+      reviewerRole: 'buyer' | 'reseller';
+      stars: 1 | 2 | 3 | 4 | 5;
+      comment: string;
+    }) => {
+      if (!profile) return;
+      await submitCommercialReview({
+        ...params,
+        reviewerId: profile.uid,
+        reviewerName: profile.name,
+      });
+      showToast(`Avaliação de ${params.stars} estrela(s) registrada!`);
+    },
+    [profile, showToast]
+  );
+
+  const handleSubmitDeliveryReport = useCallback(
+    async (params: {
+      orderId: string;
+      orderCode: string;
+      subOrderId?: string;
+      subOrderCode?: string;
+      reportedUid: string;
+      reportedName: string;
+      reportedRole: TargetCommercialRole;
+      reporterRole: 'buyer' | 'reseller';
+      reason: string;
+      description: string;
+    }) => {
+      if (!profile) throw new Error('Sessão inválida.');
+      const res = await submitDeliveryBadFaithReport({
+        ...params,
+        reporterId: profile.uid,
+        reporterName: profile.name,
+        reporterVirtualLine: profile.virtualLine || profile.phone,
+      });
+      showToast(
+        `Ocorrência ${res.reportCode} registrada e vinculada ao chamado ${res.ticketCode}.`
+      );
+      return res;
+    },
+    [profile, showToast]
   );
 
   const handleConfirmConference = useCallback(
@@ -2491,6 +2688,13 @@ export default function App() {
   const handleConnectFactoryByPhone = useCallback(
     async (rawPhone: string): Promise<{ ok: boolean; message: string }> => {
       if (!profile) return { ok: false, message: 'Sessão inválida.' };
+      if (profile.commercialBanned) {
+        return {
+          ok: false,
+          message:
+            'Seus modos comerciais estão temporariamente suspensos. Entre em contato com o suporte.',
+        };
+      }
       const match = await lookupRegisteredUserByPhone(rawPhone);
       if (!match) {
         return {
@@ -2503,6 +2707,12 @@ export default function App() {
         return {
           ok: false,
           message: 'Você não pode conectar sua própria conta como fabricante.',
+        };
+      }
+      if (match.commercialBanned) {
+        return {
+          ok: false,
+          message: `${match.displayName} está com a atuação comercial temporariamente suspensa.`,
         };
       }
       if (match.role !== 'manufacturer') {
@@ -2983,7 +3193,7 @@ export default function App() {
     );
   }
 
-  const hasCommercialPanel = profile.commercialMode !== 'buyer';
+  const hasCommercialPanel = profile.commercialMode !== 'buyer' && !profile.commercialBanned;
 
   const navItems: Array<{
     id: MainTab;
@@ -3025,6 +3235,8 @@ export default function App() {
                     phone: profile.phone,
                     virtualLine: profile.virtualLine,
                     subtitle: profile.statusMessage,
+                    ratingAverage: profile.ratingAverage,
+                    ratingCount: profile.ratingCount,
                   })
                 }
                 title="Ampliar foto de perfil"
@@ -3843,13 +4055,16 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'commercial' && profile.commercialMode === 'manufacturer' && (
+          {activeTab === 'commercial' &&
+            profile.commercialMode === 'manufacturer' &&
+            !profile.commercialBanned && (
             <ManufacturerPanel
               profile={profile}
               products={products}
               subOrders={allSubOrders}
               orders={effectiveOrders}
               payments={effectivePayments}
+              receivedReviews={receivedReviews}
               onSavePolicy={async (factoryName, factoryPolicy: MinimumDeliveryPolicy) => {
                 await persistProfileUpdate({ factoryName, factoryPolicy });
               }}
@@ -3883,7 +4098,7 @@ export default function App() {
                 const parent = effectiveOrders.find((o) => o.id === sub.parentOrderId);
                 if (parent) {
                   const allDispatched = parent.subOrders.every(
-                    (s) => s.id === sub.id || s.status === 'dispatched'
+                    (s) => s.id === sub.id || s.status === 'dispatched' || s.status === 'completed'
                   );
                   if (allDispatched) {
                     await updateRealOrder(parent.id, { status: 'dispatched' });
@@ -3899,13 +4114,17 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'commercial' && profile.commercialMode === 'reseller' && (
+          {activeTab === 'commercial' &&
+            profile.commercialMode === 'reseller' &&
+            !profile.commercialBanned && (
             <ResellerPanel
               profile={profile}
               connections={connections}
               products={products}
               orders={effectiveOrders}
               payments={effectivePayments}
+              writtenReviews={writtenReviews}
+              receivedReviews={receivedReviews}
               onSaveStorefrontIdentity={async (storefrontName, storefrontPrivacy) => {
                 await persistProfileUpdate({ storefrontName, storefrontPrivacy });
               }}
@@ -3963,6 +4182,17 @@ export default function App() {
               onGenerateAsaasCharge={handleGenerateAsaasChargeForOrder}
               onSyncAsaasStatus={handleSyncAsaasOrderStatus}
               onCancelOrder={handleCancelOrderAndReleaseStock}
+              onConfirmSubOrderDelivered={async (order, sub) => {
+                await updateRealSubOrder(sub.id, { status: 'completed' });
+                const allCompleted = order.subOrders.every(
+                  (s) => s.id === sub.id || s.status === 'completed' || s.status === 'cancelled'
+                );
+                if (allCompleted) {
+                  await updateRealOrder(order.id, { status: 'completed' }).catch(() => {});
+                }
+              }}
+              onSubmitReview={handleSubmitCommercialReview}
+              onSubmitDeliveryReport={handleSubmitDeliveryReport}
               onOpenMyStorefrontPreview={() => void openStorefrontByUid(profile.uid)}
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenHelp={(ctx) => openHelpCenter(ctx)}
@@ -4016,6 +4246,12 @@ export default function App() {
               onOpenBilling={() => setShowBillingModal(true)}
               onOpenCommercialPanel={() => setActiveTab('commercial')}
               onOpenHelp={() => openHelpCenter({ defaultTab: 'faq' })}
+              onOpenCommercialAppeal={() =>
+                openHelpCenter({
+                  defaultTab: 'ticket',
+                  reason: 'Recurso / Liberação Comercial',
+                })
+              }
               openTicketCount={
                 supportTickets.filter((t) => t.status !== 'Resolvido').length
               }
@@ -4074,6 +4310,7 @@ export default function App() {
           products={products}
           connections={connections}
           orders={effectiveOrders}
+          writtenReviews={writtenReviews}
           initialSubView={activeStorefrontInitialTab}
           onClose={() => {
             setActiveStorefrontOwner(null);
@@ -4082,6 +4319,15 @@ export default function App() {
           onGenerateOrderCharge={handleGenerateAsaasChargeForOrder}
           onSyncOrderStatus={handleSyncAsaasOrderStatus}
           onCancelOrder={handleCancelOrderAndReleaseStock}
+          onConfirmOrderDelivered={async (order) => {
+            await markOrderCompletedByParticipant({
+              orderId: order.id,
+              subOrderId: order.subOrders[0]?.id,
+            });
+            showToast(`Entrega do pedido ${order.orderCode} confirmada!`);
+          }}
+          onSubmitReview={handleSubmitCommercialReview}
+          onSubmitDeliveryReport={handleSubmitDeliveryReport}
           onOpenHelp={(ctx) => openHelpCenter(ctx)}
           onCheckoutMixedOrder={async ({
             ownerUid,
@@ -4219,12 +4465,25 @@ export default function App() {
         />
       )}
 
-      {/* 1-Step Commercial Activation Modal (Company/Storefront Name + 30-Day Free Trial) */}
+      {/* 1-Step Commercial Activation Modal (Company/Storefront Name + Mandatory CPF + 30-Day Free Trial) */}
       {trialPromptRole && (
         <CommercialTrialModal
           targetRole={trialPromptRole}
           alreadyOnPlan={profile.subscriptionStatus !== 'free'}
+          cpfAlreadyVerified={Boolean(profile.cpfVerified)}
+          defaultBusinessName={
+            trialPromptRole === 'manufacturer'
+              ? profile.factoryName || ''
+              : profile.storefrontName || ''
+          }
           onConfirm={handleConfirmTrialActivation}
+          onOpenHelp={() => {
+            setTrialPromptRole(null);
+            openHelpCenter({
+              defaultTab: 'ticket',
+              reason: 'Recurso / Liberação Comercial',
+            });
+          }}
           onCancel={() => setTrialPromptRole(null)}
         />
       )}
@@ -4291,6 +4550,10 @@ export default function App() {
         profile={profile}
         orders={effectiveOrders}
         tickets={supportTickets}
+        deliveryReports={deliveryReports}
+        adminTickets={adminTickets}
+        commercialBans={commercialBans}
+        isSupportAdmin={isSupportAdmin}
         initialContext={helpModalContext}
         onSubmitTicket={async ({ reason, orderId, orderCode, description }) => {
           const res = await createSupportTicket({
@@ -4312,6 +4575,51 @@ export default function App() {
           await resolveSupportTicket(ticketId, profile.uid);
           showToast('Chamado marcado como resolvido.');
         }}
+        onAdminUpdateReportStatus={
+          isSupportAdmin
+            ? async ({ reportId, status, resolutionNote }) => {
+                await updateDeliveryReportStatus({
+                  reportId,
+                  status,
+                  adminUid: profile.uid,
+                  resolutionNote,
+                });
+                showToast(`Ocorrência atualizada para "${status}".`);
+              }
+            : undefined
+        }
+        onAdminBanCommercial={
+          isSupportAdmin
+            ? async ({ targetUid, targetName, reason, reportId, ticketId, orderCode }) => {
+                await banUserCommercialRoles({
+                  targetUid,
+                  targetName,
+                  reason,
+                  adminUid: profile.uid,
+                  reportId,
+                  ticketId,
+                  orderCode,
+                });
+                showToast(
+                  `Modos comerciais de ${targetName} suspensos (uso pessoal preservado).`
+                );
+              }
+            : undefined
+        }
+        onAdminLiftCommercialBan={
+          isSupportAdmin
+            ? async ({ targetUid, liftNote, reportId, ticketId }) => {
+                await liftCommercialBan({
+                  targetUid,
+                  adminUid: profile.uid,
+                  liftNote,
+                  reportId,
+                  ticketId,
+                });
+                showToast('Modos Fabricante e Revendedor liberados e reativados.');
+              }
+            : undefined
+        }
         onOpenOfficialSupportChat={handleOpenOfficialSupportChat}
       />
     </div>

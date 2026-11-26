@@ -59,6 +59,7 @@ import {
   type PresenceSnapshot,
 } from '../lib/presenceUtils';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
+import { StarRatingBadge } from './StarRatingBadge';
 
 export interface ActiveChatPeer {
   uid: string;
@@ -72,6 +73,8 @@ export interface ActiveChatPeer {
   hasStorefront: boolean;
   storefrontName?: string;
   deliveryPolicyLabel?: string;
+  ratingAverage?: number;
+  ratingCount?: number;
 }
 
 export interface ForwardTarget {
@@ -1258,6 +1261,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 subtitle: peerPresenceDisplay.isPresence
                   ? peerPresenceDisplay.label
                   : peer.storefrontName,
+                ratingAverage: peer.ratingAverage,
+                ratingCount: peer.ratingCount,
               })
             }
             title="Ver foto de perfil"
@@ -1286,9 +1291,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             )}
           </button>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
-              {peer.name}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
+                {peer.name}
+              </h2>
+              <StarRatingBadge
+                average={peer.ratingAverage}
+                count={peer.ratingCount}
+                variant="inline"
+              />
+            </div>
             <p
               className={`truncate text-xs ${
                 peerPresenceDisplay.isOnline

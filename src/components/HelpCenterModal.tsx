@@ -8,18 +8,23 @@ import {
   Clock,
   Copy,
   Factory,
+  FileWarning,
   HelpCircle,
   LifeBuoy,
   Mail,
   MessageCircle,
   MessageSquare,
   Send,
+  ShieldCheck,
   ShoppingBag,
   Store,
   Ticket,
   X,
 } from 'lucide-react';
 import type {
+  CommercialBanRecord,
+  DeliveryReport,
+  DeliveryReportStatus,
   MixedOrder,
   SupportTicket,
   SupportTicketReason,
@@ -40,7 +45,7 @@ import {
 import { formatBRL } from '../lib/gradeParser';
 
 export interface HelpCenterContext {
-  defaultTab?: 'faq' | 'ticket' | 'my_tickets';
+  defaultTab?: 'faq' | 'ticket' | 'my_tickets' | 'moderation';
   orderId?: string;
   orderCode?: string;
   reason?: SupportTicketReason;
@@ -52,6 +57,10 @@ interface HelpCenterModalProps {
   profile: UserProfile;
   orders: MixedOrder[];
   tickets: SupportTicket[];
+  deliveryReports?: DeliveryReport[];
+  adminTickets?: SupportTicket[];
+  commercialBans?: CommercialBanRecord[];
+  isSupportAdmin?: boolean;
   initialContext?: HelpCenterContext | null;
   onSubmitTicket: (params: {
     reason: SupportTicketReason;
@@ -61,9 +70,28 @@ interface HelpCenterModalProps {
   }) => Promise<{ id: string; ticketCode: string }>;
   onResolveTicket?: (ticketId: string) => Promise<void>;
   onOpenOfficialSupportChat: (prefillMessage: string) => void;
+  onAdminUpdateReportStatus?: (params: {
+    reportId: string;
+    status: DeliveryReportStatus;
+    resolutionNote?: string;
+  }) => Promise<void>;
+  onAdminBanCommercial?: (params: {
+    targetUid: string;
+    targetName: string;
+    reason: string;
+    reportId?: string;
+    ticketId?: string;
+    orderCode?: string;
+  }) => Promise<void>;
+  onAdminLiftCommercialBan?: (params: {
+    targetUid: string;
+    liftNote: string;
+    reportId?: string;
+    ticketId?: string;
+  }) => Promise<void>;
 }
 
-type HelpCenterTab = 'faq' | 'ticket' | 'my_tickets';
+type HelpCenterTab = 'faq' | 'ticket' | 'my_tickets' | 'moderation';
 
 function getTicketStatusStyle(status: SupportTicketStatus): {
   classes: string;
@@ -93,10 +121,17 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
   profile,
   orders,
   tickets,
+  deliveryReports = [],
+  adminTickets = [],
+  commercialBans = [],
+  isSupportAdmin = false,
   initialContext,
   onSubmitTicket,
   onResolveTicket,
   onOpenOfficialSupportChat,
+  onAdminUpdateReportStatus,
+  onAdminBanCommercial,
+  onAdminLiftCommercialBan,
 }) => {
   const [activeTab, setActiveTab] = useState<HelpCenterTab>('faq');
   const [faqTab, setFaqTab] = useState<FaqProfileTab>(() =>
@@ -113,6 +148,9 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
   const [createdTicketCode, setCreatedTicketCode] = useState('');
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [copiedEmail, setCopiedEmail] = useState(false);
+  const [moderationNotes, setModerationNotes] = useState<Record<string, string>>({});
+  const [moderationBusyId, setModerationBusyId] = useState<string | null>(null);
+  const [moderationFeedback, setModerationFeedback] = useState('');
 
   const userOrders = useMemo(
     () =>
@@ -135,7 +173,11 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
     setCreatedTicketCode('');
 
     if (initialContext) {
-      setActiveTab(initialContext.defaultTab ?? (initialContext.orderCode ? 'ticket' : 'faq'));
+      const requestedTab =
+        initialContext.defaultTab ?? (initialContext.orderCode ? 'ticket' : 'faq');
+      setActiveTab(
+        requestedTab === 'moderation' && !isSupportAdmin ? 'faq' : requestedTab
+      );
       setReason(
         initialContext.reason ??
           (initialContext.orderCode ? 'Dúvida sobre Pedido' : 'Problema com Pagamento / Pix')
@@ -152,7 +194,8 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
       setSelectedOrderId('');
       setManualOrderCode('');
     }
-  }, [open, initialContext, profile.commercialMode, userOrders]);
+    setModerationFeedback('');
+  }, [open, initialContext, profile.commercialMode, userOrders, isSupportAdmin]);
 
   const linkedOrder = useMemo(
     () => userOrders.find((o) => o.id === selectedOrderId) ?? null,
@@ -212,9 +255,57 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
     ]
   );
 
+  const activeBanGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        targetUid: string;
+        targetName: string;
+        reason: string;
+        orderCode?: string;
+        reportId?: string;
+        ticketId?: string;
+        bannedAtMs: number;
+        identifiers: string[];
+      }
+    >();
+    for (const ban of commercialBans) {
+      if (ban.status !== 'active' || !ban.targetUid) continue;
+      const existing = map.get(ban.targetUid);
+      const identLabel =
+        ban.identifierType === 'cpf'
+          ? 'CPF'
+          : ban.identifierType === 'phone'
+            ? 'Telefone'
+            : ban.identifierType === 'virtualLine'
+              ? 'Linha Virtual'
+              : 'Conta';
+      if (existing) {
+        if (!existing.identifiers.includes(identLabel)) {
+          existing.identifiers.push(identLabel);
+        }
+      } else {
+        map.set(ban.targetUid, {
+          targetUid: ban.targetUid,
+          targetName: ban.targetName || 'Usuário ChatFi',
+          reason: ban.reason,
+          orderCode: ban.orderCode,
+          reportId: ban.reportId,
+          ticketId: ban.ticketId,
+          bannedAtMs: ban.bannedAtMs,
+          identifiers: [identLabel],
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.bannedAtMs - a.bannedAtMs);
+  }, [commercialBans]);
+
   if (!open) return null;
 
   const openTicketCount = tickets.filter((t) => t.status !== 'Resolvido').length;
+  const pendingReportsCount = deliveryReports.filter(
+    (r) => r.status === 'Aberto' || r.status === 'Em análise'
+  ).length;
   const userIdentityLabel = profile.virtualLine || profile.phone || 'Conta verificada';
 
   const handleSubmitForm = async (e: React.FormEvent) => {
@@ -292,7 +383,11 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
         </header>
 
         {/* Primary Section Tabs */}
-        <nav className="grid grid-cols-3 gap-1.5 border-b border-slate-200 bg-white px-4 py-2.5">
+        <nav
+          className={`grid gap-1.5 border-b border-slate-200 bg-white px-4 py-2.5 ${
+            isSupportAdmin ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+          }`}
+        >
           <button
             type="button"
             onClick={() => setActiveTab('faq')}
@@ -333,10 +428,55 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
               Meus Chamados{openTicketCount > 0 ? ` (${openTicketCount})` : ''}
             </span>
           </button>
+
+          {isSupportAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('moderation')}
+              className={`flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold transition whitespace-nowrap ${
+                activeTab === 'moderation'
+                  ? 'bg-[#0D2B3E] text-white'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200/70'
+              }`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+              <span className="tabular-nums">
+                Moderação{pendingReportsCount > 0 ? ` (${pendingReportsCount})` : ''}
+              </span>
+            </button>
+          )}
         </nav>
 
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-5">
+          {profile.commercialBanned && (
+            <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-slate-900">
+                  Modos comerciais suspensos para análise de entrega
+                </p>
+                <p className="text-[11px] leading-relaxed text-slate-600">
+                  O acesso aos painéis de Fabricante e Revendedor está temporariamente restrito
+                  {profile.commercialBanReason ? ` (${profile.commercialBanReason})` : ''}. Sua conta pessoal, conversas e ligações seguem funcionando normalmente.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setReason('Recurso / Liberação Comercial');
+                  if (!description.trim()) {
+                    setDescription(
+                      'Solicito revisão da suspensão dos modos Fabricante/Revendedor. Comprovantes e justificativa: '
+                    );
+                  }
+                  setActiveTab('ticket');
+                }}
+                className="inline-flex min-h-[38px] shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#0D2B3E] px-3.5 text-xs font-semibold text-white hover:bg-[#163D56]"
+              >
+                Solicitar revisão e reativação
+              </button>
+            </div>
+          )}
           {/* TAB 1: FAQ POR PERFIL */}
           {activeTab === 'faq' && (
             <section className="space-y-4">
@@ -702,6 +842,374 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                             </button>
                           </div>
                         )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+
+              {deliveryReports.length > 0 && (
+                <div className="mt-5 space-y-2.5 border-t border-slate-200 pt-4">
+                  <h4 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-600">
+                    <FileWarning className="h-3.5 w-3.5 text-slate-500" />
+                    Ocorrências de Entrega ({deliveryReports.length})
+                  </h4>
+                  {deliveryReports.map((rep) => (
+                    <article
+                      key={rep.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-4 space-y-1.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-bold text-slate-900">
+                          <span className="font-mono text-[#0D2B3E]">{rep.reportCode}</span>
+                          {' · '}
+                          {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'}:{' '}
+                          {rep.reportedName}
+                        </p>
+                        <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                          {rep.status}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        Pedido {rep.subOrderCode || rep.orderCode} · Motivo: {rep.reason} ·{' '}
+                        {rep.createdAt}
+                      </p>
+                      <p className="text-xs text-slate-700">{rep.description}</p>
+                      {rep.resolutionNote && (
+                        <p className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
+                          Parecer do suporte: {rep.resolutionNote}
+                        </p>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* TAB 4: MODERAÇÃO DE ENTREGAS E LIBERAÇÃO COMERCIAL (APENAS ADMIN/SUPORTE) */}
+          {activeTab === 'moderation' && isSupportAdmin && (
+            <section className="space-y-5">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Moderação Comercial e Ocorrências de Entrega
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Apuração de ocorrências por má-fé na entrega, suspensão exclusiva de Fabricante/Revendedor e reativação após análise.
+                </p>
+              </div>
+
+              {moderationFeedback && (
+                <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-semibold text-[#0E7A34]">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  <span>{moderationFeedback}</span>
+                </div>
+              )}
+
+              {/* Active Commercial Bans / Liberation */}
+              <div className="space-y-2.5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                  Contas com Modos Comerciais Suspensos ({activeBanGroups.length})
+                </h4>
+                {activeBanGroups.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-5 text-center text-xs text-slate-500">
+                    Nenhuma conta com suspensão comercial ativa no momento.
+                  </div>
+                ) : (
+                  activeBanGroups.map((ban) => {
+                    const note = moderationNotes[ban.targetUid] ?? '';
+                    const isBusy = moderationBusyId === ban.targetUid;
+                    return (
+                      <article
+                        key={ban.targetUid}
+                        className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">
+                              {ban.targetName}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              Vínculos bloqueados: {ban.identifiers.join(', ')}
+                              {ban.orderCode ? ` · Pedido ${ban.orderCode}` : ''}
+                            </p>
+                          </div>
+                          <span className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                            Comercial Suspenso
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-700">
+                          Motivo registrado: {ban.reason}
+                        </p>
+                        {onAdminLiftCommercialBan && (
+                          <div className="flex flex-col gap-2 pt-1 sm:flex-row">
+                            <input
+                              type="text"
+                              value={note}
+                              onChange={(e) =>
+                                setModerationNotes((p) => ({
+                                  ...p,
+                                  [ban.targetUid]: e.target.value,
+                                }))
+                              }
+                              placeholder="Observação da liberação (opcional)..."
+                              className="h-9 flex-1 rounded-xl border border-slate-200 px-3 text-xs text-slate-900 focus:border-[#0E7A34] focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={async () => {
+                                setModerationBusyId(ban.targetUid);
+                                setModerationFeedback('');
+                                try {
+                                  await onAdminLiftCommercialBan({
+                                    targetUid: ban.targetUid,
+                                    liftNote:
+                                      note.trim() ||
+                                      'Liberado após apuração pelo Suporte ChatFi.',
+                                    reportId: ban.reportId,
+                                    ticketId: ban.ticketId,
+                                  });
+                                  setModerationFeedback(
+                                    `Modos comerciais de ${ban.targetName} liberados e reativados.`
+                                  );
+                                } finally {
+                                  setModerationBusyId(null);
+                                }
+                              }}
+                              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-3.5 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-60"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              {isBusy ? 'Liberando...' : 'Liberar Modos Comerciais'}
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Delivery Bad-Faith Reports */}
+              <div className="space-y-2.5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                  Ocorrências Registradas ({deliveryReports.length})
+                </h4>
+                {deliveryReports.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-5 text-center text-xs text-slate-500">
+                    Nenhuma ocorrência de entrega registrada até o momento.
+                  </div>
+                ) : (
+                  deliveryReports.map((rep) => {
+                    const note = moderationNotes[rep.id] ?? '';
+                    const isBusy = moderationBusyId === rep.id;
+                    const alreadyBanned = activeBanGroups.some(
+                      (b) => b.targetUid === rep.reportedUid
+                    );
+                    return (
+                      <article
+                        key={rep.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">
+                              <span className="font-mono text-[#0D2B3E]">{rep.reportCode}</span>
+                              {' · '}
+                              {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'}:{' '}
+                              {rep.reportedName}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              Pedido {rep.subOrderCode || rep.orderCode} · Relator: {rep.reporterName} ·{' '}
+                              {rep.createdAt}
+                            </p>
+                          </div>
+                          <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                            {rep.status}
+                          </span>
+                        </div>
+
+                        <p className="text-xs font-semibold text-slate-800">{rep.reason}</p>
+                        <p className="text-xs text-slate-700 whitespace-pre-wrap">
+                          {rep.description}
+                        </p>
+
+                        {rep.status !== 'Resolvido' && rep.status !== 'Improcedente' && (
+                          <div className="space-y-2 border-t border-slate-100 pt-2.5">
+                            <input
+                              type="text"
+                              value={note}
+                              onChange={(e) =>
+                                setModerationNotes((p) => ({ ...p, [rep.id]: e.target.value }))
+                              }
+                              placeholder="Motivo do bloqueio ou parecer da análise..."
+                              className="h-9 w-full rounded-xl border border-slate-200 px-3 text-xs text-slate-900 focus:border-[#0E7A34] focus:outline-none"
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              {onAdminBanCommercial && !alreadyBanned && (
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={async () => {
+                                    setModerationBusyId(rep.id);
+                                    setModerationFeedback('');
+                                    try {
+                                      await onAdminBanCommercial({
+                                        targetUid: rep.reportedUid,
+                                        targetName: rep.reportedName,
+                                        reason: note.trim() || rep.reason,
+                                        reportId: rep.id,
+                                        ticketId: rep.ticketId,
+                                        orderCode: rep.orderCode,
+                                      });
+                                      setModerationFeedback(
+                                        `Suspensão comercial aplicada para ${rep.reportedName} (conta pessoal preservada).`
+                                      );
+                                    } finally {
+                                      setModerationBusyId(null);
+                                    }
+                                  }}
+                                  className="inline-flex min-h-[34px] items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-3 text-[11px] font-semibold text-white hover:bg-[#163D56] disabled:opacity-60"
+                                >
+                                  Suspender Fabricante/Revendedor
+                                </button>
+                              )}
+                              {onAdminUpdateReportStatus && rep.status === 'Aberto' && (
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={async () => {
+                                    setModerationBusyId(rep.id);
+                                    try {
+                                      await onAdminUpdateReportStatus({
+                                        reportId: rep.id,
+                                        status: 'Em análise',
+                                        resolutionNote: note.trim() || undefined,
+                                      });
+                                      setModerationFeedback(
+                                        `Ocorrência ${rep.reportCode} marcada como Em análise.`
+                                      );
+                                    } finally {
+                                      setModerationBusyId(null);
+                                    }
+                                  }}
+                                  className="inline-flex min-h-[34px] items-center rounded-xl border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  Colocar em análise
+                                </button>
+                              )}
+                              {onAdminUpdateReportStatus && (
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={async () => {
+                                    setModerationBusyId(rep.id);
+                                    try {
+                                      await onAdminUpdateReportStatus({
+                                        reportId: rep.id,
+                                        status: 'Improcedente',
+                                        resolutionNote:
+                                          note.trim() || 'Ocorrência encerrada sem penalidade.',
+                                      });
+                                      setModerationFeedback(
+                                        `Ocorrência ${rep.reportCode} marcada como improcedente.`
+                                      );
+                                    } finally {
+                                      setModerationBusyId(null);
+                                    }
+                                  }}
+                                  className="inline-flex min-h-[34px] items-center rounded-xl border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  Marcar Improcedente
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Recent User Appeals & Tickets for Support */}
+              {adminTickets.length > 0 && (
+                <div className="space-y-2.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                    Chamados e Recursos Recentes ({adminTickets.length})
+                  </h4>
+                  {adminTickets.slice(0, 12).map((t) => {
+                    const userIsBanned = activeBanGroups.some(
+                      (b) => b.targetUid === t.userId
+                    );
+                    return (
+                      <article
+                        key={t.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-bold text-slate-900">
+                              <span className="font-mono text-[#0D2B3E]">{t.ticketCode}</span>
+                              {' · '}
+                              {t.reason}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              {t.userName}
+                              {t.userVirtualLine ? ` (${t.userVirtualLine})` : ''}
+                              {t.orderCode ? ` · Pedido ${t.orderCode}` : ''} · {t.createdAt}
+                            </p>
+                          </div>
+                          <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                            {t.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-700 whitespace-pre-wrap">
+                          {t.description}
+                        </p>
+                        <div className="flex flex-wrap justify-end gap-2 pt-1">
+                          {userIsBanned && onAdminLiftCommercialBan && (
+                            <button
+                              type="button"
+                              disabled={moderationBusyId === t.userId}
+                              onClick={async () => {
+                                setModerationBusyId(t.userId);
+                                try {
+                                  await onAdminLiftCommercialBan({
+                                    targetUid: t.userId,
+                                    liftNote: `Liberado via chamado ${t.ticketCode}.`,
+                                    ticketId: t.id,
+                                  });
+                                  setModerationFeedback(
+                                    `Modos comerciais de ${t.userName} liberados.`
+                                  );
+                                } finally {
+                                  setModerationBusyId(null);
+                                }
+                              }}
+                              className="inline-flex min-h-[34px] items-center gap-1 rounded-xl bg-[#0E7A34] px-3 text-[11px] font-semibold text-white hover:bg-[#0B5D27]"
+                            >
+                              Liberar Modos Comerciais
+                            </button>
+                          )}
+                          {onResolveTicket && t.status !== 'Resolvido' && (
+                            <button
+                              type="button"
+                              disabled={resolvingId === t.id}
+                              onClick={async () => {
+                                setResolvingId(t.id);
+                                try {
+                                  await onResolveTicket(t.id);
+                                } finally {
+                                  setResolvingId(null);
+                                }
+                              }}
+                              className="inline-flex min-h-[34px] items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                            >
+                              Marcar Resolvido
+                            </button>
+                          )}
+                        </div>
                       </article>
                     );
                   })}

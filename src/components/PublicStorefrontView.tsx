@@ -7,6 +7,7 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  FileWarning,
   HelpCircle,
   Minus,
   Package,
@@ -16,6 +17,7 @@ import {
   Search,
   ShieldCheck,
   ShoppingBag,
+  Star,
   Store,
   Tag,
   Trash2,
@@ -25,6 +27,7 @@ import {
 import type {
   CartItem,
   CommercialMode,
+  CommercialReview,
   FactoryConnection,
   MinimumDeliveryPolicy,
   MixedOrder,
@@ -33,6 +36,7 @@ import type {
   SplitPaymentMethod,
   SubOrder,
   SubscriptionStatus,
+  TargetCommercialRole,
 } from '../types/zapei';
 import {
   PRODUCT_CATEGORIES,
@@ -78,6 +82,13 @@ import {
 } from './AsaasChargeModal';
 import { GradeVisualGrid } from './GradeVisualGrid';
 import type { HelpCenterContext } from './HelpCenterModal';
+import {
+  DeliveryReportModal,
+  StarReviewModal,
+  type ReportModalTarget,
+  type ReviewModalTarget,
+} from './RatingAndReportModal';
+import { StarRatingBadge } from './StarRatingBadge';
 
 export interface PublicStorefrontOwner {
   uid: string;
@@ -89,6 +100,9 @@ export interface PublicStorefrontOwner {
   anchorDiscountPercent?: number;
   deliveryPolicy: MinimumDeliveryPolicy;
   subscriptionStatus: SubscriptionStatus;
+  ratingAverage?: number;
+  ratingCount?: number;
+  commercialBanned?: boolean;
 }
 
 interface CatalogListing {
@@ -107,6 +121,7 @@ interface PublicStorefrontViewProps {
   products: Product[];
   connections: FactoryConnection[];
   orders: MixedOrder[];
+  writtenReviews?: CommercialReview[];
   initialSubView?: 'catalog' | 'cart' | 'orders';
   onClose: () => void;
   onCheckoutMixedOrder: (params: {
@@ -129,6 +144,30 @@ interface PublicStorefrontViewProps {
     orderId: string,
     reason: 'buyer_cancelled'
   ) => Promise<CancelOrderResult>;
+  onConfirmOrderDelivered?: (order: MixedOrder) => Promise<void>;
+  onSubmitReview?: (params: {
+    orderId: string;
+    orderCode: string;
+    subOrderId?: string;
+    targetUid: string;
+    targetName: string;
+    targetRole: TargetCommercialRole;
+    reviewerRole: 'buyer' | 'reseller';
+    stars: 1 | 2 | 3 | 4 | 5;
+    comment: string;
+  }) => Promise<void>;
+  onSubmitDeliveryReport?: (params: {
+    orderId: string;
+    orderCode: string;
+    subOrderId?: string;
+    subOrderCode?: string;
+    reportedUid: string;
+    reportedName: string;
+    reportedRole: TargetCommercialRole;
+    reporterRole: 'buyer' | 'reseller';
+    reason: string;
+    description: string;
+  }) => Promise<{ reportCode: string; ticketCode: string }>;
   onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
@@ -138,12 +177,16 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   products,
   connections,
   orders,
+  writtenReviews = [],
   initialSubView = 'catalog',
   onClose,
   onCheckoutMixedOrder,
   onGenerateOrderCharge,
   onSyncOrderStatus,
   onCancelOrder,
+  onConfirmOrderDelivered,
+  onSubmitReview,
+  onSubmitDeliveryReport,
   onOpenHelp,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<'Todas' | MainCategoryId>('Todas');
@@ -157,6 +200,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const [installments, setInstallments] = useState<number>(1);
   const [submitting, setSubmitting] = useState(false);
   const [orderNotice, setOrderNotice] = useState('');
+  const [confirmDeliveryOrderId, setConfirmDeliveryOrderId] = useState<string | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<ReviewModalTarget | null>(null);
+  const [reportTarget, setReportTarget] = useState<ReportModalTarget | null>(null);
   const [lastChargeResult, setLastChargeResult] = useState<CreateAsaasChargeResult | null>(null);
   const [orderPayMethodMap, setOrderPayMethodMap] = useState<
     Record<string, SplitPaymentMethod>
@@ -193,7 +239,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   }, [owner.uid, initialSubView]);
 
   const isStorefrontAvailable =
-    owner.hasStorefront && owner.subscriptionStatus !== 'expired';
+    owner.hasStorefront &&
+    owner.subscriptionStatus !== 'expired' &&
+    !owner.commercialBanned;
 
   // Compute live listings without EVER exposing factory names or "revendedor" to buyers
   const listings = useMemo<CatalogListing[]>(() => {
@@ -500,9 +548,16 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
               <ArrowLeft className="h-5 w-5" />
             </button>
             <div className="min-w-0">
-              <h1 className="truncate text-base font-bold text-slate-900 sm:text-lg">
-                {owner.storefrontName || owner.displayName}
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate text-base font-bold text-slate-900 sm:text-lg">
+                  {owner.storefrontName || owner.displayName}
+                </h1>
+                <StarRatingBadge
+                  average={owner.ratingAverage}
+                  count={owner.ratingCount}
+                  variant="inline"
+                />
+              </div>
               <p className="text-xs text-slate-500">
                 Vitrine Comercial ChatFi · Compra gratuita para clientes
               </p>
@@ -1297,7 +1352,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             {selectedMethod === 'credit_card'
                               ? `Cartão ${selectedInst}x`
                               : 'Pix à vista'}
-                            {isOrderConfirmed ? ' · Pedido Confirmado' : ''}
+                            {order.status === 'completed'
+                              ? ' · Entrega confirmada'
+                              : isOrderConfirmed
+                                ? ' · Pedido Confirmado'
+                                : ''}
                           </p>
                         </div>
                         <div className="text-right">
@@ -1666,12 +1725,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         ? 'Preparando despacho'
                                         : sub.status === 'dispatched'
                                           ? 'Despachado'
-                                          : sub.status === 'cancelled'
-                                            ? 'Cancelado'
-                                            : sub.status}
+                                          : sub.status === 'completed'
+                                            ? 'Entregue'
+                                            : sub.status === 'cancelled'
+                                              ? 'Cancelado'
+                                              : sub.status}
                               </span>
                             </div>
-                            {sub.status === 'dispatched' && sub.receiptNote && (
+                            {(sub.status === 'dispatched' || sub.status === 'completed') && sub.receiptNote && (
                               <p className="text-[#0E7A34]">
                                 Comprovante: {sub.receiptNote}
                               </p>
@@ -1680,25 +1741,154 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         ))}
                       </div>
 
-                      {onOpenHelp && (
-                        <div className="flex justify-end border-t border-slate-100 pt-2.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onOpenHelp({
-                                defaultTab: 'ticket',
-                                orderId: order.id,
-                                orderCode: order.orderCode,
-                                reason: 'Dúvida sobre Pedido',
-                              })
-                            }
-                            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
-                          >
-                            <HelpCircle className="h-3.5 w-3.5" />
-                            Precisa de ajuda?
-                          </button>
-                        </div>
-                      )}
+                      {(() => {
+                        const hasDispatchedSub = order.subOrders.some(
+                          (s) => s.status === 'dispatched' || s.status === 'completed'
+                        );
+                        const canConfirmDelivered =
+                          Boolean(onConfirmOrderDelivered) &&
+                          order.status !== 'completed' &&
+                          order.status !== 'cancelled' &&
+                          (order.status === 'dispatched' || hasDispatchedSub);
+                        const canReviewOrder =
+                          Boolean(onSubmitReview) &&
+                          order.status !== 'cancelled' &&
+                          (order.status === 'dispatched' ||
+                            order.status === 'completed' ||
+                            hasDispatchedSub);
+                        const canReportOrder =
+                          Boolean(onSubmitDeliveryReport) &&
+                          order.status !== 'cancelled' &&
+                          (order.status === 'confirmed' ||
+                            order.status === 'logistics_sent' ||
+                            order.status === 'dispatched' ||
+                            order.status === 'completed' ||
+                            isOrderConfirmed ||
+                            order.asaasChargeStatus === 'CONFIRMED' ||
+                            order.asaasChargeStatus === 'RECEIVED');
+
+                        const isDirectManufacturerSale =
+                          order.factoryIds.length === 1 &&
+                          order.factoryIds[0] === order.resellerId &&
+                          Math.abs(order.buyerFinalTotal - order.factoryCostTotal) < 0.01;
+                        const sellerRole: TargetCommercialRole = isDirectManufacturerSale
+                          ? 'manufacturer'
+                          : 'reseller';
+                        const existingReview = writtenReviews.find(
+                          (r) =>
+                            r.orderId === order.id &&
+                            r.targetUid === order.resellerId &&
+                            r.targetRole === sellerRole
+                        );
+
+                        if (!canConfirmDelivered && !canReviewOrder && !canReportOrder && !onOpenHelp) {
+                          return null;
+                        }
+
+                        return (
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {canConfirmDelivered && onConfirmOrderDelivered && (
+                                <button
+                                  type="button"
+                                  disabled={confirmDeliveryOrderId === order.id}
+                                  onClick={async () => {
+                                    setConfirmDeliveryOrderId(order.id);
+                                    try {
+                                      await onConfirmOrderDelivered(order);
+                                      setOrderNotice(
+                                        `Entrega do pedido ${order.orderCode} confirmada. Agora você pode avaliá-lo com estrelas.`
+                                      );
+                                    } finally {
+                                      setConfirmDeliveryOrderId(null);
+                                    }
+                                  }}
+                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  {confirmDeliveryOrderId === order.id
+                                    ? 'Confirmando...'
+                                    : 'Confirmar Entrega'}
+                                </button>
+                              )}
+
+                              {canReviewOrder && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReviewTarget({
+                                      orderId: order.id,
+                                      orderCode: order.orderCode,
+                                      subOrderId: order.subOrders[0]?.id,
+                                      targetUid: order.resellerId,
+                                      targetName: order.storefrontName || owner.storefrontName || owner.displayName,
+                                      targetRole: sellerRole,
+                                      reviewerRole: 'buyer',
+                                      existingReview,
+                                    })
+                                  }
+                                  className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                                    existingReview
+                                      ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100/70'
+                                      : 'border-slate-200 bg-white text-slate-800 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <Star
+                                    className={`h-3.5 w-3.5 ${
+                                      existingReview
+                                        ? 'fill-amber-400 text-amber-500'
+                                        : 'text-amber-500'
+                                    }`}
+                                  />
+                                  {existingReview
+                                    ? `Sua avaliação: ${existingReview.stars}★`
+                                    : 'Avaliar (Estrelas)'}
+                                </button>
+                              )}
+
+                              {canReportOrder && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReportTarget({
+                                      orderId: order.id,
+                                      orderCode: order.orderCode,
+                                      subOrderId: order.subOrders[0]?.id,
+                                      subOrderCode: order.subOrders[0]?.subOrderCode,
+                                      reportedUid: order.resellerId,
+                                      reportedName: order.storefrontName || owner.storefrontName || owner.displayName,
+                                      reportedRole: sellerRole,
+                                      reporterRole: 'buyer',
+                                    })
+                                  }
+                                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
+                                >
+                                  <FileWarning className="h-3.5 w-3.5" />
+                                  Ocorrência na entrega
+                                </button>
+                              )}
+                            </div>
+
+                            {onOpenHelp && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenHelp({
+                                    defaultTab: 'ticket',
+                                    orderId: order.id,
+                                    orderCode: order.orderCode,
+                                    reason: 'Dúvida sobre Pedido',
+                                  })
+                                }
+                                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-[#0D2B3E]"
+                              >
+                                <HelpCircle className="h-3.5 w-3.5" />
+                                Precisa de ajuda?
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })
@@ -1957,6 +2147,35 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         }}
         onCopySuccess={(msg) => setOrderNotice(msg)}
       />
+
+      {reviewTarget && onSubmitReview && (
+        <StarReviewModal
+          key={`${reviewTarget.orderId}_${reviewTarget.targetUid}_${reviewTarget.targetRole}`}
+          target={reviewTarget}
+          onClose={() => setReviewTarget(null)}
+          onSubmitReview={async (params) => {
+            await onSubmitReview(params);
+            setOrderNotice(
+              `Avaliação de ${params.stars} estrela(s) registrada para ${params.targetName}.`
+            );
+          }}
+        />
+      )}
+
+      {reportTarget && onSubmitDeliveryReport && (
+        <DeliveryReportModal
+          key={`${reportTarget.orderId}_${reportTarget.reportedUid}_${reportTarget.reportedRole}`}
+          target={reportTarget}
+          onClose={() => setReportTarget(null)}
+          onSubmitReport={async (params) => {
+            const res = await onSubmitDeliveryReport(params);
+            setOrderNotice(
+              `Ocorrência ${res.reportCode} registrada e vinculada ao chamado ${res.ticketCode}.`
+            );
+            return res;
+          }}
+        />
+      )}
     </div>
   );
 };

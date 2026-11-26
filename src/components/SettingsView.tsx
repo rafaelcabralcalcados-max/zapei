@@ -24,6 +24,7 @@ import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
 import { PWAInstallButton } from './PWAInstallButton';
 import { StorageManagerCard } from './StorageManagerCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
+import { StarRatingBadge } from './StarRatingBadge';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 
 interface SettingsViewProps {
@@ -44,6 +45,7 @@ interface SettingsViewProps {
   onOpenBilling: () => void;
   onOpenCommercialPanel: () => void;
   onOpenHelp?: () => void;
+  onOpenCommercialAppeal?: () => void;
   openTicketCount?: number;
   onNotify?: (message: string) => void;
   onSignOut: () => Promise<void>;
@@ -64,6 +66,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenBilling,
   onOpenCommercialPanel,
   onOpenHelp,
+  onOpenCommercialAppeal,
   openTicketCount = 0,
   onNotify,
   onSignOut,
@@ -175,6 +178,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <EyeOff className="h-3.5 w-3.5" />
                     Status online oculto
                   </span>
+                )}
+                {profile.cpfVerified && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-[#0E7A34]">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      CPF validado
+                    </span>
+                  </>
+                )}
+                {(profile.ratingCount ?? 0) > 0 && (
+                  <>
+                    <span className="text-slate-300">•</span>
+                    <StarRatingBadge
+                      average={profile.ratingAverage}
+                      count={profile.ratingCount}
+                    />
+                  </>
                 )}
               </div>
             </div>
@@ -381,6 +402,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           )}
         </div>
 
+        {profile.commercialBanned && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-bold text-slate-900">
+                Modos Fabricante e Revendedor temporariamente suspensos
+              </p>
+              <span className="rounded-md bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                Restrição comercial ativa
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed text-slate-600">
+              {profile.commercialBanReason
+                ? `Motivo registrado: ${profile.commercialBanReason}. `
+                : 'O acesso aos modos Fabricante e Revendedor foi suspenso após ocorrência de entrega em apuração. '}
+              Suas conversas, chamadas de voz/vídeo, agenda e compras pessoais continuam funcionando normalmente.
+            </p>
+            {(onOpenCommercialAppeal || onOpenHelp) && (
+              <button
+                type="button"
+                onClick={onOpenCommercialAppeal || onOpenHelp}
+                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-3.5 text-xs font-semibold text-white hover:bg-[#143d57]"
+              >
+                <HelpCircle className="h-3.5 w-3.5" />
+                Contatar suporte para revisão e reativação
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           {/* Standard Free Mode */}
           <button
@@ -416,15 +466,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             type="button"
             onClick={() => onSelectMode('manufacturer')}
             className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition ${
-              profile.commercialMode === 'manufacturer'
-                ? 'border-[#0D2B3E] bg-slate-100 ring-1 ring-[#0D2B3E]'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
+              profile.commercialBanned
+                ? 'border-slate-200 bg-slate-50/80 opacity-75'
+                : profile.commercialMode === 'manufacturer'
+                  ? 'border-[#0D2B3E] bg-slate-100 ring-1 ring-[#0D2B3E]'
+                  : 'border-slate-200 bg-white hover:bg-slate-50'
             }`}
           >
             <div>
               <div className="flex items-center justify-between">
                 <Factory className="h-6 w-6 text-[#0D2B3E]" />
-                {profile.commercialMode === 'manufacturer' && (
+                {profile.commercialMode === 'manufacturer' && !profile.commercialBanned && (
                   <CheckCircle2 className="h-5 w-5 text-[#0D2B3E]" />
                 )}
               </div>
@@ -436,9 +488,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </p>
             </div>
             <span className="mt-3 text-xs font-bold text-[#0D2B3E]">
-              {profile.manufacturerActivated
-                ? 'Perfil ativado • Abrir painel'
-                : '30 dias grátis • R$ 59,90/mês'}
+              {profile.commercialBanned
+                ? 'Suspenso · Em revisão pelo suporte'
+                : profile.manufacturerActivated
+                  ? 'Perfil ativado • Abrir painel'
+                  : 'CPF obrigatório · 30 dias grátis'}
             </span>
           </button>
 
@@ -447,15 +501,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             type="button"
             onClick={() => onSelectMode('reseller')}
             className={`flex flex-col justify-between rounded-2xl border p-4 text-left transition ${
-              profile.commercialMode === 'reseller'
-                ? 'border-[#0E7A34] bg-emerald-50/60 ring-1 ring-[#0E7A34]'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
+              profile.commercialBanned
+                ? 'border-slate-200 bg-slate-50/80 opacity-75'
+                : profile.commercialMode === 'reseller'
+                  ? 'border-[#0E7A34] bg-emerald-50/60 ring-1 ring-[#0E7A34]'
+                  : 'border-slate-200 bg-white hover:bg-slate-50'
             }`}
           >
             <div>
               <div className="flex items-center justify-between">
                 <Store className="h-6 w-6 text-[#0E7A34]" />
-                {profile.commercialMode === 'reseller' && (
+                {profile.commercialMode === 'reseller' && !profile.commercialBanned && (
                   <CheckCircle2 className="h-5 w-5 text-[#0E7A34]" />
                 )}
               </div>
@@ -467,9 +523,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </p>
             </div>
             <span className="mt-3 text-xs font-bold text-[#0E7A34]">
-              {profile.resellerActivated
-                ? 'Perfil ativado • Abrir painel'
-                : '30 dias grátis • R$ 59,90/mês'}
+              {profile.commercialBanned
+                ? 'Suspenso · Em revisão pelo suporte'
+                : profile.resellerActivated
+                  ? 'Perfil ativado • Abrir painel'
+                  : 'CPF obrigatório · 30 dias grátis'}
             </span>
           </button>
         </div>

@@ -33,6 +33,7 @@ import {
 } from '../lib/phoneUtils';
 import { getContactPresenceDisplay } from '../lib/presenceUtils';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
+import { StarRatingBadge } from './StarRatingBadge';
 
 function normalizeSearchText(value: string): string {
   return value
@@ -187,7 +188,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const storefrontCatalogByUid = useMemo(() => {
     const map = new Map<string, Product[]>();
     for (const user of directoryUsers) {
-      if (!user.hasStorefront || user.uid === currentUserUid) continue;
+      if (!user.hasStorefront || user.commercialBanned || user.uid === currentUserUid) continue;
       if (user.role === 'manufacturer') {
         const items = products.filter(
           (p) =>
@@ -241,7 +242,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     }> = [];
 
     for (const user of directoryUsers) {
-      if (!user.hasStorefront || user.uid === currentUserUid) continue;
+      if (!user.hasStorefront || user.commercialBanned || user.uid === currentUserUid) continue;
       const items = storefrontCatalogByUid.get(user.uid) ?? [];
       const catSet = new Set<MainCategoryId>();
       for (const p of items) {
@@ -626,6 +627,11 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   <span className="rounded-md bg-[#0E7A34] px-1.5 py-0.5 text-[10px] font-semibold text-white">
                     No ChatFi
                   </span>
+                  <StarRatingBadge
+                    average={liveLookupResult.ratingAverage}
+                    count={liveLookupResult.ratingCount}
+                    variant="inline"
+                  />
                 </div>
                 <p className="font-mono text-xs text-slate-600 tabular-nums">
                   {liveLookupCheckedPhone}
@@ -733,6 +739,8 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                             phone: user.virtualLine,
                             virtualLine: user.virtualLine,
                             subtitle: user.storefrontName || user.displayName,
+                            ratingAverage: user.ratingAverage,
+                            ratingCount: user.ratingCount,
                           })
                         }
                         title={`Ver foto de ${user.storefrontName || user.displayName}`}
@@ -755,9 +763,16 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         )}
                       </button>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-bold text-slate-900">
-                          {user.storefrontName || user.displayName}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-bold text-slate-900">
+                            {user.storefrontName || user.displayName}
+                          </p>
+                          <StarRatingBadge
+                            average={user.ratingAverage}
+                            count={user.ratingCount}
+                            variant="inline"
+                          />
+                        </div>
                         <p className="truncate text-xs text-slate-500">
                           {matchingCount > 0
                             ? `${matchingCount} produto(s) nesta busca`
@@ -812,6 +827,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             {onZapeiContacts.map((contact) => {
               const dir = contact.matchedUid ? directoryByUid.get(contact.matchedUid) : undefined;
               const photoUrl = dir?.avatarUrl;
+              const activeStorefront = Boolean(contact.hasStorefront && !dir?.commercialBanned);
               return (
                 <div
                   key={contact.id}
@@ -828,7 +844,9 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                           avatarUrl: photoUrl,
                           phone: contact.phone,
                           virtualLine: dir?.virtualLine,
-                          subtitle: contact.storefrontName,
+                          subtitle: activeStorefront ? contact.storefrontName : undefined,
+                          ratingAverage: dir?.ratingAverage,
+                          ratingCount: dir?.ratingCount,
                         })
                       }
                       title={`Ver foto de ${contact.name}`}
@@ -865,16 +883,23 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                         <span className="truncate text-sm font-bold text-slate-900">
                           {contact.name}
                         </span>
-                        {contact.hasStorefront && (
+                        {activeStorefront && (
                           <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-[#0E7A34]">
                             <Store className="h-3 w-3" />
                             Vitrine Ativa
                           </span>
                         )}
+                        <StarRatingBadge
+                          average={dir?.ratingAverage}
+                          count={dir?.ratingCount}
+                          variant="inline"
+                        />
                       </div>
                       {(() => {
                         const presence = getContactPresenceDisplay(dir, {
-                          fallback: contact.storefrontName || contact.phone,
+                          fallback:
+                            (activeStorefront ? contact.storefrontName : undefined) ||
+                            contact.phone,
                         });
                         return (
                           <p
@@ -885,12 +910,13 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                             }`}
                           >
                             {presence.isOnline
-                              ? contact.storefrontName
+                              ? activeStorefront && contact.storefrontName
                                 ? `online · ${contact.storefrontName}`
                                 : 'online'
                               : presence.isPresence
                                 ? presence.label
-                                : contact.storefrontName || presence.label}
+                                : (activeStorefront ? contact.storefrontName : undefined) ||
+                                  presence.label}
                           </p>
                         );
                       })()}
@@ -898,7 +924,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {contact.hasStorefront && (
+                    {activeStorefront && (
                       <button
                         type="button"
                         onClick={() => onOpenStorefront(contact)}

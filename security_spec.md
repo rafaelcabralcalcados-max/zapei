@@ -8,6 +8,9 @@
 5. **Strict Action Allowlists & Validation Helpers**: Every update invokes `isValid[Entity](incoming())` and restricts mutated keys with `incoming().diff(existing()).affectedKeys().hasOnly(...)`.
 6. **Temporal Integrity**: `createdAt == request.time` on create; `updatedAt == request.time` on update; `createdAt` is immutable.
 7. **Secure List Queries**: Every `allow list` validates `resource.data` against `request.auth.uid` (or public visibility flags on products/public storefronts) without `get()`/`exists()` inside list rules.
+8. **Order-Gated Star Reviews**: Only verified `buyerId` or `resellerId` on a `dispatched` or `completed` order can write a 1–5 star review in `/reviews/{reviewId}` and atomically update `ratingAverage`/`ratingCount` via `lastRatingReviewId` (`existsAfter`/`getAfter`).
+9. **CPF Binding Without Raw PII**: Raw CPF digits are never stored; `/cpf_commercial_links/{cpfHash}` and `/commercial_identity_hashes/{userId}` store strictly SHA-256 digests.
+10. **Exclusive Commercial Ban Lock**: Non-admin users cannot clear `commercialBanned == true` or re-enable `manufacturer`/`reseller` modes or `hasStorefront` while commercially banned, while personal chat/calls/buyer functions remain unaffected.
 
 ## The "Dirty Dozen" Adversarial Payloads
 1. **Shadow Field Injection on User**: `users/u1` create with extra `isAdmin: true`.

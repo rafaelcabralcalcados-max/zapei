@@ -7,12 +7,32 @@ export const OFFICIAL_SUPPORT_EMAIL =
   (import.meta.env.VITE_SUPPORT_EMAIL as string | undefined)?.trim() ||
   'suporte.chatfi@gmail.com';
 
+export const SUPPORT_ADMIN_EMAILS = [
+  'suporte.chatfi@gmail.com',
+  'rafaelcabralrobo@gmail.com',
+];
+
+export function isSupportAdminEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return SUPPORT_ADMIN_EMAILS.includes(email.trim().toLowerCase());
+}
+
 export const SUPPORT_TICKET_REASONS: SupportTicketReason[] = [
   'Problema com Pagamento / Pix',
   'Dúvida sobre Pedido',
   'Configuração de Wallet ID Asaas',
+  'Ocorrência de Entrega / Má-fé',
+  'Recurso / Liberação Comercial',
   'Denúncia / Segurança',
   'Outros',
+];
+
+export const DELIVERY_REPORT_REASONS: string[] = [
+  'Pedido não despachado após confirmação',
+  'Comprovante ou rastreio divergente',
+  'Mercadoria não entregue / descumprimento de envio',
+  'Recusa injustificada após pagamento confirmado',
+  'Outro descumprimento na entrega',
 ];
 
 export interface SupportFaqItem {
@@ -81,6 +101,17 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
         'Descreva o ocorrido — nossa equipe analisa pelo código do pedido e pela sua Linha Virtual.',
       ],
     },
+    {
+      id: 'buyer-rating-report',
+      question: 'Como avaliar uma loja ou registrar ocorrência na entrega?',
+      answer:
+        'Assim que um pedido é despachado ou concluído, você pode dar de 1 a 5 estrelas e comentar sua experiência. Se houver descumprimento no envio ou má-fé na entrega, use "Registrar ocorrência na entrega" vinculado ao pedido para análise do suporte.',
+      steps: [
+        'Abra Meus Pedidos dentro da vitrine da loja e localize o pedido.',
+        'Toque em "Avaliar Loja (Estrelas)" após o despacho ou confirmação de recebimento.',
+        'Em caso de não entrega, toque em "Registrar ocorrência na entrega" para acionar a análise vinculada ao pedido.',
+      ],
+    },
   ],
   reseller: [
     {
@@ -116,6 +147,12 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
         'Copie o código Wallet ID, cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Revendedor ou em Ajustes e salve.',
       ],
     },
+    {
+      id: 'reseller-cpf-compliance',
+      question: 'Por que o CPF é obrigatório para revender e como funciona a análise comercial?',
+      answer:
+        'Para manter a segurança das transações e a reputação das vitrines, o modo Revendedor exige validação única de CPF. Caso haja restrição comercial por ocorrência na entrega, apenas os modos comerciais ficam suspensos — suas conversas, chamadas e compras pessoais seguem funcionando normalmente, e você pode solicitar revisão pelo suporte.',
+    },
   ],
   manufacturer: [
     {
@@ -150,6 +187,12 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
         'Cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Fabricante e salve.',
         'Acompanhe o extrato líquido de cada subpedido e o status da cobrança na aba Financeiro.',
       ],
+    },
+    {
+      id: 'mfg-cpf-compliance',
+      question: 'Como funcionam o CPF obrigatório, as estrelas e a revisão comercial?',
+      answer:
+        'Para fabricar e fornecer no ChatFi, é necessário validar seu CPF uma única vez. Revendedores avaliam sua pontualidade após o despacho (1 a 5 estrelas), exibindo sua média no perfil. Em eventual suspensão comercial por ocorrência na entrega, seu uso pessoal do mensageiro não é afetado e o suporte realiza a apuração para reativação.',
     },
   ],
 };

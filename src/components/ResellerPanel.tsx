@@ -8,6 +8,7 @@ import {
   CreditCard,
   ExternalLink,
   Eye,
+  FileWarning,
   HelpCircle,
   Image as ImageIcon,
   Layers,
@@ -20,6 +21,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Star,
   Store,
   Tag,
   Truck,
@@ -28,6 +30,7 @@ import {
 } from 'lucide-react';
 import type {
   CategoryMargin,
+  CommercialReview,
   DualPaymentRecord,
   FactoryConnection,
   LogisticsType,
@@ -38,6 +41,7 @@ import type {
   ProductCategory,
   SplitPaymentMethod,
   SubOrder,
+  TargetCommercialRole,
   UserProfile,
 } from '../types/zapei';
 import {
@@ -79,6 +83,13 @@ import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
 import type { HelpCenterContext } from './HelpCenterModal';
+import {
+  DeliveryReportModal,
+  StarReviewModal,
+  type ReportModalTarget,
+  type ReviewModalTarget,
+} from './RatingAndReportModal';
+import { StarRatingBadge } from './StarRatingBadge';
 
 interface ResellerPanelProps {
   profile: UserProfile;
@@ -86,6 +97,8 @@ interface ResellerPanelProps {
   products: Product[];
   orders: MixedOrder[];
   payments: DualPaymentRecord[];
+  writtenReviews?: CommercialReview[];
+  receivedReviews?: CommercialReview[];
   onSaveStorefrontIdentity: (
     storefrontName: string,
     storefrontPrivacy: 'open' | 'approved'
@@ -131,6 +144,30 @@ interface ResellerPanelProps {
   ) => Promise<CancelOrderResult>;
   onOpenMyStorefrontPreview: () => void;
   onOpenBilling: () => void;
+  onConfirmSubOrderDelivered?: (order: MixedOrder, sub: SubOrder) => Promise<void>;
+  onSubmitReview?: (params: {
+    orderId: string;
+    orderCode: string;
+    subOrderId?: string;
+    targetUid: string;
+    targetName: string;
+    targetRole: TargetCommercialRole;
+    reviewerRole: 'buyer' | 'reseller';
+    stars: 1 | 2 | 3 | 4 | 5;
+    comment: string;
+  }) => Promise<void>;
+  onSubmitDeliveryReport?: (params: {
+    orderId: string;
+    orderCode: string;
+    subOrderId?: string;
+    subOrderCode?: string;
+    reportedUid: string;
+    reportedName: string;
+    reportedRole: TargetCommercialRole;
+    reporterRole: 'buyer' | 'reseller';
+    reason: string;
+    description: string;
+  }) => Promise<{ reportCode: string; ticketCode: string }>;
   onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
@@ -142,6 +179,8 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   products,
   orders,
   payments,
+  writtenReviews = [],
+  receivedReviews = [],
   onSaveStorefrontIdentity,
   onSaveAnchorDiscount,
   onSaveWalletId,
@@ -156,10 +195,16 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   onCancelOrder,
   onOpenMyStorefrontPreview,
   onOpenBilling,
+  onConfirmSubOrderDelivered,
+  onSubmitReview,
+  onSubmitDeliveryReport,
   onOpenHelp,
 }) => {
   const [activeTab, setActiveTab] = useState<ResellerTab>('connections');
   const [feedback, setFeedback] = useState('');
+  const [confirmSubDeliveryId, setConfirmSubDeliveryId] = useState<string | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<ReviewModalTarget | null>(null);
+  const [reportTarget, setReportTarget] = useState<ReportModalTarget | null>(null);
 
   // R01 Identity & Visual Anchor Discount state
   const [storefrontName, setStorefrontName] = useState(
@@ -333,9 +378,24 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               <Store className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-slate-900">
-                {profile.storefrontName || profile.name}
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-lg font-bold text-slate-900">
+                  {profile.storefrontName || profile.name}
+                </h1>
+                <StarRatingBadge
+                  average={
+                    profile.ratingCount
+                      ? profile.ratingAverage
+                      : receivedReviews.length > 0
+                        ? receivedReviews.reduce((acc, r) => acc + r.stars, 0) /
+                          receivedReviews.length
+                        : 0
+                  }
+                  count={profile.ratingCount || receivedReviews.length}
+                  variant="card"
+                  showEmpty
+                />
+              </div>
               <p className="text-xs text-slate-500">
                 Painel Comercial · {myConnections.filter((c) => !c.paused).length} fábrica(s) ativa(s)
               </p>
@@ -1367,7 +1427,8 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                         sub.status === 'confirmed' ||
                         sub.status === 'partial_confirmed' ||
                         sub.status === 'logistics_sent' ||
-                        sub.status === 'dispatched';
+                        sub.status === 'dispatched' ||
+                        sub.status === 'completed';
                       const lType =
                         logTypeMap[sub.id] ??
                         (sub.logisticsType !== 'none'
@@ -1399,9 +1460,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                         ? 'Logística enviada à fábrica'
                                         : sub.status === 'dispatched'
                                           ? 'Despachado pela fábrica'
-                                          : sub.status === 'cancelled'
-                                            ? 'Cancelado'
-                                            : sub.status}
+                                          : sub.status === 'completed'
+                                            ? 'Recebimento confirmado'
+                                            : sub.status === 'cancelled'
+                                              ? 'Cancelado'
+                                              : sub.status}
                               </span>
                             </div>
                             <span className="font-mono text-xs font-bold text-slate-700 tabular-nums">
@@ -1421,7 +1484,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                                 Logística bloqueada até o fabricante confirmar a disponibilidade do estoque.
                               </span>
                             </div>
-                          ) : sub.status === 'dispatched' ? (
+                          ) : sub.status === 'dispatched' || sub.status === 'completed' ? (
                             <div className="rounded-lg bg-emerald-50 p-3 text-xs text-[#0E7A34]">
                               <p className="font-semibold">
                                 Despachado via {sub.logisticsType} ({sub.logisticsCompany}) ·{' '}
@@ -1495,6 +1558,116 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               </button>
                             </div>
                           )}
+
+                          {sub.factoryId !== profile.uid &&
+                            order.status !== 'cancelled' &&
+                            sub.status !== 'cancelled' && (() => {
+                              const canConfirmReceipt =
+                                Boolean(onConfirmSubOrderDelivered) &&
+                                sub.status === 'dispatched';
+                              const canRateFactory =
+                                Boolean(onSubmitReview) &&
+                                (sub.status === 'dispatched' || sub.status === 'completed');
+                              const canReportFactory =
+                                Boolean(onSubmitDeliveryReport) &&
+                                (sub.status === 'confirmed' ||
+                                  sub.status === 'partial_confirmed' ||
+                                  sub.status === 'logistics_sent' ||
+                                  sub.status === 'dispatched' ||
+                                  sub.status === 'completed');
+                              const existingFactoryReview = writtenReviews.find(
+                                (r) =>
+                                  r.orderId === order.id &&
+                                  r.targetUid === sub.factoryId &&
+                                  r.targetRole === 'manufacturer'
+                              );
+                              if (!canConfirmReceipt && !canRateFactory && !canReportFactory) {
+                                return null;
+                              }
+                              return (
+                                <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
+                                  {canConfirmReceipt && onConfirmSubOrderDelivered && (
+                                    <button
+                                      type="button"
+                                      disabled={confirmSubDeliveryId === sub.id}
+                                      onClick={async () => {
+                                        setConfirmSubDeliveryId(sub.id);
+                                        try {
+                                          await onConfirmSubOrderDelivered(order, sub);
+                                          setFeedback(
+                                            `Recebimento do subpedido ${sub.subOrderCode} confirmado.`
+                                          );
+                                        } finally {
+                                          setConfirmSubDeliveryId(null);
+                                        }
+                                      }}
+                                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg bg-[#0E7A34] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-60"
+                                    >
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      {confirmSubDeliveryId === sub.id
+                                        ? 'Confirmando...'
+                                        : 'Confirmar Recebimento'}
+                                    </button>
+                                  )}
+
+                                  {canRateFactory && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setReviewTarget({
+                                          orderId: order.id,
+                                          orderCode: order.orderCode,
+                                          subOrderId: sub.id,
+                                          targetUid: sub.factoryId,
+                                          targetName: sub.factoryName,
+                                          targetRole: 'manufacturer',
+                                          reviewerRole: 'reseller',
+                                          existingReview: existingFactoryReview,
+                                        })
+                                      }
+                                      className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                        existingFactoryReview
+                                          ? 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100/70'
+                                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      <Star
+                                        className={`h-3.5 w-3.5 ${
+                                          existingFactoryReview
+                                            ? 'fill-amber-400 text-amber-500'
+                                            : 'text-amber-500'
+                                        }`}
+                                      />
+                                      {existingFactoryReview
+                                        ? `Avaliado: ${existingFactoryReview.stars}★`
+                                        : 'Avaliar Fabricante'}
+                                    </button>
+                                  )}
+
+                                  {canReportFactory && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setReportTarget({
+                                          orderId: order.id,
+                                          orderCode: order.orderCode,
+                                          subOrderId: sub.id,
+                                          subOrderCode: sub.subOrderCode,
+                                          reportedUid: sub.factoryId,
+                                          reportedName: sub.factoryName,
+                                          reportedRole: 'manufacturer',
+                                          reporterRole: 'reseller',
+                                        })
+                                      }
+                                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                    >
+                                      <FileWarning className="h-3.5 w-3.5" />
+                                      Ocorrência na entrega
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })()}
                         </div>
                       );
                     })}
@@ -1941,6 +2114,35 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
         }}
         onCopySuccess={(msg) => setFeedback(msg)}
       />
+
+      {reviewTarget && onSubmitReview && (
+        <StarReviewModal
+          key={`${reviewTarget.orderId}_${reviewTarget.targetUid}_${reviewTarget.targetRole}`}
+          target={reviewTarget}
+          onClose={() => setReviewTarget(null)}
+          onSubmitReview={async (params) => {
+            await onSubmitReview(params);
+            setFeedback(
+              `Avaliação de ${params.stars} estrela(s) registrada para ${params.targetName}.`
+            );
+          }}
+        />
+      )}
+
+      {reportTarget && onSubmitDeliveryReport && (
+        <DeliveryReportModal
+          key={`${reportTarget.orderId}_${reportTarget.reportedUid}_${reportTarget.reportedRole}`}
+          target={reportTarget}
+          onClose={() => setReportTarget(null)}
+          onSubmitReport={async (params) => {
+            const res = await onSubmitDeliveryReport(params);
+            setFeedback(
+              `Ocorrência ${res.reportCode} registrada e vinculada ao chamado ${res.ticketCode}.`
+            );
+            return res;
+          }}
+        />
+      )}
     </div>
   );
 };

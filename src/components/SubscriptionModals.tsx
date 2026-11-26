@@ -9,34 +9,63 @@ import {
   X,
 } from 'lucide-react';
 import type { CommercialMode, UserProfile } from '../types/zapei';
+import { formatCpfMask, isValidCpf } from '../lib/cpfAndDeviceUtils';
 
 interface CommercialTrialModalProps {
   targetRole: Extract<CommercialMode, 'manufacturer' | 'reseller'>;
   defaultBusinessName?: string;
   alreadyOnPlan?: boolean;
-  onConfirm: (businessName: string) => Promise<void>;
+  cpfAlreadyVerified?: boolean;
+  onConfirm: (businessName: string, cpfRaw?: string) => Promise<void>;
   onCancel: () => void;
+  onOpenHelp?: () => void;
 }
 
 export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
   targetRole,
   defaultBusinessName = '',
   alreadyOnPlan = false,
+  cpfAlreadyVerified = false,
   onConfirm,
   onCancel,
+  onOpenHelp,
 }) => {
   const [businessName, setBusinessName] = useState(defaultBusinessName);
+  const [cpfInput, setCpfInput] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isRestrictedError, setIsRestrictedError] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const isFactory = targetRole === 'manufacturer';
+  const cpfValid = cpfAlreadyVerified || isValidCpf(cpfInput);
 
   const handleConfirm = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg('');
+    setIsRestrictedError(false);
+
     const cleaned = businessName.trim();
-    if (cleaned.length < 2) return;
+    if (cleaned.length < 2) {
+      setErrorMsg('Informe o nome comercial com pelo menos 2 caracteres.');
+      return;
+    }
+    if (!cpfAlreadyVerified && !isValidCpf(cpfInput)) {
+      setErrorMsg('Informe um CPF válido (11 dígitos) para liberar a atuação como Fabricante ou Revendedor.');
+      return;
+    }
+
     setBusy(true);
     try {
-      await onConfirm(cleaned);
+      await onConfirm(cleaned, cpfAlreadyVerified ? undefined : cpfInput);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível ativar este modo comercial agora.';
+      setErrorMsg(msg);
+      if (/suspens|bloquead|restri/i.test(msg)) {
+        setIsRestrictedError(true);
+      }
     } finally {
       setBusy(false);
     }
@@ -67,7 +96,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
         </h2>
         <p className="mt-1 text-sm text-slate-600">
           {alreadyOnPlan ? (
-            <>Digite o nome abaixo para abrir seu painel comercial agora.</>
+            <>Confirme os dados abaixo para abrir seu painel comercial agora.</>
           ) : (
             <>
               <strong>30 dias grátis sem cartão.</strong> Depois apenas{' '}
@@ -76,26 +105,79 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
           )}
         </p>
 
-        <div className="mt-5">
-          <label
-            htmlFor="zapei-business-name"
-            className="block text-xs font-bold text-slate-800"
-          >
-            {isFactory ? 'Nome da sua empresa / fábrica' : 'Nome da sua vitrine / loja'}
-          </label>
-          <input
-            id="zapei-business-name"
-            type="text"
-            autoFocus
-            required
-            minLength={2}
-            maxLength={80}
-            value={businessName}
-            onChange={(e) => setBusinessName(e.target.value)}
-            placeholder={isFactory ? 'Ex: Calçados Silva' : 'Ex: Loja Ana Moda'}
-            className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
-          />
+        <div className="mt-5 space-y-4">
+          <div>
+            <label
+              htmlFor="zapei-business-name"
+              className="block text-xs font-bold text-slate-800"
+            >
+              {isFactory ? 'Nome da sua empresa / fábrica' : 'Nome da sua vitrine / loja'}
+            </label>
+            <input
+              id="zapei-business-name"
+              type="text"
+              autoFocus
+              required
+              minLength={2}
+              maxLength={80}
+              value={businessName}
+              onChange={(e) => setBusinessName(e.target.value)}
+              placeholder={isFactory ? 'Ex: Calçados Silva' : 'Ex: Loja Ana Moda'}
+              className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
+            />
+          </div>
+
+          {!cpfAlreadyVerified ? (
+            <div>
+              <label
+                htmlFor="zapei-commercial-cpf"
+                className="block text-xs font-bold text-slate-800"
+              >
+                CPF do responsável <span className="text-red-600">*</span>
+              </label>
+              <input
+                id="zapei-commercial-cpf"
+                type="text"
+                inputMode="numeric"
+                required
+                value={cpfInput}
+                onChange={(e) => {
+                  setErrorMsg('');
+                  setCpfInput(formatCpfMask(e.target.value));
+                }}
+                placeholder="000.000.000-00"
+                className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 font-mono text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
+              />
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                Obrigatório para Fabricantes e Revendedores. Validado de forma criptografada (SHA-256)
+                e nunca exibido publicamente na sua vitrine.
+              </p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 text-xs font-medium text-[#0E7A34]">
+              <ShieldCheck className="h-4 w-4 shrink-0" />
+              <span>CPF já validado e vinculado à sua conta.</span>
+            </div>
+          )}
         </div>
+
+        {errorMsg && (
+          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-xs text-red-700">
+            <p className="font-medium leading-relaxed">{errorMsg}</p>
+            {isRestrictedError && onOpenHelp && (
+              <button
+                type="button"
+                onClick={() => {
+                  onCancel();
+                  onOpenHelp();
+                }}
+                className="mt-2 font-bold text-[#0D2B3E] underline hover:no-underline"
+              >
+                Solicitar revisão na Central de Ajuda
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="mt-4 flex items-start gap-2 rounded-xl bg-slate-50 px-3.5 py-3 text-xs text-slate-600">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
@@ -116,10 +198,10 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
           </button>
           <button
             type="submit"
-            disabled={busy || businessName.trim().length < 2}
+            disabled={busy || businessName.trim().length < 2 || !cpfValid}
             className="h-12 flex-1 rounded-xl bg-[#0E7A34] text-xs font-bold text-white hover:bg-[#0B5D27] disabled:opacity-50"
           >
-            {busy ? 'Abrindo painel...' : 'Ativar e abrir painel'}
+            {busy ? 'Validando...' : 'Ativar e abrir painel'}
           </button>
         </div>
       </form>

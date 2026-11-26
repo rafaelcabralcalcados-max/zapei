@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Copy, Phone, X } from 'lucide-react';
+import { StarRatingBadge } from './StarRatingBadge';
 
 export interface AvatarPreviewTarget {
   name: string;
@@ -9,6 +10,8 @@ export interface AvatarPreviewTarget {
   phone?: string;
   virtualLine?: string;
   subtitle?: string;
+  ratingAverage?: number;
+  ratingCount?: number;
 }
 
 interface AvatarLightboxModalProps {
@@ -65,7 +68,15 @@ export const AvatarLightboxModal: React.FC<AvatarLightboxModalProps> = ({
         className="flex items-center justify-between gap-3 border-b border-white/10 bg-slate-950 px-4 py-3.5 pt-safe text-white"
       >
         <div className="min-w-0">
-          <h2 className="truncate text-base font-bold text-white">{target.name}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="truncate text-base font-bold text-white">{target.name}</h2>
+            <StarRatingBadge
+              average={target.ratingAverage}
+              count={target.ratingCount}
+              variant="inline"
+              tone="dark"
+            />
+          </div>
           {primaryNumber ? (
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 font-mono text-xs font-semibold text-emerald-300 tabular-nums">

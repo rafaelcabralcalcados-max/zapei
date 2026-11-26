@@ -37,6 +37,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
   type Firestore,
   type Timestamp,
 } from 'firebase/firestore';
@@ -47,9 +48,13 @@ import type {
   CategoryMargin,
   ChatMessage,
   ChatThreadSummary,
+  CommercialBanRecord,
   CommercialMode,
+  CommercialReview,
   ConnectedDevice,
   Contact,
+  DeliveryReport,
+  DeliveryReportStatus,
   DeviceAuthRequest,
   DualPaymentRecord,
   FactoryConnection,
@@ -69,6 +74,7 @@ import type {
   SupportTicket,
   SupportTicketReason,
   SupportTicketStatus,
+  TargetCommercialRole,
   UserProfile,
 } from '../types/zapei';
 import { buildDefaultMarginsMap } from './categories';
@@ -333,6 +339,7 @@ export async function registerOrUpdateUserProfile(params: {
   virtualLine?: string;
   authMethod?: 'phone' | 'cpf';
   cpfHash?: string;
+  cpfVerified?: boolean;
   statusMessage?: string;
   avatarColor?: string;
   avatarUrl?: string;
@@ -377,6 +384,10 @@ export async function registerOrUpdateUserProfile(params: {
   const resolvedCpfHash =
     params.cpfHash ||
     (existingPrivData?.cpfHash ? String(existingPrivData.cpfHash) : '');
+  const resolvedCpfVerified =
+    Boolean(params.cpfVerified) ||
+    Boolean(existingPubData?.cpfVerified) ||
+    resolvedCpfHash.length === 64;
 
   const rawIdentifier = params.phone.trim() || resolvedVirtualLine;
   const isVirtualLineValue = isVirtualLinePrefix(rawIdentifier);
@@ -385,11 +396,19 @@ export async function registerOrUpdateUserProfile(params: {
     : formatPhoneDisplay(rawIdentifier);
   const phoneHash = await computeContactLookupHash(cleanPhone);
 
+  const existingBanned = Boolean(existingPubData?.commercialBanned);
   const initials = getInitials(params.displayName);
-  const mode = params.commercialMode ?? 'buyer';
+  const requestedMode = params.commercialMode ?? 'buyer';
+  const mode: CommercialMode = existingBanned
+    ? 'buyer'
+    : requestedMode !== 'buyer' && !resolvedCpfVerified
+      ? 'buyer'
+      : requestedMode;
   const subStatus = params.subscriptionStatus ?? 'free';
   const hasStorefront =
-    (mode === 'manufacturer' || mode === 'reseller') && subStatus !== 'expired';
+    !existingBanned &&
+    (mode === 'manufacturer' || mode === 'reseller') &&
+    subStatus !== 'expired';
   const policy = params.factoryPolicy ?? {
     type: 'boxes',
     value: 1,
@@ -461,8 +480,14 @@ export async function registerOrUpdateUserProfile(params: {
     lastSeenAt: resolvedShowLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
+  if (resolvedCpfVerified) {
+    publicData.cpfVerified = true;
+  }
   if (resolvedVirtualLine) {
     publicData.virtualLine = resolvedVirtualLine.slice(0, 24);
+  }
+  if (existingBanned) {
+    publicData.commercialBanned = true;
   }
 
   if (isNewProfile && params.primaryDevice) {
@@ -473,7 +498,10 @@ export async function registerOrUpdateUserProfile(params: {
     if (existingUser.exists()) {
       await updateDoc(userRef, publicData);
     } else {
-      await setDoc(userRef, { ...publicData, createdAt: serverTimestamp() });
+      await setDoc(userRef, {
+        ...publicData,
+        createdAt: serverTimestamp(),
+      });
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}`);
@@ -505,18 +533,67 @@ export async function registerOrUpdateUserProfile(params: {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}/private/info`);
   }
 
+  // Sync non-PII SHA-256 identity hashes for cross-identifier compliance enforcement
+  void syncCommercialIdentityHashes({
+    uid: params.uid,
+    cpfHash: resolvedCpfHash || undefined,
+    phoneHash,
+    virtualLine: resolvedVirtualLine || undefined,
+  });
+
   const indexRole: 'normal' | 'reseller' | 'manufacturer' =
-    mode === 'manufacturer' ? 'manufacturer' : mode === 'reseller' ? 'reseller' : 'normal';
+    existingBanned
+      ? 'normal'
+      : mode === 'manufacturer'
+        ? 'manufacturer'
+        : mode === 'reseller'
+          ? 'reseller'
+          : 'normal';
   const resolvedStorefrontName = (
     mode === 'manufacturer'
       ? params.factoryName ?? params.displayName
       : params.storefrontName ?? `Vitrine ${params.displayName}`
   ).slice(0, 80);
 
+  const existingRatingAvg = Number(existingPubData?.ratingAverage ?? 0) || 0;
+  const existingRatingCnt = Math.max(0, Math.round(Number(existingPubData?.ratingCount ?? 0) || 0));
+
   if (phoneHash) {
     const indexRef = doc(db, 'phone_index', phoneHash);
+    const indexPayload: Record<string, unknown> = {
+      ownerId: params.uid,
+      displayName: params.displayName.slice(0, 80),
+      initials,
+      avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
+      avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+      role: indexRole,
+      hasStorefront,
+      storefrontName: resolvedStorefrontName,
+      deliveryPolicyType: policy.type,
+      deliveryPolicyValue: policy.value,
+      deliveryPolicyPickup: policy.allowCounterPickup,
+      deliveryPolicyLabel: policy.label.slice(0, 160),
+      updatedAt: serverTimestamp(),
+    };
+    if (existingRatingCnt > 0 || existingRatingAvg > 0) {
+      indexPayload.ratingAverage = existingRatingAvg;
+      indexPayload.ratingCount = existingRatingCnt;
+    }
+    if (existingBanned) {
+      indexPayload.commercialBanned = true;
+    }
     try {
-      await setDoc(indexRef, {
+      await setDoc(indexRef, indexPayload);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `phone_index/${phoneHash}`);
+    }
+  }
+
+  // Also index Virtual Line hash if user has both a phone and a virtualLine
+  if (resolvedVirtualLine && cleanPhone !== resolvedVirtualLine) {
+    const vlineHash = await computeContactLookupHash(resolvedVirtualLine);
+    if (vlineHash && vlineHash !== phoneHash) {
+      const vlinePayload: Record<string, unknown> = {
         ownerId: params.uid,
         displayName: params.displayName.slice(0, 80),
         initials,
@@ -530,37 +607,31 @@ export async function registerOrUpdateUserProfile(params: {
         deliveryPolicyPickup: policy.allowCounterPickup,
         deliveryPolicyLabel: policy.label.slice(0, 160),
         updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `phone_index/${phoneHash}`);
-    }
-  }
-
-  // Also index Virtual Line hash if user has both a phone and a virtualLine
-  if (resolvedVirtualLine && cleanPhone !== resolvedVirtualLine) {
-    const vlineHash = await computeContactLookupHash(resolvedVirtualLine);
-    if (vlineHash && vlineHash !== phoneHash) {
+      };
+      if (existingRatingCnt > 0 || existingRatingAvg > 0) {
+        vlinePayload.ratingAverage = existingRatingAvg;
+        vlinePayload.ratingCount = existingRatingCnt;
+      }
+      if (existingBanned) {
+        vlinePayload.commercialBanned = true;
+      }
       try {
-        await setDoc(doc(db, 'phone_index', vlineHash), {
-          ownerId: params.uid,
-          displayName: params.displayName.slice(0, 80),
-          initials,
-          avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-          avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
-          role: indexRole,
-          hasStorefront,
-          storefrontName: resolvedStorefrontName,
-          deliveryPolicyType: policy.type,
-          deliveryPolicyValue: policy.value,
-          deliveryPolicyPickup: policy.allowCounterPickup,
-          deliveryPolicyLabel: policy.label.slice(0, 160),
-          updatedAt: serverTimestamp(),
-        });
+        await setDoc(doc(db, 'phone_index', vlineHash), vlinePayload);
       } catch {
         // Secondary index best-effort
       }
     }
   }
+
+  const directoryRef = doc(db, 'public_directory', params.uid);
+  let existingDir = await getDoc(directoryRef).catch(() => null);
+  if (!existingDir?.exists()) {
+    existingDir = await getDocFromServer(directoryRef).catch(() => existingDir);
+  }
+  const existingDirData = existingDir?.exists()
+    ? (existingDir.data() as Record<string, unknown>)
+    : null;
+  const dirBanned = existingBanned || Boolean(existingDirData?.commercialBanned);
 
   const directoryPayload: Record<string, unknown> = {
     uid: params.uid,
@@ -570,8 +641,8 @@ export async function registerOrUpdateUserProfile(params: {
     statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
     avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
-    role: indexRole,
-    hasStorefront,
+    role: dirBanned ? 'normal' : indexRole,
+    hasStorefront: dirBanned ? false : hasStorefront,
     storefrontName: resolvedStorefrontName,
     deliveryPolicyLabel: policy.label.slice(0, 160),
     isDiscoverable: true,
@@ -584,9 +655,29 @@ export async function registerOrUpdateUserProfile(params: {
   if (resolvedVirtualLine) {
     directoryPayload.virtualLine = resolvedVirtualLine.slice(0, 24);
   }
+  if (dirBanned) {
+    directoryPayload.commercialBanned = true;
+  }
 
   try {
-    await setDoc(doc(db, 'public_directory', params.uid), directoryPayload);
+    if (existingDir?.exists()) {
+      await updateDoc(directoryRef, directoryPayload);
+    } else {
+      const createDirPayload: Record<string, unknown> = { ...directoryPayload };
+      if (existingRatingCnt > 0 || existingRatingAvg > 0) {
+        createDirPayload.ratingAverage = existingRatingAvg;
+        createDirPayload.ratingCount = existingRatingCnt;
+      }
+      try {
+        await setDoc(directoryRef, createDirPayload);
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          await updateDoc(directoryRef, directoryPayload);
+        } else {
+          throw setErr;
+        }
+      }
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `public_directory/${params.uid}`);
   }
@@ -618,6 +709,10 @@ function buildUserProfileFromDocs(
       : undefined;
   const authMethod: 'phone' | 'cpf' =
     publicData.authMethod === 'cpf' || privateData.authMethod === 'cpf' ? 'cpf' : 'phone';
+  const cpfVerified =
+    Boolean(publicData.cpfVerified) ||
+    (typeof privateData.cpfHash === 'string' && privateData.cpfHash.length === 64);
+  const commercialBanned = Boolean(publicData.commercialBanned);
 
   const rawStatusMessage = String(publicData.statusMessage ?? '');
   const sanitizedStatus = sanitizeStatusMessage(rawStatusMessage);
@@ -630,6 +725,7 @@ function buildUserProfileFromDocs(
     phoneHash: String(privateData.phoneHash ?? ''),
     virtualLine,
     authMethod,
+    cpfVerified,
     email: String(privateData.email ?? email),
     statusMessage: sanitizedStatus,
     isOnline: Boolean(publicData.isOnline),
@@ -638,10 +734,12 @@ function buildUserProfileFromDocs(
     showLastSeen: publicData.showLastSeen !== false,
     avatarBg: String(publicData.avatarColor ?? '#0E7A34'),
     avatarUrl: publicData.avatarUrl ? String(publicData.avatarUrl) : undefined,
-    commercialMode: (publicData.commercialMode as CommercialMode) ?? 'buyer',
+    commercialMode: commercialBanned
+      ? 'buyer'
+      : ((publicData.commercialMode as CommercialMode) ?? 'buyer'),
     manufacturerActivated: Boolean(publicData.manufacturerActivated),
     resellerActivated: Boolean(publicData.resellerActivated),
-    hasStorefront: Boolean(publicData.hasStorefront),
+    hasStorefront: commercialBanned ? false : Boolean(publicData.hasStorefront),
     subscriptionStatus: effectiveSub,
     trialEndsAt,
     trialDaysLeft: daysLeft,
@@ -663,6 +761,15 @@ function buildUserProfileFromDocs(
       Array.isArray(privateData.favoriteGrades) && privateData.favoriteGrades.length > 0
         ? (privateData.favoriteGrades as FavoriteGrade[])
         : DEFAULT_FAVORITE_GRADES,
+    ratingAverage: Number(publicData.ratingAverage ?? 0) || 0,
+    ratingCount: Math.max(0, Math.round(Number(publicData.ratingCount ?? 0) || 0)),
+    commercialBanned,
+    commercialBanReason: publicData.commercialBanReason
+      ? String(publicData.commercialBanReason)
+      : undefined,
+    commercialBanAtMs: publicData.commercialBanAtMs
+      ? Number(publicData.commercialBanAtMs)
+      : undefined,
   };
 }
 
@@ -812,6 +919,9 @@ export interface PublicDirectoryUser {
   storefrontName: string;
   deliveryPolicyLabel: string;
   virtualLine?: string;
+  ratingAverage?: number;
+  ratingCount?: number;
+  commercialBanned?: boolean;
   isOnline?: boolean;
   lastSeenAt?: number;
   showOnlineStatus?: boolean;
@@ -820,8 +930,18 @@ export interface PublicDirectoryUser {
 
 export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<void> {
   if (!profile.uid || !profile.name.trim()) return;
-  const role: 'normal' | 'reseller' | 'manufacturer' =
-    profile.commercialMode === 'manufacturer'
+  const dirRef = doc(db, 'public_directory', profile.uid);
+  let existing = await getDoc(dirRef).catch(() => null);
+  if (!existing?.exists()) {
+    existing = await getDocFromServer(dirRef).catch(() => existing);
+  }
+  const existingData = existing?.exists()
+    ? (existing.data() as Record<string, unknown>)
+    : null;
+  const banned = Boolean(profile.commercialBanned) || Boolean(existingData?.commercialBanned);
+  const role: 'normal' | 'reseller' | 'manufacturer' = banned
+    ? 'normal'
+    : profile.commercialMode === 'manufacturer'
       ? 'manufacturer'
       : profile.commercialMode === 'reseller'
         ? 'reseller'
@@ -845,24 +965,49 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     avatarColor: (profile.avatarBg || '#0E7A34').slice(0, 20),
     avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
     role,
-    hasStorefront: Boolean(profile.hasStorefront),
+    hasStorefront: banned ? false : Boolean(profile.hasStorefront),
     storefrontName,
     deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
     isDiscoverable: true,
     showOnlineStatus: showOnline,
     showLastSeen,
-    isOnline: showOnline && typeof document !== 'undefined' ? document.visibilityState === 'visible' : showOnline,
+    isOnline:
+      showOnline && typeof document !== 'undefined'
+        ? document.visibilityState === 'visible'
+        : showOnline,
     lastSeenAt: showLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
   if (profile.virtualLine) {
     payload.virtualLine = profile.virtualLine.slice(0, 24);
   }
+  if (banned) {
+    payload.commercialBanned = true;
+  }
 
   try {
-    await setDoc(doc(db, 'public_directory', profile.uid), payload);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `public_directory/${profile.uid}`);
+    if (existing?.exists()) {
+      await updateDoc(dirRef, payload);
+    } else {
+      const ratingAverage = Number(profile.ratingAverage ?? 0) || 0;
+      const ratingCount = Math.max(0, Math.round(Number(profile.ratingCount ?? 0) || 0));
+      const createPayload: Record<string, unknown> = { ...payload };
+      if (ratingCount > 0 || ratingAverage > 0) {
+        createPayload.ratingAverage = ratingAverage;
+        createPayload.ratingCount = ratingCount;
+      }
+      try {
+        await setDoc(dirRef, createPayload);
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          await updateDoc(dirRef, payload);
+        } else {
+          throw setErr;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal background directory sync (same pattern as updateUserPresenceHeartbeat)
   }
 }
 
@@ -975,9 +1120,21 @@ export function subscribePublicDirectory(
             ? prev.showLastSeen
             : true;
 
+      const isBanned = Boolean(d.commercialBanned || prev?.commercialBanned);
       merged.set(d.uid, {
         ...prev,
         ...d,
+        role: isBanned ? 'normal' : d.role || prev?.role || 'normal',
+        hasStorefront: isBanned ? false : Boolean(d.hasStorefront ?? prev?.hasStorefront),
+        commercialBanned: isBanned,
+        ratingAverage: Math.max(
+          Number(d.ratingAverage ?? 0) || 0,
+          Number(prev?.ratingAverage ?? 0) || 0
+        ),
+        ratingCount: Math.max(
+          Math.round(Number(d.ratingCount ?? 0) || 0),
+          Math.round(Number(prev?.ratingCount ?? 0) || 0)
+        ),
         avatarUrl: d.avatarUrl || prev?.avatarUrl,
         storefrontName: d.storefrontName || prev?.storefrontName || '',
         statusMessage: sanitizeStatusMessage(d.statusMessage || prev?.statusMessage),
@@ -1005,6 +1162,7 @@ export function subscribePublicDirectory(
         const displayName = String(d.displayName || '');
         const showOnline = d.showOnlineStatus !== false;
         const showLastSeen = d.showLastSeen !== false;
+        const isBanned = Boolean(d.commercialBanned);
         return {
           uid: String(d.uid || docSnap.id),
           displayName,
@@ -1012,11 +1170,16 @@ export function subscribePublicDirectory(
           statusMessage: sanitizeStatusMessage(String(d.statusMessage || '')),
           avatarColor: String(d.avatarColor || '#0E7A34'),
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
-          role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
-          hasStorefront: Boolean(d.hasStorefront),
+          role: isBanned
+            ? 'normal'
+            : ((d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal'),
+          hasStorefront: isBanned ? false : Boolean(d.hasStorefront),
           storefrontName: String(d.storefrontName || ''),
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
           virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
+          ratingAverage: Number(d.ratingAverage ?? 0) || 0,
+          ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
+          commercialBanned: isBanned,
           showOnlineStatus: showOnline,
           showLastSeen,
           isOnline: showOnline ? Boolean(d.isOnline) : false,
@@ -1036,7 +1199,8 @@ export function subscribePublicDirectory(
       userList = snap.docs.map((docSnap) => {
         const d = docSnap.data();
         const displayName = String(d.displayName || '');
-        const mode = String(d.commercialMode || 'buyer');
+        const isBanned = Boolean(d.commercialBanned);
+        const mode = isBanned ? 'buyer' : String(d.commercialMode || 'buyer');
         const role: 'normal' | 'reseller' | 'manufacturer' =
           mode === 'manufacturer'
             ? 'manufacturer'
@@ -1058,10 +1222,15 @@ export function subscribePublicDirectory(
           avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
           role,
           hasStorefront:
-            Boolean(d.hasStorefront) && String(d.subscriptionStatus || '') !== 'expired',
+            !isBanned &&
+            Boolean(d.hasStorefront) &&
+            String(d.subscriptionStatus || '') !== 'expired',
           storefrontName,
           deliveryPolicyLabel: String(d.deliveryPolicyLabel || ''),
           virtualLine: d.virtualLine ? String(d.virtualLine) : undefined,
+          ratingAverage: Number(d.ratingAverage ?? 0) || 0,
+          ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
+          commercialBanned: isBanned,
           showOnlineStatus: showOnline,
           showLastSeen,
           isOnline: showOnline ? Boolean(d.isOnline) : false,
@@ -1091,6 +1260,9 @@ export interface PhoneLookupResult {
   hasStorefront: boolean;
   storefrontName: string;
   deliveryPolicy: MinimumDeliveryPolicy;
+  ratingAverage?: number;
+  ratingCount?: number;
+  commercialBanned?: boolean;
 }
 
 export async function lookupRegisteredUserByPhone(
@@ -1102,14 +1274,17 @@ export async function lookupRegisteredUserByPhone(
     const snap = await getDoc(doc(db, 'phone_index', phoneHash));
     if (!snap.exists()) return null;
     const d = snap.data();
+    const isBanned = Boolean(d.commercialBanned);
     return {
       uid: String(d.ownerId),
       displayName: String(d.displayName),
       initials: String(d.initials || getInitials(String(d.displayName))),
       avatarColor: String(d.avatarColor || '#0E7A34'),
       avatarUrl: d.avatarUrl ? String(d.avatarUrl) : undefined,
-      role: (d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal',
-      hasStorefront: Boolean(d.hasStorefront),
+      role: isBanned
+        ? 'normal'
+        : ((d.role as 'normal' | 'reseller' | 'manufacturer') ?? 'normal'),
+      hasStorefront: isBanned ? false : Boolean(d.hasStorefront),
       storefrontName: String(d.storefrontName || d.displayName),
       deliveryPolicy: {
         type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
@@ -1117,6 +1292,9 @@ export async function lookupRegisteredUserByPhone(
         allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? true),
         label: String(d.deliveryPolicyLabel || 'Mínimo 1 caixa'),
       },
+      ratingAverage: Number(d.ratingAverage ?? 0) || 0,
+      ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
+      commercialBanned: isBanned,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `phone_index/${phoneHash}`);
@@ -2407,16 +2585,22 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
   anchorDiscountPercent: number;
   deliveryPolicy: MinimumDeliveryPolicy;
   subscriptionStatus: SubscriptionStatus;
+  ratingAverage: number;
+  ratingCount: number;
+  commercialBanned: boolean;
 } | null> {
   try {
     const snap = await getDoc(doc(db, 'users', uid));
     if (!snap.exists()) return null;
     const d = snap.data();
+    const commercialBanned = Boolean(d.commercialBanned);
     return {
       uid,
       displayName: String(d.displayName || ''),
-      commercialMode: (d.commercialMode as CommercialMode) ?? 'buyer',
-      hasStorefront: Boolean(d.hasStorefront),
+      commercialMode: commercialBanned
+        ? 'buyer'
+        : ((d.commercialMode as CommercialMode) ?? 'buyer'),
+      hasStorefront: commercialBanned ? false : Boolean(d.hasStorefront),
       storefrontName: String(d.storefrontName || d.factoryName || d.displayName || ''),
       factoryName: String(d.factoryName || d.displayName || ''),
       anchorDiscountPercent: Math.min(
@@ -2430,6 +2614,9 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
         label: String(d.deliveryPolicyLabel || 'Mínimo 1 caixa'),
       },
       subscriptionStatus: (d.subscriptionStatus as SubscriptionStatus) ?? 'free',
+      ratingAverage: Number(d.ratingAverage ?? 0) || 0,
+      ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
+      commercialBanned,
     };
   } catch {
     return null;
@@ -2591,6 +2778,12 @@ export async function registerAccountWithCpf(params: {
     statusMessage: sanitizeStatusMessage(params.statusMessage) || DEFAULT_STATUS_MESSAGE,
     avatarUrl: params.avatarUrl || '',
     primaryDevice: resolvedDevice,
+  });
+
+  await checkCommercialBanStatus({
+    uid: newUser.uid,
+    cpfHash,
+    virtualLine,
   });
 
   return { user: newUser, virtualLine };
@@ -3491,6 +3684,866 @@ export async function resolveSupportTicket(
     handleFirestoreError(error, OperationType.UPDATE, `support_tickets/${ticketId}`);
   }
 }
+
+// --- MANDATORY CPF COMMERCIAL BINDING, STAR RATINGS & EXCLUSIVE COMMERCIAL BAN ---
+
+async function sha256Hex(input: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) return '';
+  const encoded = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function computeVirtualLineSha256(virtualLine?: string): Promise<string> {
+  const normalized = (virtualLine || '').trim().toUpperCase();
+  if (!normalized || !isVirtualLinePrefix(normalized)) return '';
+  return sha256Hex(`chatfi-vline-v1:${normalized}`);
+}
+
+export async function syncCommercialIdentityHashes(params: {
+  uid: string;
+  cpfHash?: string;
+  phoneHash?: string;
+  virtualLine?: string;
+}): Promise<void> {
+  if (!params.uid) return;
+  const virtualLineHash = await computeVirtualLineSha256(params.virtualLine);
+  const payload: Record<string, unknown> = {
+    uid: params.uid,
+    updatedAt: serverTimestamp(),
+  };
+  if (params.cpfHash && /^[a-f0-9]{64}$/.test(params.cpfHash)) {
+    payload.cpfHash = params.cpfHash;
+  }
+  if (params.phoneHash && params.phoneHash.trim().length >= 16) {
+    payload.phoneHash = params.phoneHash.trim().slice(0, 128);
+  }
+  if (virtualLineHash && /^[a-f0-9]{64}$/.test(virtualLineHash)) {
+    payload.virtualLineHash = virtualLineHash;
+  }
+
+  const ref = doc(db, 'commercial_identity_hashes', params.uid);
+  try {
+    const snap = await getDoc(ref).catch(() => null);
+    if (snap?.exists()) {
+      const updatePayload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (payload.cpfHash) updatePayload.cpfHash = payload.cpfHash;
+      if (payload.phoneHash) updatePayload.phoneHash = payload.phoneHash;
+      if (payload.virtualLineHash) updatePayload.virtualLineHash = payload.virtualLineHash;
+      await updateDoc(ref, updatePayload);
+    } else {
+      await setDoc(ref, payload);
+    }
+  } catch {
+    // Non-blocking best-effort compliance hash sync
+  }
+}
+
+export interface CommercialBanCheckResult {
+  banned: boolean;
+  reason?: string;
+  bannedAtMs?: number;
+  matchedBy?: 'uid' | 'cpf' | 'phone' | 'virtualLine';
+}
+
+export async function checkCommercialBanStatus(params: {
+  uid: string;
+  cpfRaw?: string;
+  cpfHash?: string;
+  phone?: string;
+  phoneHash?: string;
+  virtualLine?: string;
+}): Promise<CommercialBanCheckResult> {
+  const keysToCheck: Array<{ key: string; type: 'uid' | 'cpf' | 'phone' | 'virtualLine' }> = [];
+  if (params.uid) {
+    keysToCheck.push({ key: `uid_${params.uid}`, type: 'uid' });
+  }
+
+  let resolvedCpfHash = params.cpfHash || '';
+  if (!resolvedCpfHash && params.cpfRaw && isValidCpf(params.cpfRaw)) {
+    resolvedCpfHash = await hashCpfSha256(params.cpfRaw);
+  }
+  if (resolvedCpfHash && /^[a-f0-9]{64}$/.test(resolvedCpfHash)) {
+    keysToCheck.push({ key: `cpf_${resolvedCpfHash}`, type: 'cpf' });
+  }
+
+  let resolvedPhoneHash = params.phoneHash || '';
+  if (!resolvedPhoneHash && params.phone && !isVirtualLinePrefix(params.phone)) {
+    resolvedPhoneHash = await computeContactLookupHash(params.phone);
+  }
+  if (resolvedPhoneHash) {
+    keysToCheck.push({ key: `phone_${resolvedPhoneHash}`, type: 'phone' });
+  }
+
+  const vlineHash = await computeVirtualLineSha256(params.virtualLine);
+  if (vlineHash) {
+    keysToCheck.push({ key: `vline_${vlineHash}`, type: 'virtualLine' });
+  }
+
+  // Also inspect private/info for cpfHash if not passed
+  if (!resolvedCpfHash && params.uid) {
+    try {
+      const privSnap = await getDoc(doc(db, 'users', params.uid, 'private', 'info'));
+      const privCpf = privSnap.exists() ? String(privSnap.data()?.cpfHash || '') : '';
+      if (/^[a-f0-9]{64}$/.test(privCpf)) {
+        keysToCheck.push({ key: `cpf_${privCpf}`, type: 'cpf' });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const item of keysToCheck) {
+    try {
+      const snap = await getDoc(doc(db, 'commercial_bans', item.key));
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d.status === 'active') {
+          const reason = String(
+            d.reason ||
+              'Restrição comercial aplicada após ocorrência de entrega. Seu uso pessoal do mensageiro segue ativo.'
+          ).slice(0, 240);
+          const bannedAtMs = Number(d.bannedAtMs || Date.now());
+          // Sync flag onto users/{uid} and public_directory/{uid} if not yet flagged
+          if (params.uid) {
+            void updateDoc(doc(db, 'users', params.uid), {
+              commercialBanned: true,
+              commercialBanReason: reason,
+              commercialBanAtMs: bannedAtMs,
+              commercialMode: 'buyer',
+              hasStorefront: false,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+            void updateDoc(doc(db, 'public_directory', params.uid), {
+              commercialBanned: true,
+              role: 'normal',
+              hasStorefront: false,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+          return { banned: true, reason, bannedAtMs, matchedBy: item.type };
+        }
+      }
+    } catch {
+      // Continue checking remaining keys
+    }
+  }
+
+  return { banned: false };
+}
+
+export async function verifyAndBindCpfForCommercialRole(params: {
+  uid: string;
+  cpfRaw: string;
+  phone?: string;
+  phoneHash?: string;
+  virtualLine?: string;
+  authMethod?: 'phone' | 'cpf';
+}): Promise<{ ok: boolean; cpfHash?: string; banned?: boolean; message?: string }> {
+  if (!isValidCpf(params.cpfRaw)) {
+    return {
+      ok: false,
+      message: 'CPF inválido. Confira os 11 dígitos antes de ativar o modo comercial.',
+    };
+  }
+  const cpfHash = await hashCpfSha256(params.cpfRaw);
+  if (!cpfHash || cpfHash.length !== 64) {
+    return { ok: false, message: 'Não foi possível validar o CPF informado.' };
+  }
+
+  // 1. Cross-identifier ban check (CPF + phone + virtualLine + UID)
+  const banStatus = await checkCommercialBanStatus({
+    uid: params.uid,
+    cpfHash,
+    phone: params.phone,
+    phoneHash: params.phoneHash,
+    virtualLine: params.virtualLine,
+  });
+  if (banStatus.banned) {
+    return {
+      ok: false,
+      banned: true,
+      message:
+        banStatus.reason ||
+        'Os modos Fabricante e Revendedor estão temporariamente suspensos para este CPF/conta. Sua conta pessoal e conversas continuam funcionando normalmente.',
+    };
+  }
+
+  // 2. Ensure CPF is not bound to a different UID in cpf_registry or cpf_commercial_links
+  try {
+    const regSnap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+    if (regSnap.exists() && String(regSnap.data()?.ownerId || '') !== params.uid) {
+      return {
+        ok: false,
+        message:
+          'Este CPF já está vinculado a outra conta no ChatFi. Para operar como Fabricante ou Revendedor, utilize a conta titular do CPF.',
+      };
+    }
+  } catch {
+    // ignore read error
+  }
+
+  const linkRef = doc(db, 'cpf_commercial_links', cpfHash);
+  try {
+    const linkSnap = await getDoc(linkRef);
+    if (linkSnap.exists()) {
+      const ownerId = String(linkSnap.data()?.ownerId || '');
+      if (ownerId && ownerId !== params.uid) {
+        return {
+          ok: false,
+          message:
+            'Este CPF já foi validado para atuação comercial em outra conta ChatFi.',
+        };
+      }
+    } else {
+      const linkPayload: Record<string, unknown> = {
+        ownerId: params.uid,
+        authMethod: params.authMethod ?? 'phone',
+        createdAt: serverTimestamp(),
+      };
+      if (params.virtualLine) {
+        linkPayload.virtualLine = params.virtualLine.slice(0, 24);
+      }
+      await setDoc(linkRef, linkPayload);
+    }
+  } catch (error) {
+    const code = getErrorCodeString(error);
+    if (code === 'permission-denied') {
+      return {
+        ok: false,
+        message:
+          'Não foi possível vincular este CPF no momento. Verifique se ele já pertence a outra conta ou tente novamente.',
+      };
+    }
+    throw error;
+  }
+
+  // 3. Persist cpfHash into owner-only private/info, cpfVerified on users/{uid}, and non-PII identity hashes
+  try {
+    await updateDoc(doc(db, 'users', params.uid, 'private', 'info'), {
+      cpfHash,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // private/info may already hold cpfHash or update later
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', params.uid), {
+      cpfVerified: true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // handled gracefully
+  }
+
+  await syncCommercialIdentityHashes({
+    uid: params.uid,
+    cpfHash,
+    phoneHash: params.phoneHash,
+    virtualLine: params.virtualLine,
+  });
+
+  return { ok: true, cpfHash };
+}
+
+export async function markOrderCompletedByParticipant(params: {
+  orderId: string;
+  subOrderId?: string;
+}): Promise<void> {
+  if (params.subOrderId) {
+    try {
+      await updateDoc(doc(db, 'sub_orders', params.subOrderId), {
+        status: 'completed',
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      // Buyer may only update parent order when applicable
+    }
+  }
+  if (params.orderId) {
+    try {
+      await updateDoc(doc(db, 'orders', params.orderId), {
+        status: 'completed',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      const code = getErrorCodeString(error);
+      if (code !== 'permission-denied') {
+        handleFirestoreError(error, OperationType.UPDATE, `orders/${params.orderId}`);
+      }
+    }
+  }
+}
+
+export async function submitCommercialReview(params: {
+  orderId: string;
+  orderCode: string;
+  subOrderId?: string;
+  reviewerId: string;
+  reviewerName: string;
+  reviewerRole: 'buyer' | 'reseller';
+  targetUid: string;
+  targetName: string;
+  targetRole: TargetCommercialRole;
+  stars: 1 | 2 | 3 | 4 | 5;
+  comment: string;
+}): Promise<{ reviewId: string; ratingAverage: number; ratingCount: number }> {
+  const safeStars = Math.min(5, Math.max(1, Math.round(params.stars))) as 1 | 2 | 3 | 4 | 5;
+  const cleanComment = params.comment.trim().slice(0, 500);
+  const reviewId = `${params.orderId}_${params.reviewerId}_${params.targetUid}_${params.targetRole}`;
+
+  const reviewRef = doc(db, 'reviews', reviewId);
+  const targetUserRef = doc(db, 'users', params.targetUid);
+  const targetDirRef = doc(db, 'public_directory', params.targetUid);
+
+  // Gather existing reviews for this targetUid to compute exact ratingAverage & ratingCount
+  const existingTargetReviewsSnap = await getDocs(
+    query(collection(db, 'reviews'), where('targetUid', '==', params.targetUid))
+  ).catch(() => null);
+  const existingReviewSnap = await getDoc(reviewRef).catch(() => null);
+  const dirSnap = await getDoc(targetDirRef).catch(() => null);
+  const userSnap = await getDoc(targetUserRef).catch(() => null);
+
+  let totalStars = safeStars;
+  let count = 1;
+  if (existingTargetReviewsSnap) {
+    const others = existingTargetReviewsSnap.docs.filter((d) => d.id !== reviewId);
+    count = others.length + 1;
+    totalStars =
+      others.reduce((acc, d) => acc + Math.min(5, Math.max(1, Number(d.data()?.stars || 0))), 0) +
+      safeStars;
+  }
+  const ratingAverage = Math.round((totalStars / count) * 10) / 10;
+
+  const reviewPayload: Record<string, unknown> = {
+    orderId: params.orderId,
+    orderCode: params.orderCode.slice(0, 32),
+    subOrderId: (params.subOrderId || '').slice(0, 128),
+    reviewerId: params.reviewerId,
+    reviewerName: (params.reviewerName.trim() || 'Participante ChatFi').slice(0, 80),
+    reviewerRole: params.reviewerRole,
+    targetUid: params.targetUid,
+    targetName: (params.targetName.trim() || 'Loja ChatFi').slice(0, 80),
+    targetRole: params.targetRole,
+    stars: safeStars,
+    comment: cleanComment,
+    updatedAt: serverTimestamp(),
+  };
+
+  const batch = writeBatch(db);
+  if (existingReviewSnap?.exists()) {
+    batch.update(reviewRef, {
+      stars: safeStars,
+      comment: cleanComment,
+      reviewerName: reviewPayload.reviewerName,
+      targetName: reviewPayload.targetName,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    batch.set(reviewRef, {
+      ...reviewPayload,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  if (userSnap?.exists()) {
+    batch.update(targetUserRef, {
+      ratingAverage,
+      ratingCount: count,
+      lastRatingReviewId: reviewId,
+      updatedAt: serverTimestamp(),
+    });
+  }
+  if (dirSnap?.exists()) {
+    batch.update(targetDirRef, {
+      ratingAverage,
+      ratingCount: count,
+      lastRatingReviewId: reviewId,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  return { reviewId, ratingAverage, ratingCount: count };
+}
+
+function mapDocToCommercialReview(
+  id: string,
+  d: Record<string, unknown>
+): CommercialReview {
+  const createdAtTs = d.createdAt as Timestamp | undefined;
+  const updatedAtTs = d.updatedAt as Timestamp | undefined;
+  return {
+    id,
+    orderId: String(d.orderId || ''),
+    orderCode: String(d.orderCode || ''),
+    subOrderId: d.subOrderId ? String(d.subOrderId) : undefined,
+    reviewerId: String(d.reviewerId || ''),
+    reviewerName: String(d.reviewerName || 'Participante ChatFi'),
+    reviewerRole: d.reviewerRole === 'reseller' ? 'reseller' : 'buyer',
+    targetUid: String(d.targetUid || ''),
+    targetName: String(d.targetName || ''),
+    targetRole: d.targetRole === 'manufacturer' ? 'manufacturer' : 'reseller',
+    stars: Math.min(5, Math.max(1, Math.round(Number(d.stars || 5)))) as 1 | 2 | 3 | 4 | 5,
+    comment: String(d.comment || ''),
+    createdAt: formatDateTimePtBr(createdAtTs),
+    updatedAt: formatDateTimePtBr(updatedAtTs),
+    createdAtMs: timestampToMs(createdAtTs),
+  };
+}
+
+export function subscribeReviewsForTarget(
+  targetUid: string,
+  callback: (reviews: CommercialReview[]) => void
+): () => void {
+  if (!targetUid) {
+    callback([]);
+    return () => {};
+  }
+  const q = query(collection(db, 'reviews'), where('targetUid', '==', targetUid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs
+        .map((docSnap) => mapDocToCommercialReview(docSnap.id, docSnap.data()))
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+      callback(list);
+    },
+    () => callback([])
+  );
+}
+
+export function subscribeMyWrittenReviews(
+  reviewerUid: string,
+  callback: (reviews: CommercialReview[]) => void
+): () => void {
+  if (!reviewerUid) {
+    callback([]);
+    return () => {};
+  }
+  const q = query(collection(db, 'reviews'), where('reviewerId', '==', reviewerUid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs
+        .map((docSnap) => mapDocToCommercialReview(docSnap.id, docSnap.data()))
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+      callback(list);
+    },
+    () => callback([])
+  );
+}
+
+export async function submitDeliveryBadFaithReport(params: {
+  orderId: string;
+  orderCode: string;
+  subOrderId?: string;
+  subOrderCode?: string;
+  reporterId: string;
+  reporterName: string;
+  reporterVirtualLine?: string;
+  reporterRole: 'buyer' | 'reseller';
+  reportedUid: string;
+  reportedName: string;
+  reportedRole: TargetCommercialRole;
+  reason: string;
+  description: string;
+}): Promise<{ reportId: string; reportCode: string; ticketCode: string }> {
+  const reportId = `rep_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const reportCode = `OCO-${Math.floor(1000 + Math.random() * 9000)}`;
+  const cleanReason = params.reason.trim().slice(0, 120);
+  const cleanDescription = params.description.trim().slice(0, 2000);
+
+  // Create linked Support Ticket first
+  const ticketRes = await createSupportTicket({
+    userId: params.reporterId,
+    userName: params.reporterName,
+    userVirtualLine: params.reporterVirtualLine,
+    userRole: params.reporterRole,
+    reason: 'Ocorrência de Entrega / Má-fé',
+    orderId: params.orderId,
+    orderCode: params.orderCode,
+    description: `[${reportCode}] Ocorrência contra ${
+      params.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'
+    } (${params.reportedName}) — Motivo: ${cleanReason}. Relato: ${cleanDescription}`,
+  });
+
+  const payload: Record<string, unknown> = {
+    reportCode,
+    orderId: params.orderId,
+    orderCode: params.orderCode.slice(0, 32),
+    subOrderId: (params.subOrderId || '').slice(0, 128),
+    subOrderCode: (params.subOrderCode || '').slice(0, 32),
+    ticketId: ticketRes.id,
+    ticketCode: ticketRes.ticketCode,
+    reporterId: params.reporterId,
+    reporterName: (params.reporterName.trim() || 'Usuário ChatFi').slice(0, 80),
+    reporterRole: params.reporterRole,
+    reportedUid: params.reportedUid,
+    reportedName: (params.reportedName.trim() || 'Vendedor ChatFi').slice(0, 80),
+    reportedRole: params.reportedRole,
+    reason: cleanReason,
+    description: cleanDescription,
+    status: 'Aberto',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(doc(db, 'delivery_reports', reportId), payload);
+  return { reportId, reportCode, ticketCode: ticketRes.ticketCode };
+}
+
+function mapDocToDeliveryReport(
+  id: string,
+  d: Record<string, unknown>
+): DeliveryReport {
+  const createdAtTs = d.createdAt as Timestamp | undefined;
+  const updatedAtTs = d.updatedAt as Timestamp | undefined;
+  return {
+    id,
+    reportCode: String(d.reportCode || id),
+    orderId: String(d.orderId || ''),
+    orderCode: String(d.orderCode || ''),
+    subOrderId: d.subOrderId ? String(d.subOrderId) : undefined,
+    subOrderCode: d.subOrderCode ? String(d.subOrderCode) : undefined,
+    ticketId: d.ticketId ? String(d.ticketId) : undefined,
+    ticketCode: d.ticketCode ? String(d.ticketCode) : undefined,
+    reporterId: String(d.reporterId || ''),
+    reporterName: String(d.reporterName || ''),
+    reporterRole: d.reporterRole === 'reseller' ? 'reseller' : 'buyer',
+    reportedUid: String(d.reportedUid || ''),
+    reportedName: String(d.reportedName || ''),
+    reportedRole: d.reportedRole === 'manufacturer' ? 'manufacturer' : 'reseller',
+    reason: String(d.reason || ''),
+    description: String(d.description || ''),
+    status: (d.status as DeliveryReportStatus) ?? 'Aberto',
+    resolvedByUid: d.resolvedByUid ? String(d.resolvedByUid) : undefined,
+    resolutionNote: d.resolutionNote ? String(d.resolutionNote) : undefined,
+    createdAt: formatDateTimePtBr(createdAtTs),
+    updatedAt: formatDateTimePtBr(updatedAtTs),
+    createdAtMs: timestampToMs(createdAtTs),
+  };
+}
+
+export function subscribeDeliveryReports(
+  uid: string,
+  isAdminUser: boolean,
+  callback: (reports: DeliveryReport[]) => void
+): () => void {
+  if (!uid) {
+    callback([]);
+    return () => {};
+  }
+
+  if (isAdminUser) {
+    return onSnapshot(
+      collection(db, 'delivery_reports'),
+      (snap) => {
+        const list = snap.docs
+          .map((docSnap) => mapDocToDeliveryReport(docSnap.id, docSnap.data()))
+          .sort((a, b) => b.createdAtMs - a.createdAtMs);
+        callback(list);
+      },
+      () => callback([])
+    );
+  }
+
+  let asReporter: DeliveryReport[] = [];
+  let asReported: DeliveryReport[] = [];
+  const emitMerged = () => {
+    const byId = new Map<string, DeliveryReport>();
+    for (const r of asReporter) byId.set(r.id, r);
+    for (const r of asReported) byId.set(r.id, r);
+    callback(Array.from(byId.values()).sort((a, b) => b.createdAtMs - a.createdAtMs));
+  };
+
+  const u1 = onSnapshot(
+    query(collection(db, 'delivery_reports'), where('reporterId', '==', uid)),
+    (snap) => {
+      asReporter = snap.docs.map((docSnap) => mapDocToDeliveryReport(docSnap.id, docSnap.data()));
+      emitMerged();
+    },
+    () => {}
+  );
+  const u2 = onSnapshot(
+    query(collection(db, 'delivery_reports'), where('reportedUid', '==', uid)),
+    (snap) => {
+      asReported = snap.docs.map((docSnap) => mapDocToDeliveryReport(docSnap.id, docSnap.data()));
+      emitMerged();
+    },
+    () => {}
+  );
+
+  return () => {
+    u1();
+    u2();
+  };
+}
+
+export function subscribeAllSupportTicketsForAdmin(
+  enabled: boolean,
+  callback: (tickets: SupportTicket[]) => void
+): () => void {
+  if (!enabled) {
+    callback([]);
+    return () => {};
+  }
+  return onSnapshot(
+    collection(db, 'support_tickets'),
+    (snap) => {
+      const list = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data();
+          const createdAtTs = d.createdAt as Timestamp | undefined;
+          const updatedAtTs = d.updatedAt as Timestamp | undefined;
+          return {
+            id: docSnap.id,
+            ticketCode: String(d.ticketCode || docSnap.id),
+            userId: String(d.userId || ''),
+            userName: String(d.userName || ''),
+            userVirtualLine: d.userVirtualLine ? String(d.userVirtualLine) : undefined,
+            userRole: (d.userRole as CommercialMode) ?? 'buyer',
+            reason: (d.reason as SupportTicketReason) ?? 'Outros',
+            orderId: d.orderId ? String(d.orderId) : undefined,
+            orderCode: d.orderCode ? String(d.orderCode) : undefined,
+            description: String(d.description || ''),
+            status: (d.status as SupportTicketStatus) ?? 'Aberto',
+            createdAt: formatDateTimePtBr(createdAtTs),
+            updatedAt: formatDateTimePtBr(updatedAtTs),
+            createdAtMs: timestampToMs(createdAtTs),
+          };
+        })
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+      callback(list);
+    },
+    () => callback([])
+  );
+}
+
+export function subscribeCommercialBansForAdmin(
+  enabled: boolean,
+  callback: (bans: CommercialBanRecord[]) => void
+): () => void {
+  if (!enabled) {
+    callback([]);
+    return () => {};
+  }
+  return onSnapshot(
+    collection(db, 'commercial_bans'),
+    (snap) => {
+      const list: CommercialBanRecord[] = snap.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const createdAtTs = d.createdAt as Timestamp | undefined;
+        const updatedAtTs = d.updatedAt as Timestamp | undefined;
+        return {
+          banKey: String(d.banKey || docSnap.id),
+          identifierType:
+            (d.identifierType as CommercialBanRecord['identifierType']) ?? 'uid',
+          targetUid: String(d.targetUid || ''),
+          targetName: String(d.targetName || ''),
+          cpfHash: d.cpfHash ? String(d.cpfHash) : undefined,
+          phoneHash: d.phoneHash ? String(d.phoneHash) : undefined,
+          virtualLineHash: d.virtualLineHash ? String(d.virtualLineHash) : undefined,
+          status: d.status === 'lifted' ? 'lifted' : 'active',
+          reason: String(d.reason || ''),
+          reportId: d.reportId ? String(d.reportId) : undefined,
+          ticketId: d.ticketId ? String(d.ticketId) : undefined,
+          orderCode: d.orderCode ? String(d.orderCode) : undefined,
+          bannedByUid: String(d.bannedByUid || ''),
+          bannedAtMs: Number(d.bannedAtMs || 0),
+          liftedAtMs: d.liftedAtMs ? Number(d.liftedAtMs) : undefined,
+          liftedByUid: d.liftedByUid ? String(d.liftedByUid) : undefined,
+          liftNote: d.liftNote ? String(d.liftNote) : undefined,
+          createdAt: formatDateTimePtBr(createdAtTs),
+          updatedAt: formatDateTimePtBr(updatedAtTs),
+        };
+      });
+      callback(list.sort((a, b) => b.bannedAtMs - a.bannedAtMs));
+    },
+    () => callback([])
+  );
+}
+
+export async function updateDeliveryReportStatus(params: {
+  reportId: string;
+  status: DeliveryReportStatus;
+  adminUid: string;
+  resolutionNote?: string;
+}): Promise<void> {
+  await updateDoc(doc(db, 'delivery_reports', params.reportId), {
+    status: params.status,
+    resolvedByUid: params.adminUid,
+    resolutionNote: (params.resolutionNote || '').trim().slice(0, 500),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function banUserCommercialRoles(params: {
+  targetUid: string;
+  targetName: string;
+  reason: string;
+  adminUid: string;
+  reportId?: string;
+  ticketId?: string;
+  orderCode?: string;
+}): Promise<void> {
+  const nowMs = Date.now();
+  const cleanReason = params.reason.trim().slice(0, 240);
+  const cleanName = (params.targetName.trim() || 'Usuário ChatFi').slice(0, 80);
+
+  // Fetch non-PII identity hashes if available so ban follows CPF + phone + virtualLine
+  let cpfHash = '';
+  let phoneHash = '';
+  let virtualLineHash = '';
+  try {
+    const idSnap = await getDoc(doc(db, 'commercial_identity_hashes', params.targetUid));
+    if (idSnap.exists()) {
+      const d = idSnap.data();
+      if (typeof d.cpfHash === 'string' && /^[a-f0-9]{64}$/.test(d.cpfHash)) cpfHash = d.cpfHash;
+      if (typeof d.phoneHash === 'string' && d.phoneHash.length >= 16) phoneHash = d.phoneHash;
+      if (typeof d.virtualLineHash === 'string' && /^[a-f0-9]{64}$/.test(d.virtualLineHash)) {
+        virtualLineHash = d.virtualLineHash;
+      }
+    }
+  } catch {
+    // Proceed with UID ban at minimum
+  }
+
+  const identifiers: Array<{
+    banKey: string;
+    identifierType: 'uid' | 'cpf' | 'phone' | 'virtualLine';
+  }> = [{ banKey: `uid_${params.targetUid}`, identifierType: 'uid' }];
+  if (cpfHash) identifiers.push({ banKey: `cpf_${cpfHash}`, identifierType: 'cpf' });
+  if (phoneHash) identifiers.push({ banKey: `phone_${phoneHash}`, identifierType: 'phone' });
+  if (virtualLineHash) {
+    identifiers.push({ banKey: `vline_${virtualLineHash}`, identifierType: 'virtualLine' });
+  }
+
+  for (const ident of identifiers) {
+    const banRef = doc(db, 'commercial_bans', ident.banKey);
+    const existing = await getDoc(banRef).catch(() => null);
+    const payload: Record<string, unknown> = {
+      banKey: ident.banKey,
+      identifierType: ident.identifierType,
+      targetUid: params.targetUid,
+      targetName: cleanName,
+      status: 'active',
+      reason: cleanReason,
+      bannedByUid: params.adminUid,
+      bannedAtMs: nowMs,
+      updatedAt: serverTimestamp(),
+    };
+    if (cpfHash) payload.cpfHash = cpfHash;
+    if (phoneHash) payload.phoneHash = phoneHash;
+    if (virtualLineHash) payload.virtualLineHash = virtualLineHash;
+    if (params.reportId) payload.reportId = params.reportId.slice(0, 128);
+    if (params.ticketId) payload.ticketId = params.ticketId.slice(0, 128);
+    if (params.orderCode) payload.orderCode = params.orderCode.slice(0, 32);
+
+    if (existing?.exists()) {
+      await updateDoc(banRef, payload);
+    } else {
+      await setDoc(banRef, { ...payload, createdAt: serverTimestamp() });
+    }
+  }
+
+  // Suspend ONLY commercial modes & storefront while keeping personal account/chat active
+  await updateDoc(doc(db, 'users', params.targetUid), {
+    commercialBanned: true,
+    commercialBanReason: cleanReason,
+    commercialBanAtMs: nowMs,
+    commercialMode: 'buyer',
+    hasStorefront: false,
+    updatedAt: serverTimestamp(),
+  });
+
+  const dirSnap = await getDoc(doc(db, 'public_directory', params.targetUid)).catch(() => null);
+  if (dirSnap?.exists()) {
+    await updateDoc(doc(db, 'public_directory', params.targetUid), {
+      commercialBanned: true,
+      role: 'normal',
+      hasStorefront: false,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  if (params.reportId) {
+    await updateDeliveryReportStatus({
+      reportId: params.reportId,
+      status: 'Banido',
+      adminUid: params.adminUid,
+      resolutionNote: `Bloqueio comercial aplicado: ${cleanReason}`.slice(0, 500),
+    });
+  }
+  if (params.ticketId) {
+    await updateDoc(doc(db, 'support_tickets', params.ticketId), {
+      status: 'Em análise',
+      updatedAt: serverTimestamp(),
+    }).catch(() => {});
+  }
+}
+
+export async function liftCommercialBan(params: {
+  targetUid: string;
+  adminUid: string;
+  liftNote: string;
+  reportId?: string;
+  ticketId?: string;
+}): Promise<void> {
+  const nowMs = Date.now();
+  const cleanNote = (params.liftNote.trim() || 'Liberado após apuração pelo Suporte ChatFi.').slice(
+    0,
+    500
+  );
+
+  // Lift all ban keys belonging to this targetUid (UID, CPF hash, phone hash, virtual line hash)
+  const bansSnap = await getDocs(
+    query(collection(db, 'commercial_bans'), where('targetUid', '==', params.targetUid))
+  );
+  for (const banDoc of bansSnap.docs) {
+    await updateDoc(banDoc.ref, {
+      status: 'lifted',
+      liftedAtMs: nowMs,
+      liftedByUid: params.adminUid,
+      liftNote: cleanNote,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  await updateDoc(doc(db, 'users', params.targetUid), {
+    commercialBanned: false,
+    commercialBanReason: '',
+    commercialBanAtMs: 0,
+    updatedAt: serverTimestamp(),
+  });
+
+  const dirSnap = await getDoc(doc(db, 'public_directory', params.targetUid)).catch(() => null);
+  if (dirSnap?.exists()) {
+    await updateDoc(doc(db, 'public_directory', params.targetUid), {
+      commercialBanned: false,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  if (params.reportId) {
+    await updateDeliveryReportStatus({
+      reportId: params.reportId,
+      status: 'Resolvido',
+      adminUid: params.adminUid,
+      resolutionNote: cleanNote,
+    }).catch(() => {});
+  }
+  if (params.ticketId) {
+    await updateDoc(doc(db, 'support_tickets', params.ticketId), {
+      status: 'Resolvido',
+      updatedAt: serverTimestamp(),
+    }).catch(() => {});
+  }
+}
+
 
 
 

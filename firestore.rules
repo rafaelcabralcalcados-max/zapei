@@ -45,7 +45,7 @@ service cloud.firestore {
         && 'email' in request.auth.token
         && 'email_verified' in request.auth.token
         && request.auth.token.email_verified == true
-        && request.auth.token.email == 'rafaelcabralrobo@gmail.com';
+        && request.auth.token.email in ['rafaelcabralrobo@gmail.com', 'suporte.chatfi@gmail.com'];
     }
 
     function isAdmin() {
@@ -61,11 +61,12 @@ service cloud.firestore {
           'commercialMode', 'manufacturerActivated', 'resellerActivated',
           'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId', 'anchorDiscountPercent',
           'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
+          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'cpfVerified',
+          'ratingAverage', 'ratingCount', 'lastRatingReviewId',
+          'commercialBanned', 'commercialBanReason', 'commercialBanAtMs',
           'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
-        && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
         && data.initials is string && data.initials.size() >= 1 && data.initials.size() <= 4
         && (!('statusMessage' in data) || (data.statusMessage is string && data.statusMessage.size() <= 160))
@@ -88,6 +89,13 @@ service cloud.firestore {
         && (!('trialEndsAt' in data) || (data.trialEndsAt is number && data.trialEndsAt >= 0))
         && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
         && (!('authMethod' in data) || data.authMethod in ['phone', 'cpf'])
+        && (!('cpfVerified' in data) || data.cpfVerified is bool)
+        && (!('ratingAverage' in data) || (data.ratingAverage is number && data.ratingAverage >= 0 && data.ratingAverage <= 5))
+        && (!('ratingCount' in data) || (data.ratingCount is number && data.ratingCount >= 0 && data.ratingCount <= 1000000))
+        && (!('lastRatingReviewId' in data) || isValidId(data.lastRatingReviewId))
+        && (!('commercialBanned' in data) || data.commercialBanned is bool)
+        && (!('commercialBanReason' in data) || (data.commercialBanReason is string && data.commercialBanReason.size() <= 240))
+        && (!('commercialBanAtMs' in data) || (data.commercialBanAtMs is number && data.commercialBanAtMs >= 0))
         && (!('isOnline' in data) || data.isOnline is bool)
         && (!('lastSeenAt' in data) || (data.lastSeenAt is number && data.lastSeenAt >= 0))
         && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool)
@@ -144,7 +152,8 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'ownerId', 'displayName', 'initials', 'avatarColor', 'avatarUrl', 'role', 'hasStorefront',
           'storefrontName', 'deliveryPolicyType', 'deliveryPolicyValue',
-          'deliveryPolicyPickup', 'deliveryPolicyLabel', 'updatedAt'
+          'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'ratingAverage', 'ratingCount', 'commercialBanned', 'updatedAt'
         ])
         && isValidId(data.ownerId)
         && data.ownerId == request.auth.uid
@@ -159,6 +168,9 @@ service cloud.firestore {
         && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
         && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
         && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
+        && (!('ratingAverage' in data) || (data.ratingAverage is number && data.ratingAverage >= 0 && data.ratingAverage <= 5))
+        && (!('ratingCount' in data) || (data.ratingCount is number && data.ratingCount >= 0 && data.ratingCount <= 1000000))
+        && (!('commercialBanned' in data) || data.commercialBanned is bool)
         && data.updatedAt is timestamp;
     }
 
@@ -168,10 +180,10 @@ service cloud.firestore {
           'uid', 'displayName', 'displayNameLower', 'initials', 'statusMessage',
           'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
           'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable',
+          'ratingAverage', 'ratingCount', 'lastRatingReviewId', 'commercialBanned',
           'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
         ])
         && isValidId(data.uid)
-        && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
         && data.displayNameLower is string && data.displayNameLower.size() >= 1 && data.displayNameLower.size() <= 80
         && data.initials is string && data.initials.size() >= 1 && data.initials.size() <= 4
@@ -184,6 +196,10 @@ service cloud.firestore {
         && (!('deliveryPolicyLabel' in data) || (data.deliveryPolicyLabel is string && data.deliveryPolicyLabel.size() <= 160))
         && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
         && data.isDiscoverable is bool
+        && (!('ratingAverage' in data) || (data.ratingAverage is number && data.ratingAverage >= 0 && data.ratingAverage <= 5))
+        && (!('ratingCount' in data) || (data.ratingCount is number && data.ratingCount >= 0 && data.ratingCount <= 1000000))
+        && (!('lastRatingReviewId' in data) || isValidId(data.lastRatingReviewId))
+        && (!('commercialBanned' in data) || data.commercialBanned is bool)
         && (!('isOnline' in data) || data.isOnline is bool)
         && (!('lastSeenAt' in data) || (data.lastSeenAt is number && data.lastSeenAt >= 0))
         && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool)
@@ -521,6 +537,8 @@ service cloud.firestore {
           'Problema com Pagamento / Pix',
           'Dúvida sobre Pedido',
           'Configuração de Wallet ID Asaas',
+          'Ocorrência de Entrega / Má-fé',
+          'Recurso / Liberação Comercial',
           'Denúncia / Segurança',
           'Outros'
         ]
@@ -528,6 +546,120 @@ service cloud.firestore {
         && (!('orderCode' in data) || (data.orderCode is string && data.orderCode.size() <= 32))
         && data.description is string && data.description.size() >= 5 && data.description.size() <= 2000
         && data.status in ['Aberto', 'Em análise', 'Resolvido']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCpfCommercialLink(data) {
+      return data.keys().hasAll(['ownerId', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'virtualLine', 'authMethod', 'createdAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && (!('virtualLine' in data) || (data.virtualLine is string && data.virtualLine.size() <= 24))
+        && (!('authMethod' in data) || data.authMethod in ['phone', 'cpf'])
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCommercialIdentityHashes(data) {
+      return data.keys().hasAll(['uid', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'cpfHash', 'phoneHash', 'virtualLineHash', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && (!('cpfHash' in data) || isValidSha256(data.cpfHash))
+        && (!('phoneHash' in data) || (data.phoneHash is string && data.phoneHash.size() >= 16 && data.phoneHash.size() <= 128))
+        && (!('virtualLineHash' in data) || isValidSha256(data.virtualLineHash))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCommercialReview(data) {
+      return data.keys().hasAll(['orderId', 'orderCode', 'reviewerId', 'reviewerName', 'reviewerRole', 'targetUid', 'targetName', 'targetRole', 'stars', 'comment', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'orderId', 'orderCode', 'subOrderId',
+          'reviewerId', 'reviewerName', 'reviewerRole',
+          'targetUid', 'targetName', 'targetRole',
+          'stars', 'comment', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.orderId)
+        && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
+        && (!('subOrderId' in data) || (data.subOrderId is string && data.subOrderId.size() <= 128))
+        && isValidId(data.reviewerId)
+        && data.reviewerId == request.auth.uid
+        && data.reviewerName is string && data.reviewerName.size() >= 1 && data.reviewerName.size() <= 80
+        && data.reviewerRole in ['buyer', 'reseller']
+        && isValidId(data.targetUid)
+        && data.targetUid != data.reviewerId
+        && data.targetName is string && data.targetName.size() >= 1 && data.targetName.size() <= 80
+        && data.targetRole in ['manufacturer', 'reseller']
+        && data.stars is int && data.stars >= 1 && data.stars <= 5
+        && data.comment is string && data.comment.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDeliveryReport(data) {
+      return data.keys().hasAll([
+          'reportCode', 'orderId', 'orderCode',
+          'reporterId', 'reporterName', 'reporterRole',
+          'reportedUid', 'reportedName', 'reportedRole',
+          'reason', 'description', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'reportCode', 'orderId', 'orderCode', 'subOrderId', 'subOrderCode',
+          'ticketId', 'ticketCode',
+          'reporterId', 'reporterName', 'reporterRole',
+          'reportedUid', 'reportedName', 'reportedRole',
+          'reason', 'description', 'status', 'resolvedByUid', 'resolutionNote',
+          'createdAt', 'updatedAt'
+        ])
+        && data.reportCode is string && data.reportCode.size() >= 4 && data.reportCode.size() <= 24
+        && isValidId(data.orderId)
+        && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
+        && (!('subOrderId' in data) || (data.subOrderId is string && data.subOrderId.size() <= 128))
+        && (!('subOrderCode' in data) || (data.subOrderCode is string && data.subOrderCode.size() <= 32))
+        && (!('ticketId' in data) || (data.ticketId is string && data.ticketId.size() <= 128))
+        && (!('ticketCode' in data) || (data.ticketCode is string && data.ticketCode.size() <= 24))
+        && isValidId(data.reporterId)
+        && data.reporterName is string && data.reporterName.size() >= 1 && data.reporterName.size() <= 80
+        && data.reporterRole in ['buyer', 'reseller']
+        && isValidId(data.reportedUid)
+        && data.reportedUid != data.reporterId
+        && data.reportedName is string && data.reportedName.size() >= 1 && data.reportedName.size() <= 80
+        && data.reportedRole in ['manufacturer', 'reseller']
+        && data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 120
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 2000
+        && data.status in ['Aberto', 'Em análise', 'Banido', 'Improcedente', 'Resolvido']
+        && (!('resolvedByUid' in data) || isValidId(data.resolvedByUid))
+        && (!('resolutionNote' in data) || (data.resolutionNote is string && data.resolutionNote.size() <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCommercialBan(data, banKey) {
+      return data.keys().hasAll(['banKey', 'identifierType', 'targetUid', 'targetName', 'status', 'reason', 'bannedByUid', 'bannedAtMs', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'banKey', 'identifierType', 'targetUid', 'targetName',
+          'cpfHash', 'phoneHash', 'virtualLineHash',
+          'status', 'reason', 'reportId', 'ticketId', 'orderCode',
+          'bannedByUid', 'bannedAtMs', 'liftedAtMs', 'liftedByUid', 'liftNote',
+          'createdAt', 'updatedAt'
+        ])
+        && data.banKey == banKey
+        && data.identifierType in ['uid', 'cpf', 'phone', 'virtualLine']
+        && isValidId(data.targetUid)
+        && data.targetName is string && data.targetName.size() >= 1 && data.targetName.size() <= 80
+        && (!('cpfHash' in data) || isValidSha256(data.cpfHash))
+        && (!('phoneHash' in data) || (data.phoneHash is string && data.phoneHash.size() >= 16 && data.phoneHash.size() <= 128))
+        && (!('virtualLineHash' in data) || isValidSha256(data.virtualLineHash))
+        && data.status in ['active', 'lifted']
+        && data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 240
+        && (!('reportId' in data) || (data.reportId is string && data.reportId.size() <= 128))
+        && (!('ticketId' in data) || (data.ticketId is string && data.ticketId.size() <= 128))
+        && (!('orderCode' in data) || (data.orderCode is string && data.orderCode.size() <= 32))
+        && isValidId(data.bannedByUid)
+        && data.bannedAtMs is number && data.bannedAtMs >= 0
+        && (!('liftedAtMs' in data) || (data.liftedAtMs is number && data.liftedAtMs >= 0))
+        && (!('liftedByUid' in data) || isValidId(data.liftedByUid))
+        && (!('liftNote' in data) || (data.liftNote is string && data.liftNote.size() <= 500))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -542,21 +674,44 @@ service cloud.firestore {
         && (existing().uid == request.auth.uid || existing().commercialMode in ['buyer', 'manufacturer', 'reseller']);
       allow create: if isVerified() && isValidId(userId) && userId == request.auth.uid
         && isValidUserPublic(incoming())
+        && incoming().uid == request.auth.uid
+        && (!('commercialBanned' in incoming()) || incoming().commercialBanned == false || (incoming().commercialMode == 'buyer' && incoming().hasStorefront == false))
+        && (incoming().commercialMode == 'buyer' || ('cpfVerified' in incoming() && incoming().cpfVerified == true))
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerified() && isValidId(userId) && userId == request.auth.uid
+      allow update: if isVerified() && isValidId(userId)
         && isValidUserPublic(incoming())
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
-          'commercialMode', 'manufacturerActivated', 'resellerActivated',
-          'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId', 'anchorDiscountPercent',
-          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod',
-          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
-        ]);
+        && (
+          // Tier 1: Owner updates profile, commercial mode, or applies synced commercial ban
+          (userId == request.auth.uid
+            && (!('commercialBanned' in existing()) || existing().commercialBanned == false || (incoming().commercialBanned == true && incoming().commercialMode == 'buyer' && incoming().hasStorefront == false))
+            && (!('commercialBanned' in incoming()) || incoming().commercialBanned == false || (incoming().commercialMode == 'buyer' && incoming().hasStorefront == false))
+            && (incoming().commercialMode == 'buyer' || !('commercialMode' in incoming().diff(existing()).affectedKeys()) || ('cpfVerified' in incoming() && incoming().cpfVerified == true))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'initials', 'statusMessage', 'avatarColor', 'avatarUrl',
+              'commercialMode', 'manufacturerActivated', 'resellerActivated',
+              'hasStorefront', 'storefrontName', 'storefrontPrivacy', 'factoryName', 'asaasWalletId', 'anchorDiscountPercent',
+              'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+              'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'cpfVerified',
+              'commercialBanned', 'commercialBanReason', 'commercialBanAtMs',
+              'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
+            ])) ||
+          // Tier 2: Order-verified reviewer atomically updates star rating aggregate
+          (incoming().diff(existing()).affectedKeys().hasOnly(['ratingAverage', 'ratingCount', 'lastRatingReviewId', 'updatedAt'])
+            && 'lastRatingReviewId' in incoming()
+            && existsAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId))
+            && getAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId)).data.reviewerId == request.auth.uid
+            && getAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId)).data.targetUid == userId) ||
+          // Tier 3: Support/Admin applies or lifts exclusive commercial ban
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'commercialBanned', 'commercialBanReason', 'commercialBanAtMs',
+              'commercialMode', 'hasStorefront', 'updatedAt'
+            ]))
+        );
       allow delete: if false;
 
       // Owner-only Private PII Subcollection
@@ -634,7 +789,8 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'displayName', 'initials', 'avatarColor', 'avatarUrl', 'role', 'hasStorefront',
           'storefrontName', 'deliveryPolicyType', 'deliveryPolicyValue',
-          'deliveryPolicyPickup', 'deliveryPolicyLabel', 'updatedAt'
+          'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'ratingAverage', 'ratingCount', 'commercialBanned', 'updatedAt'
         ]);
       allow delete: if isVerified() && isValidId(phoneHash) && existing().ownerId == request.auth.uid;
     }
@@ -646,17 +802,30 @@ service cloud.firestore {
       allow list: if isSignedIn() && existing().isDiscoverable == true;
       allow create: if isVerified() && isOwner(userId) && isValidId(userId)
         && isValidPublicDirectoryEntry(incoming())
+        && incoming().uid == request.auth.uid
         && incoming().updatedAt == request.time;
-      allow update: if isVerified() && isOwner(userId) && isValidId(userId)
+      allow update: if isVerified() && isValidId(userId)
         && isValidPublicDirectoryEntry(incoming())
         && incoming().uid == existing().uid
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'displayName', 'displayNameLower', 'initials', 'statusMessage',
-          'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
-          'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable',
-          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
-        ]);
+        && (
+          (isOwner(userId)
+            && (!('commercialBanned' in existing()) || existing().commercialBanned == false || (incoming().commercialBanned == true && incoming().hasStorefront == false && incoming().role == 'normal'))
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'displayNameLower', 'initials', 'statusMessage',
+              'avatarColor', 'avatarUrl', 'role', 'hasStorefront', 'storefrontName',
+              'deliveryPolicyLabel', 'virtualLine', 'isDiscoverable',
+              'commercialBanned',
+              'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
+            ])) ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['ratingAverage', 'ratingCount', 'lastRatingReviewId', 'updatedAt'])
+            && 'lastRatingReviewId' in incoming()
+            && existsAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId))
+            && getAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId)).data.reviewerId == request.auth.uid
+            && getAfter(/databases/$(database)/documents/reviews/$(incoming().lastRatingReviewId)).data.targetUid == userId) ||
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['commercialBanned', 'role', 'hasStorefront', 'updatedAt']))
+        );
       allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
     }
 
@@ -838,6 +1007,11 @@ service cloud.firestore {
               'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
               'updatedAt'
             ])) ||
+          // Action: Buyer confirms delivery on a dispatched order
+          (existing().buyerId == request.auth.uid
+            && existing().status == 'dispatched'
+            && incoming().status == 'completed'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
           // Action: Buyer, Reseller, or Participating Manufacturer cancels unpaid order and marks stockRestored atomically
           ((existing().buyerId == request.auth.uid
               || existing().resellerId == request.auth.uid
@@ -1074,7 +1248,7 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(ticketId)
         && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn()
-        && existing().userId == request.auth.uid;
+        && (existing().userId == request.auth.uid || isAdmin());
       allow create: if isVerified() && isValidId(ticketId)
         && isValidSupportTicket(incoming())
         && incoming().userId == request.auth.uid
@@ -1097,6 +1271,135 @@ service cloud.firestore {
             && incoming().status == 'Resolvido'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
         );
+      allow delete: if false;
+    }
+
+    // 11. SHA-256 CPF Commercial Verification Binding (Exact-match GET only, no listing)
+    match /cpf_commercial_links/{cpfHash} {
+      allow get: if isSignedIn() && isValidSha256(cpfHash);
+      allow list: if false;
+      allow create: if isVerified() && isValidSha256(cpfHash)
+        && isValidCpfCommercialLink(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // 12. Non-PII SHA-256 Identity Hashes (Cross-identifier ban lookup by Admin / Owner)
+    match /commercial_identity_hashes/{userId} {
+      allow get: if isSignedIn() && isValidId(userId)
+        && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidCommercialIdentityHashes(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isOwner(userId) && isValidId(userId)
+        && isValidCommercialIdentityHashes(incoming())
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['cpfHash', 'phoneHash', 'virtualLineHash', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 13. Order-Verified Star Reviews for Manufacturers and Resellers
+    match /reviews/{reviewId} {
+      allow get: if isSignedIn() && isValidId(reviewId);
+      allow list: if isSignedIn()
+        && (existing().targetUid is string || existing().reviewerId == request.auth.uid);
+      allow create: if isVerified() && isValidId(reviewId)
+        && isValidCommercialReview(incoming())
+        && reviewId == incoming().orderId + '_' + request.auth.uid + '_' + incoming().targetUid + '_' + incoming().targetRole
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/orders/$(incoming().orderId))
+        && (
+          get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.status in ['dispatched', 'completed']
+          || ('subOrderId' in incoming()
+            && incoming().subOrderId.size() > 0
+            && exists(/databases/$(database)/documents/sub_orders/$(incoming().subOrderId))
+            && get(/databases/$(database)/documents/sub_orders/$(incoming().subOrderId)).data.parentOrderId == incoming().orderId
+            && get(/databases/$(database)/documents/sub_orders/$(incoming().subOrderId)).data.status in ['dispatched', 'completed'])
+        )
+        && (
+          (incoming().reviewerRole == 'buyer'
+            && get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.buyerId == request.auth.uid
+            && incoming().targetUid == get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.resellerId) ||
+          (incoming().reviewerRole == 'reseller'
+            && get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.resellerId == request.auth.uid
+            && incoming().targetRole == 'manufacturer'
+            && incoming().targetUid in get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.factoryIds)
+        );
+      allow update: if isVerified() && isValidId(reviewId)
+        && isValidCommercialReview(incoming())
+        && existing().reviewerId == request.auth.uid
+        && incoming().orderId == existing().orderId
+        && incoming().orderCode == existing().orderCode
+        && incoming().reviewerId == existing().reviewerId
+        && incoming().reviewerRole == existing().reviewerRole
+        && incoming().targetUid == existing().targetUid
+        && incoming().targetRole == existing().targetRole
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['stars', 'comment', 'reviewerName', 'targetName', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 14. Delivery Bad-Faith / Non-Fulfillment Reports
+    match /delivery_reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId)
+        && (existing().reporterId == request.auth.uid || existing().reportedUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (existing().reporterId == request.auth.uid || existing().reportedUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(reportId)
+        && isValidDeliveryReport(incoming())
+        && incoming().reporterId == request.auth.uid
+        && incoming().status == 'Aberto'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/orders/$(incoming().orderId))
+        && (
+          (incoming().reporterRole == 'buyer'
+            && get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.buyerId == request.auth.uid
+            && incoming().reportedUid == get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.resellerId) ||
+          (incoming().reporterRole == 'reseller'
+            && get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.resellerId == request.auth.uid
+            && incoming().reportedRole == 'manufacturer'
+            && incoming().reportedUid in get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.factoryIds)
+        );
+      allow update: if isVerified() && isValidId(reportId)
+        && isAdmin()
+        && isValidDeliveryReport(incoming())
+        && incoming().reportCode == existing().reportCode
+        && incoming().orderId == existing().orderId
+        && incoming().reporterId == existing().reporterId
+        && incoming().reportedUid == existing().reportedUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedByUid', 'resolutionNote', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // 15. Exclusive Commercial Role Bans (Indexed by UID, CPF hash, phone hash, virtual line hash)
+    match /commercial_bans/{banKey} {
+      allow get: if isSignedIn() && isValidId(banKey);
+      allow list: if isAdmin();
+      allow create: if isVerified() && isAdmin() && isValidId(banKey)
+        && isValidCommercialBan(incoming(), banKey)
+        && incoming().bannedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isAdmin() && isValidId(banKey)
+        && isValidCommercialBan(incoming(), banKey)
+        && incoming().banKey == existing().banKey
+        && incoming().identifierType == existing().identifierType
+        && incoming().targetUid == existing().targetUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'reason', 'reportId', 'ticketId', 'orderCode',
+          'bannedByUid', 'bannedAtMs', 'liftedAtMs', 'liftedByUid', 'liftNote', 'updatedAt'
+        ]);
       allow delete: if false;
     }
   }
