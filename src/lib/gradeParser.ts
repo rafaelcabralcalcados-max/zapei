@@ -32,11 +32,15 @@ export function getTotalPairsFromGrade(raw: string): number {
 export const ANCHOR_DISCOUNT_PRESETS = [0, 10, 15, 20, 30] as const;
 
 export function computeResellerPrice(factoryPrice: number, margin?: CategoryMargin): number {
-  if (!margin) return factoryPrice;
+  const safeFactoryPrice = Number.isFinite(factoryPrice) ? Math.max(0, factoryPrice) : 0;
+  if (!margin) return Number(safeFactoryPrice.toFixed(2));
+  const safeMarginValue = Number.isFinite(margin.value) ? Math.max(0, margin.value) : 0;
   if (margin.mode === 'fixed') {
-    return Number((factoryPrice + margin.value).toFixed(2));
+    return Number(Math.max(safeFactoryPrice, safeFactoryPrice + safeMarginValue).toFixed(2));
   }
-  return Number((factoryPrice * (1 + margin.value / 100)).toFixed(2));
+  return Number(
+    Math.max(safeFactoryPrice, safeFactoryPrice * (1 + safeMarginValue / 100)).toFixed(2)
+  );
 }
 
 /**

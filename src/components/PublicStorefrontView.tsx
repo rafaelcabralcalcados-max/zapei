@@ -266,9 +266,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         }));
     }
 
-    // Reseller mode: pull from non-paused connected factories
+    // Reseller mode: pull strictly from manufacturer-approved, non-paused connected factories
     const activeConns = connections.filter(
-      (c) => c.resellerId === owner.uid && !c.paused
+      (c) => c.resellerId === owner.uid && c.approvalStatus === 'approved' && !c.paused
     );
     const result: CatalogListing[] = [];
     const lotLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';

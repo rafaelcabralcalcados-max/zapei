@@ -161,11 +161,16 @@ export interface CategoryMargin {
   value: number;
 }
 
+export type ConnectionApprovalStatus = 'pending' | 'approved' | 'rejected';
+
 export interface FactoryConnection {
   id: string;
   resellerId: string;
+  resellerName?: string;
+  resellerStorefrontName?: string;
   factoryId: string;
   factoryName: string;
+  approvalStatus: ConnectionApprovalStatus;
   deliveryPolicy: MinimumDeliveryPolicy;
   reviewPhotos: boolean;
   paused: boolean;

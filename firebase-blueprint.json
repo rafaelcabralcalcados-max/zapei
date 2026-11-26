@@ -140,12 +140,15 @@
     },
     "Connection": {
       "title": "Connection",
-      "description": "Real reseller-to-manufacturer commercial partnership with category margins and photo review rules.",
+      "description": "Real reseller-to-manufacturer commercial partnership requiring manufacturer approval, with category margins and photo review rules.",
       "type": "object",
       "properties": {
         "resellerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "resellerName": { "type": "string", "maxLength": 80 },
+        "resellerStorefrontName": { "type": "string", "maxLength": 80 },
         "factoryId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "factoryName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "deliveryPolicyType": { "type": "string", "enum": ["boxes", "pieces", "amount"] },
         "deliveryPolicyValue": { "type": "number" },
         "deliveryPolicyPickup": { "type": "boolean" },

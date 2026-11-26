@@ -152,38 +152,65 @@ export async function compressImageFileToDataUrl(
   quality = 0.78
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Falha ao ler o arquivo de imagem.'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Formato de imagem inválido.'));
-      img.onload = () => {
-        let { width, height } = img;
-        if (width > maxDimension || height > maxDimension) {
-          if (width > height) {
-            height = Math.round((height * maxDimension) / width);
-            width = maxDimension;
-          } else {
-            width = Math.round((width * maxDimension) / height);
-            height = maxDimension;
-          }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Não foi possível processar a imagem.'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        resolve(dataUrl);
-      };
-      img.src = String(reader.result);
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Formato de imagem inválido.'));
     };
-    reader.readAsDataURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+      if (width > maxDimension || height > maxDimension) {
+        if (width >= height) {
+          height = Math.max(1, Math.round((height * maxDimension) / width));
+          width = maxDimension;
+        } else {
+          width = Math.max(1, Math.round((width * maxDimension) / height));
+          height = maxDimension;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Não foi possível processar a imagem.'));
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve(dataUrl);
+    };
+    img.src = objectUrl;
   });
+}
+
+/**
+ * Iteratively compresses an image File until its base64 Data URL fits safely inside
+ * Firestore's field size limit (default 320,000 chars < 350,000 limit).
+ */
+export async function compressImageFileToMaxBytes(
+  file: File,
+  maxDataUrlChars = 320000
+): Promise<string> {
+  const attempts: Array<[number, number]> = [
+    [840, 0.74],
+    [680, 0.64],
+    [540, 0.56],
+    [420, 0.48],
+    [320, 0.42],
+  ];
+  let lastResult = '';
+  for (const [dim, q] of attempts) {
+    lastResult = await compressImageFileToDataUrl(file, dim, q);
+    if (lastResult.length <= maxDataUrlChars) {
+      return lastResult;
+    }
+  }
+  return lastResult;
 }
 
 /**
