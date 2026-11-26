@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import type { ConfirmationResult, User } from 'firebase/auth';
 import {
+  checkCpfRegistered,
   clearPhoneRecaptcha,
   CpfAuthError,
   firebaseConfig,
@@ -35,6 +36,7 @@ import {
 import {
   cleanCpfDigits,
   formatCpfMask,
+  getOrCreateLocalDeviceInfo,
   isValidCpf,
   isVirtualLinePrefix,
 } from '../lib/cpfAndDeviceUtils';
@@ -248,7 +250,11 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   const [showCpfPassword, setShowCpfPassword] = useState(false);
   const [cpfResetNotice, setCpfResetNotice] = useState('');
   const [cpfResetBusy, setCpfResetBusy] = useState(false);
+  const [cpfLookupStatus, setCpfLookupStatus] = useState<
+    'idle' | 'checking' | 'existing' | 'new'
+  >('idle');
   const cpfAuthInFlightRef = useRef(false);
+  const lastCheckedCpfRef = useRef<string>('');
 
   const [busy, setBusy] = useState(false);
   const [errorInfo, setErrorInfo] = useState<{
@@ -466,6 +472,42 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
   const cpfComplete = cpfDigits.length === 11;
   const cpfValid = cpfComplete && isValidCpf(cpfInput);
 
+  // Automatically detect whether the typed CPF already has an account or is a first-time user
+  useEffect(() => {
+    if (step !== 'cpf') return undefined;
+    if (!cpfValid) {
+      setCpfLookupStatus('idle');
+      if (!cpfComplete) {
+        lastCheckedCpfRef.current = '';
+      }
+      return undefined;
+    }
+    if (lastCheckedCpfRef.current === cpfDigits) return undefined;
+
+    let cancelled = false;
+    lastCheckedCpfRef.current = cpfDigits;
+    setCpfLookupStatus('checking');
+
+    void checkCpfRegistered(cpfInput)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.exists) {
+          setCpfLookupStatus('existing');
+          setCpfSubMode('login');
+        } else {
+          setCpfLookupStatus('new');
+          setCpfSubMode('register');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCpfLookupStatus('idle');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, cpfDigits, cpfComplete, cpfValid, cpfInput]);
+
   const handleCpfSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorInfo(null);
@@ -488,11 +530,29 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
           cpfRaw: cpfInput,
           recoveryEmail: cpfEmail.trim(),
           password: cpfPassword,
+          deviceInfo: getOrCreateLocalDeviceInfo(),
         });
       } else {
+        const lookup = await checkCpfRegistered(cpfInput);
+        if (!lookup.exists) {
+          setCpfLookupStatus('new');
+          setCpfSubMode('register');
+          setCpfResetNotice(
+            'CPF ainda não cadastrado! Preencha seu nome e e-mail de recuperação abaixo para criar sua conta e entrar direto neste aparelho.'
+          );
+          return;
+        }
         await signInWithCpfAndPassword(cpfInput, cpfPassword);
       }
     } catch (err) {
+      if (err instanceof CpfAuthError && err.code === 'cpf-not-found') {
+        setCpfLookupStatus('new');
+        setCpfSubMode('register');
+        setCpfResetNotice(
+          'CPF ainda não cadastrado! Preencha seu nome e e-mail de recuperação abaixo para criar sua conta e entrar direto neste aparelho.'
+        );
+        return;
+      }
       const needsConsole =
         err instanceof CpfAuthError && err.code === 'auth/operation-not-allowed';
       setErrorInfo({
@@ -719,8 +779,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       },
                       {
                         num: '3',
-                        title: 'Proteção de Aparelhos Conectados',
-                        desc: 'Novos dispositivos só entram após aprovação por QR Code ou código de 6 dígitos.',
+                        title: 'Primeiro acesso direto neste aparelho',
+                        desc: 'No primeiro cadastro você entra na hora como Aparelho Principal; QR Code só é pedido ao conectar um 2º aparelho.',
                         done: false,
                         active: false,
                       },
@@ -758,8 +818,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                       },
                       {
                         num: '3',
-                        title: 'Converse e proteja seus aparelhos',
-                        desc: 'Seu primeiro dispositivo será definido como Aparelho Principal, permitindo autorizar novos acessos por QR Code.',
+                        title: 'Acesso direto no 1º aparelho',
+                        desc: 'Contas novas entram imediatamente neste aparelho como Aparelho Principal, sem QR Code.',
                         done: false,
                         active: stepIndex === 3,
                       },
@@ -1153,6 +1213,23 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                           }`}
                         />
                       </div>
+                      {cpfValid && cpfLookupStatus !== 'idle' && (
+                        <p
+                          className={`mt-1.5 text-[11px] font-medium ${
+                            cpfLookupStatus === 'new'
+                              ? 'text-[#0E7A34]'
+                              : cpfLookupStatus === 'existing'
+                                ? 'text-[#0D2B3E]'
+                                : 'text-slate-500'
+                          }`}
+                        >
+                          {cpfLookupStatus === 'checking'
+                            ? 'Verificando CPF...'
+                            : cpfLookupStatus === 'new'
+                              ? 'Primeiro acesso detectado — preencha os dados para criar sua conta e entrar direto neste aparelho.'
+                              : 'Conta já cadastrada — digite sua senha para entrar.'}
+                        </p>
+                      )}
                     </div>
 
                     {cpfSubMode === 'register' && (

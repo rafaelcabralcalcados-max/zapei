@@ -111,6 +111,22 @@ export function maskEmailForDisplay(email: string): string {
 }
 
 /**
+ * Masks a phone number while keeping country/area prefix and last 4 digits visible.
+ */
+export function maskPhoneForDisplay(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 6) return phone.trim();
+  const last4 = digits.slice(-4);
+  if (digits.startsWith('55') && digits.length >= 12) {
+    const ddd = digits.slice(2, 4);
+    const firstDigit = digits.slice(4, 5);
+    return `+55 (${ddd}) ${firstDigit}****-${last4}`;
+  }
+  const prefix = digits.slice(0, Math.max(2, digits.length - 6));
+  return `+${prefix} ****-${last4}`;
+}
+
+/**
  * Generates a cryptographically secure 6-digit numeric authorization code.
  */
 export function generateSixDigitCode(): string {

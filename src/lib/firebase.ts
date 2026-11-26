@@ -2,8 +2,11 @@ import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
   deleteUser,
+  EmailAuthProvider,
   getAuth,
   GoogleAuthProvider,
+  reauthenticateWithCredential,
+  reauthenticateWithPhoneNumber,
   RecaptchaVerifier,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
@@ -74,6 +77,7 @@ import {
   generateRequestToken,
   generateSixDigitCode,
   generateVirtualLine,
+  getOrCreateLocalDeviceInfo,
   hashCpfSha256,
   isValidCpf,
   isVirtualLinePrefix,
@@ -346,9 +350,11 @@ export async function registerOrUpdateUserProfile(params: {
   favoriteGrades?: FavoriteGrade[];
   showOnlineStatus?: boolean;
   showLastSeen?: boolean;
-}): Promise<void> {
+  primaryDevice?: LocalDeviceInfo;
+}): Promise<{ isNewProfile: boolean }> {
   const userRef = doc(db, 'users', params.uid);
   const existingUser = await getDoc(userRef);
+  const isNewProfile = !existingUser.exists();
   const existingPubData = existingUser.exists()
     ? (existingUser.data() as Record<string, unknown>)
     : null;
@@ -457,6 +463,10 @@ export async function registerOrUpdateUserProfile(params: {
   };
   if (resolvedVirtualLine) {
     publicData.virtualLine = resolvedVirtualLine.slice(0, 24);
+  }
+
+  if (isNewProfile && params.primaryDevice) {
+    await registerPrimaryDeviceForAccount(params.uid, params.primaryDevice);
   }
 
   try {
@@ -580,6 +590,8 @@ export async function registerOrUpdateUserProfile(params: {
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `public_directory/${params.uid}`);
   }
+
+  return { isNewProfile };
 }
 
 function buildUserProfileFromDocs(
@@ -2395,6 +2407,24 @@ function formatDateTimePtBr(ts: Timestamp | undefined): string {
   return `${dd}/${mm}/${yyyy} às ${hh}:${min}`;
 }
 
+export async function checkCpfRegistered(
+  cpfRaw: string
+): Promise<{ exists: boolean; virtualLine?: string }> {
+  if (!isValidCpf(cpfRaw)) return { exists: false };
+  const cpfHash = await hashCpfSha256(cpfRaw);
+  if (!cpfHash) return { exists: false };
+  try {
+    const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+    if (!snap.exists()) return { exists: false };
+    return {
+      exists: true,
+      virtualLine: String(snap.data().virtualLine || ''),
+    };
+  } catch {
+    return { exists: false };
+  }
+}
+
 export async function registerAccountWithCpf(params: {
   name: string;
   cpfRaw: string;
@@ -2402,6 +2432,7 @@ export async function registerAccountWithCpf(params: {
   password: string;
   statusMessage?: string;
   avatarUrl?: string;
+  deviceInfo?: LocalDeviceInfo;
 }): Promise<{ user: User; virtualLine: string }> {
   const cleanName = params.name.trim();
   const cleanEmail = params.recoveryEmail.trim().toLowerCase();
@@ -2496,7 +2527,8 @@ export async function registerAccountWithCpf(params: {
     );
   }
 
-  // Save public profile, owner-only private record, phone_index (virtualLine), and public_directory
+  // Save primary device BEFORE writing users/{uid} so onSnapshot unlocks directly with zero device-check race
+  const resolvedDevice = params.deviceInfo ?? getOrCreateLocalDeviceInfo();
   await registerOrUpdateUserProfile({
     uid: newUser.uid,
     email: cleanEmail,
@@ -2507,6 +2539,7 @@ export async function registerAccountWithCpf(params: {
     cpfHash,
     statusMessage: sanitizeStatusMessage(params.statusMessage) || DEFAULT_STATUS_MESSAGE,
     avatarUrl: params.avatarUrl || '',
+    primaryDevice: resolvedDevice,
   });
 
   return { user: newUser, virtualLine };
@@ -2641,6 +2674,34 @@ export async function createDeviceAuthRequest(
   };
 }
 
+export async function registerPrimaryDeviceForAccount(
+  uid: string,
+  deviceInfo: LocalDeviceInfo
+): Promise<void> {
+  try {
+    await setDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
+      ownerId: uid,
+      deviceId: deviceInfo.deviceId,
+      deviceName: deviceInfo.deviceName.slice(0, 100),
+      platform: deviceInfo.platform.slice(0, 60),
+      primary: true,
+      createdAt: serverTimestamp(),
+      lastActiveAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      OperationType.CREATE,
+      `users/${uid}/devices/${deviceInfo.deviceId}`
+    );
+  }
+  try {
+    localStorage.setItem(`zapei_device_auth_uid_${deviceInfo.deviceId}`, uid);
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export async function ensureCurrentDeviceRegisteredSilently(
   uid: string,
   deviceInfo: LocalDeviceInfo
@@ -2678,31 +2739,29 @@ export async function registerOrCheckCurrentDevice(
 
   const existingDocs = snap.docs;
   const selfDoc = existingDocs.find((d) => d.id === deviceInfo.deviceId);
+  const hasActivePrimaryDevice = existingDocs.some((d) => Boolean(d.data().primary));
 
   if (selfDoc) {
-    const isPrimary = Boolean(selfDoc.data().primary);
+    let isPrimary = Boolean(selfDoc.data().primary);
+    if (!hasActivePrimaryDevice) {
+      try {
+        await updateDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
+          deviceName: deviceInfo.deviceName.slice(0, 100),
+          platform: deviceInfo.platform.slice(0, 60),
+          primary: true,
+          lastActiveAt: serverTimestamp(),
+        });
+        isPrimary = true;
+      } catch {
+        // Non-fatal promotion fallback
+      }
+    }
     return { authorized: true, isPrimary };
   }
 
-  // First active device ever -> automatically becomes Aparelho Principal (primary: true)
-  if (existingDocs.length === 0) {
-    try {
-      await setDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
-        ownerId: uid,
-        deviceId: deviceInfo.deviceId,
-        deviceName: deviceInfo.deviceName.slice(0, 100),
-        platform: deviceInfo.platform.slice(0, 60),
-        primary: true,
-        createdAt: serverTimestamp(),
-        lastActiveAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(
-        error,
-        OperationType.CREATE,
-        `users/${uid}/devices/${deviceInfo.deviceId}`
-      );
-    }
+  // First device OR no active primary device registered yet -> promote this device directly as Aparelho Principal
+  if (existingDocs.length === 0 || !hasActivePrimaryDevice) {
+    await registerPrimaryDeviceForAccount(uid, deviceInfo);
     return { authorized: true, isPrimary: true };
   }
 
@@ -3017,6 +3076,146 @@ export async function takeOverAsPrimaryDevice(
   if (pendingRequestId) {
     await deleteDoc(doc(db, 'auth_requests', pendingRequestId)).catch(() => {});
   }
+
+  try {
+    localStorage.setItem(`zapei_device_auth_uid_${deviceInfo.deviceId}`, uid);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export async function sendDeviceTakeoverSmsCode(
+  recaptchaContainerId = 'zapei-takeover-recaptcha'
+): Promise<ConfirmationResult> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !currentUser.phoneNumber) {
+    throw new Error('Esta conta não possui um telefone verificado por SMS.');
+  }
+
+  clearPhoneRecaptcha(recaptchaContainerId);
+  auth.languageCode = 'pt-BR';
+
+  let wrapper = document.getElementById(recaptchaContainerId);
+  if (!wrapper) {
+    wrapper = document.createElement('div');
+    wrapper.id = recaptchaContainerId;
+    document.body.appendChild(wrapper);
+  }
+  wrapper.replaceChildren();
+
+  const freshHost = document.createElement('div');
+  freshHost.id = `zapei-takeover-host-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  wrapper.appendChild(freshHost);
+  activeRecaptchaHost = freshHost;
+
+  const verifier = new RecaptchaVerifier(auth, freshHost, {
+    size: 'invisible',
+  });
+  activeRecaptchaVerifier = verifier;
+
+  try {
+    return await reauthenticateWithPhoneNumber(
+      currentUser,
+      currentUser.phoneNumber,
+      verifier
+    );
+  } catch (error) {
+    clearPhoneRecaptcha(recaptchaContainerId);
+    throw error;
+  }
+}
+
+export async function confirmDeviceTakeoverSmsCode(
+  confirmationResult: ConfirmationResult,
+  smsCode: string,
+  recaptchaContainerId = 'zapei-takeover-recaptcha'
+): Promise<void> {
+  await confirmationResult.confirm(smsCode.trim());
+  clearPhoneRecaptcha(recaptchaContainerId);
+}
+
+export async function verifyCpfAccountForDeviceTakeover(params: {
+  uid: string;
+  cpfRaw: string;
+  password: string;
+}): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.uid !== params.uid) {
+    throw new CpfAuthError('not-signed-in', 'Sessão expirada. Entre novamente na sua conta.');
+  }
+  if (!isValidCpf(params.cpfRaw)) {
+    throw new CpfAuthError('invalid-cpf', 'CPF inválido. Confira os 11 dígitos digitados.');
+  }
+  if (!params.password) {
+    throw new CpfAuthError('missing-password', 'Digite a senha da sua conta para confirmar.');
+  }
+
+  const cpfHash = await hashCpfSha256(params.cpfRaw);
+  const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+  if (!snap.exists()) {
+    throw new CpfAuthError('cpf-not-found', 'O CPF informado não corresponde a esta conta.');
+  }
+
+  const data = snap.data();
+  if (String(data.ownerId || '') !== params.uid) {
+    throw new CpfAuthError(
+      'cpf-mismatch',
+      'Este CPF pertence a outra conta. Informe o CPF cadastrado nesta conta.'
+    );
+  }
+
+  const recoveryEmail = String(data.recoveryEmail || currentUser.email || '')
+    .trim()
+    .toLowerCase();
+  if (!recoveryEmail) {
+    throw new CpfAuthError(
+      'no-recovery-email',
+      'Não foi possível localizar o e-mail de recuperação desta conta.'
+    );
+  }
+
+  try {
+    const credential = EmailAuthProvider.credential(recoveryEmail, params.password);
+    await reauthenticateWithCredential(currentUser, credential);
+  } catch (err) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+    if (
+      code === 'auth/wrong-password' ||
+      code === 'auth/invalid-credential' ||
+      code === 'auth/invalid-login-credentials'
+    ) {
+      throw new CpfAuthError(
+        'wrong-password',
+        'Senha incorreta. Tente novamente ou envie o link para seu e-mail de recuperação.'
+      );
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new CpfAuthError(
+        'too-many-requests',
+        'Muitas tentativas seguidas. Aguarde alguns minutos ou use o link de recuperação.'
+      );
+    }
+    throw err;
+  }
+}
+
+export async function sendRecoveryEmailForSignedInCpfUser(): Promise<{
+  maskedEmail: string;
+}> {
+  const currentUser = auth.currentUser;
+  const email = currentUser?.email?.trim().toLowerCase() || '';
+  if (!email) {
+    throw new CpfAuthError(
+      'no-recovery-email',
+      'Nenhum e-mail de recuperação vinculado a esta conta.'
+    );
+  }
+  auth.languageCode = 'pt-BR';
+  await sendPasswordResetEmail(auth, email);
+  return { maskedEmail: maskEmailForDisplay(email) };
 }
 
 // --- HELP CENTER & SUPPORT TICKETS (support_tickets) ---

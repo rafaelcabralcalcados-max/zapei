@@ -18,6 +18,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import {
   approveDeviceAuthRequest,
   auth,
+  confirmDeviceTakeoverSmsCode,
   createDeviceAuthRequest,
   createRealFactoryConnection,
   createRealMixedOrder,
@@ -38,7 +39,9 @@ import {
   resyncAllPhonebookContacts,
   resolveSupportTicket,
   saveRealContactToPhonebook,
+  sendDeviceTakeoverSmsCode,
   sendRealChatMessage,
+  sendRecoveryEmailForSignedInCpfUser,
   signOutFirebase,
   subscribeAuthRequestById,
   subscribeChatMessages,
@@ -64,6 +67,7 @@ import {
   updateRealSubOrder,
   updateUserPresenceHeartbeat,
   updateUserPresencePrivacy,
+  verifyCpfAccountForDeviceTakeover,
   type PublicDirectoryUser,
 } from './lib/firebase';
 import {
@@ -2723,14 +2727,20 @@ export default function App() {
         authUser={authUser}
         onSaveProfile={async (name, phone, statusMessage, avatarUrl) => {
           if (!authUser) return;
-          await registerOrUpdateUserProfile({
+          const { isNewProfile } = await registerOrUpdateUserProfile({
             uid: authUser.uid,
             email: authUser.email || '',
             displayName: name,
             phone,
             statusMessage,
             avatarUrl,
+            primaryDevice: localDeviceInfo,
           });
+          if (isNewProfile) {
+            checkedDeviceUidRef.current = authUser.uid;
+            setActiveAuthRequest(null);
+            setDeviceAuthState('authorized');
+          }
         }}
       />
     );
@@ -2750,10 +2760,23 @@ export default function App() {
   }
 
   if (deviceAuthState === 'pending_approval' && activeAuthRequest) {
+    const gateAuthMethod: 'phone' | 'cpf' = authUser.phoneNumber ? 'phone' : 'cpf';
+    const lastSignInMs = authUser.metadata?.lastSignInTime
+      ? Date.parse(authUser.metadata.lastSignInTime)
+      : 0;
+    const recentlyVerifiedAtSignIn =
+      Number.isFinite(lastSignInMs) &&
+      lastSignInMs > 0 &&
+      Date.now() - lastSignInMs <= 10 * 60 * 1000;
+
     return (
       <DeviceAuthorizationGate
         userName={profile.name}
         userIdentifier={profile.virtualLine || profile.phone}
+        authMethod={gateAuthMethod}
+        registeredPhone={authUser.phoneNumber || profile.phone}
+        recoveryEmail={authUser.email || profile.email}
+        recentlyVerifiedAtSignIn={recentlyVerifiedAtSignIn}
         request={activeAuthRequest}
         regenerating={regeneratingAuthReq}
         onRegenerate={async () => {
@@ -2765,6 +2788,18 @@ export default function App() {
             setRegeneratingAuthReq(false);
           }
         }}
+        onSendTakeoverSms={async (containerId) => sendDeviceTakeoverSmsCode(containerId)}
+        onConfirmTakeoverSms={async (confirmation, code, containerId) => {
+          await confirmDeviceTakeoverSmsCode(confirmation, code, containerId);
+        }}
+        onVerifyCpfForTakeover={async (cpfRaw, password) => {
+          await verifyCpfAccountForDeviceTakeover({
+            uid: authUser.uid,
+            cpfRaw,
+            password,
+          });
+        }}
+        onSendRecoveryEmail={async () => sendRecoveryEmailForSignedInCpfUser()}
         onTakeOverPrimary={async () => {
           await takeOverAsPrimaryDevice(authUser.uid, localDeviceInfo, activeAuthRequest.id);
           try {
@@ -2775,6 +2810,7 @@ export default function App() {
           } catch {
             // ignore storage errors
           }
+          checkedDeviceUidRef.current = authUser.uid;
           setActiveAuthRequest(null);
           setDeviceAuthState('authorized');
           showToast(
