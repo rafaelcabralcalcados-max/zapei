@@ -80,6 +80,7 @@ export async function renderPdfToPrintHtml(
         canvas,
         viewport,
         intent: 'print',
+        background: '#ffffff',
       });
       await renderTask.promise;
 
@@ -180,6 +181,7 @@ export const PdfViewerCanvas: React.FC<PdfViewerCanvasProps> = ({
     const renderTasks: Array<{ cancel: () => void }> = [];
 
     const renderPdf = async () => {
+      if (containerWidth <= 0) return;
       setLoading(true);
       setErrorMsg('');
 
@@ -205,9 +207,9 @@ export const PdfViewerCanvas: React.FC<PdfViewerCanvasProps> = ({
 
         const availableWidth = Math.max(
           260,
-          Math.min(820, (containerWidth || window.innerWidth) - 24)
+          Math.min(820, containerWidth - 24)
         );
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const dpr = Math.min(window.devicePixelRatio || 1, 3);
 
         for (let pageNum = 1; pageNum <= total; pageNum += 1) {
           if (cancelled) break;
@@ -249,6 +251,7 @@ export const PdfViewerCanvas: React.FC<PdfViewerCanvasProps> = ({
           const task = page.render({
             canvas,
             viewport: renderViewport,
+            background: '#ffffff',
           });
           renderTasks.push(task);
           await task.promise;
@@ -354,7 +357,7 @@ export const PdfViewerCanvas: React.FC<PdfViewerCanvasProps> = ({
             )}
           </div>
         ) : (
-          <div ref={pagesHostRef} className="flex flex-col items-center gap-3 pb-4" />
+          <div ref={pagesHostRef} className="flex min-w-full w-max flex-col gap-3 pb-4" />
         )}
       </div>
     </div>

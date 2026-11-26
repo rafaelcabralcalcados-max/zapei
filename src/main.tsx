@@ -4,16 +4,28 @@ import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
 
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+}
+
 registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
-    if (registration) {
-      // Check once on load for newly deployed builds without forcing reloads mid-session
-      void registration.update().catch(() => {});
+    if (!registration) return;
+    void registration.update().catch(() => {});
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          void registration.update().catch(() => {});
+        }
+      });
     }
-  },
-  onNeedRefresh() {
-    // Keep the active device session intact without forcing unexpected page reloads.
   },
 });
 

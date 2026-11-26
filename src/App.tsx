@@ -3328,7 +3328,7 @@ export default function App() {
       <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
         {/* Mobile Compact Top Header (hidden when inside an active mobile chat thread) */}
         {!mobileInChat && (
-          <header className="flex md:hidden items-center justify-between gap-2 border-b border-[#0A2233] bg-[#0D2B3E] px-3.5 py-2.5 text-white shrink-0">
+          <header className="flex md:hidden items-center justify-between gap-2 border-b border-[#0A2233] bg-[#0D2B3E] px-3.5 pb-2.5 header-pt-safe text-white shrink-0">
             <div className="flex min-w-0 items-center gap-2.5">
               <ChatFiLogo className="h-8 w-8 shrink-0 rounded-lg" />
               <span className="truncate text-base font-extrabold tracking-tight">ChatFi</span>

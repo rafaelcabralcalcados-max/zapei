@@ -1476,8 +1476,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   return (
     <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#F4F6F8]">
+      <div className="safe-top-strip w-full shrink-0 md:hidden" aria-hidden="true" />
       {/* Top Chat Header */}
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-2.5 pb-2.5 pt-safe sm:px-4 md:py-2.5">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-2.5 py-2.5 sm:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {onBack && (
             <button
@@ -1851,7 +1852,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       {resolvedUrl ? (
                         <button
                           type="button"
-                          onClick={() => setLightboxMsg(msg)}
+                          onClick={() => {
+                            if (isPdfMessage(msg, resolvedState?.mimeType)) {
+                              setPdfViewerMsg(msg);
+                            } else {
+                              setLightboxMsg(msg);
+                            }
+                          }}
                           className="block w-full overflow-hidden rounded-xl bg-black/10"
                         >
                           <img
@@ -2472,10 +2479,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       )}
 
       {/* Full-Screen WhatsApp-Style Photo Viewer (Save + Share + Forward) */}
-      {lightboxMsg && getResolvedMediaUrl(lightboxMsg) && (
+      {lightboxMsg &&
+        !isPdfMessage(lightboxMsg, resolvedMedia[lightboxMsg.id]?.mimeType) &&
+        getResolvedMediaUrl(lightboxMsg) && (
         <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
           {/* Viewer Top Bar */}
-          <div className="flex shrink-0 items-center justify-between gap-2 bg-gradient-to-b from-black/85 to-transparent px-3 pb-3 pt-safe sm:px-5">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-black px-3 pb-3 header-pt-safe sm:px-5">
             <div className="flex min-w-0 items-center gap-2.5">
               <button
                 type="button"
@@ -2545,7 +2554,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           </div>
 
           {/* Bottom Caption + Clear Thumb-Friendly Action Bar */}
-          <div className="shrink-0 bg-gradient-to-t from-black/95 via-black/80 to-transparent px-4 pt-3 pb-safe">
+          <div className="shrink-0 border-t border-white/10 bg-black px-4 pt-3 pb-safe">
             {lightboxMsg.text &&
               lightboxMsg.text.trim() !== 'Foto' &&
               !/^[\w-]+\.(jpe?g|png|webp|heic|gif)$/i.test(lightboxMsg.text.trim()) && (
@@ -2602,7 +2611,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       {/* Full-Screen PDF Attachment Viewer (Visualizar + Imprimir + Salvar + Compartilhar) */}
       {pdfViewerMsg && getResolvedMediaUrl(pdfViewerMsg) && (
         <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-slate-900 text-white">
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0D2B3E] px-3 py-2.5 sm:px-5">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-[#0D2B3E] px-3 pb-2.5 header-pt-safe sm:px-5">
             <div className="flex min-w-0 items-center gap-2.5">
               <button
                 type="button"

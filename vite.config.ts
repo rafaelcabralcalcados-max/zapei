@@ -14,7 +14,7 @@ export default defineConfig(() => {
         strategies: 'injectManifest',
         srcDir: 'src',
         filename: 'sw.ts',
-        registerType: 'prompt',
+        registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'chatfi-logo.png', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
           id: '/',
@@ -88,7 +88,7 @@ export default defineConfig(() => {
         },
         injectManifest: {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,woff,woff2}'],
         },
         devOptions: {
           enabled: true,

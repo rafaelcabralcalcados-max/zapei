@@ -535,8 +535,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
 
   return (
     <div className="fixed inset-0 z-40 flex h-[100dvh] w-full max-w-full flex-col overflow-hidden bg-[#F8FAFC]">
+      <div className="safe-top-strip w-full shrink-0 md:hidden" aria-hidden="true" />
       {/* Storefront Header */}
-      <header className="shrink-0 border-b border-slate-200 bg-white px-3.5 pb-3 pt-safe sm:px-4 shadow-sm">
+      <header className="shrink-0 border-b border-slate-200 bg-white px-3.5 py-3 sm:px-4 shadow-sm">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <button
