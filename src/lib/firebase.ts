@@ -52,6 +52,7 @@ import type {
   CommercialMode,
   CommercialReview,
   ConnectedDevice,
+  ConnectionApprovalStatus,
   Contact,
   DeliveryReport,
   DeliveryReportStatus,
@@ -1972,26 +1973,43 @@ export function subscribeConnections(
   callback: (connections: FactoryConnection[]) => void
 ): () => void {
   const qReseller = query(collection(db, 'connections'), where('resellerId', '==', uid));
-  const qActive = query(collection(db, 'connections'), where('paused', '==', false));
+  const qFactory = query(collection(db, 'connections'), where('factoryId', '==', uid));
+  const qApproved = query(
+    collection(db, 'connections'),
+    where('approvalStatus', '==', 'approved')
+  );
 
-  let mine: FactoryConnection[] = [];
-  let active: FactoryConnection[] = [];
+  let mineAsReseller: FactoryConnection[] = [];
+  let mineAsFactory: FactoryConnection[] = [];
+  let publicApproved: FactoryConnection[] = [];
 
   const emit = () => {
     const map = new Map<string, FactoryConnection>();
-    for (const c of [...active, ...mine]) {
+    for (const c of [...publicApproved, ...mineAsFactory, ...mineAsReseller]) {
       map.set(c.id, c);
     }
     callback(Array.from(map.values()));
   };
 
-  const parse = (docSnap: { id: string; data: () => Record<string, unknown> }): FactoryConnection => {
+  const parse = (docSnap: {
+    id: string;
+    data: () => Record<string, unknown>;
+  }): FactoryConnection => {
     const d = docSnap.data();
+    const rawStatus = d.approvalStatus;
+    const approvalStatus: ConnectionApprovalStatus =
+      rawStatus === 'pending' || rawStatus === 'approved' || rawStatus === 'rejected'
+        ? rawStatus
+        : 'approved';
     return {
       id: docSnap.id,
       resellerId: String(d.resellerId),
+      resellerName: typeof d.resellerName === 'string' ? d.resellerName : undefined,
+      resellerStorefrontName:
+        typeof d.resellerStorefrontName === 'string' ? d.resellerStorefrontName : undefined,
       factoryId: String(d.factoryId),
       factoryName: String(d.factoryName || ''),
+      approvalStatus,
       deliveryPolicy: {
         type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
         value: Number(d.deliveryPolicyValue ?? 1),
@@ -2013,16 +2031,25 @@ export function subscribeConnections(
   const u1 = onSnapshot(
     qReseller,
     (snap) => {
-      mine = snap.docs.map((ds) => parse({ id: ds.id, data: () => ds.data() }));
+      mineAsReseller = snap.docs.map((ds) => parse({ id: ds.id, data: () => ds.data() }));
       emit();
     },
     (error) => handleFirestoreError(error, OperationType.LIST, 'connections')
   );
 
   const u2 = onSnapshot(
-    qActive,
+    qFactory,
     (snap) => {
-      active = snap.docs.map((ds) => parse({ id: ds.id, data: () => ds.data() }));
+      mineAsFactory = snap.docs.map((ds) => parse({ id: ds.id, data: () => ds.data() }));
+      emit();
+    },
+    (error) => handleFirestoreError(error, OperationType.LIST, 'connections')
+  );
+
+  const u3 = onSnapshot(
+    qApproved,
+    (snap) => {
+      publicApproved = snap.docs.map((ds) => parse({ id: ds.id, data: () => ds.data() }));
       emit();
     },
     (error) => handleFirestoreError(error, OperationType.LIST, 'connections')
@@ -2031,19 +2058,50 @@ export function subscribeConnections(
   return () => {
     u1();
     u2();
+    u3();
   };
 }
 
 export async function createRealFactoryConnection(params: {
   resellerId: string;
+  resellerName: string;
+  resellerStorefrontName: string;
   factory: PhoneLookupResult;
-}): Promise<void> {
+}): Promise<'created' | 'already_pending' | 'already_approved' | 're_requested'> {
   const connId = `conn_${params.resellerId}_${params.factory.uid}`.slice(0, 128);
+  const connRef = doc(db, 'connections', connId);
+  const cleanResellerName = (params.resellerName.trim() || 'Revendedor ChatFi').slice(0, 80);
+  const cleanStorefrontName = (
+    params.resellerStorefrontName.trim() || cleanResellerName
+  ).slice(0, 80);
+
   try {
-    await setDoc(doc(db, 'connections', connId), {
+    const existingSnap = await getDoc(connRef);
+    if (existingSnap.exists()) {
+      const existingData = existingSnap.data();
+      const status = String(existingData.approvalStatus || 'approved');
+      if (status === 'approved') {
+        return 'already_approved';
+      }
+      if (status === 'pending') {
+        return 'already_pending';
+      }
+      await updateDoc(connRef, {
+        approvalStatus: 'pending',
+        resellerName: cleanResellerName,
+        resellerStorefrontName: cleanStorefrontName,
+        updatedAt: serverTimestamp(),
+      });
+      return 're_requested';
+    }
+
+    await setDoc(connRef, {
       resellerId: params.resellerId,
+      resellerName: cleanResellerName,
+      resellerStorefrontName: cleanStorefrontName,
       factoryId: params.factory.uid,
       factoryName: params.factory.displayName.slice(0, 100),
+      approvalStatus: 'pending',
       deliveryPolicyType: params.factory.deliveryPolicy.type,
       deliveryPolicyValue: params.factory.deliveryPolicy.value,
       deliveryPolicyPickup: params.factory.deliveryPolicy.allowCounterPickup,
@@ -2056,14 +2114,34 @@ export async function createRealFactoryConnection(params: {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    return 'created';
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `connections/${connId}`);
+    return 'created';
+  }
+}
+
+export async function respondToResellerConnection(
+  connectionId: string,
+  decision: 'approved' | 'rejected'
+): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'connections', connectionId), {
+      approvalStatus: decision,
+      paused: decision === 'approved' ? false : true,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `connections/${connectionId}`);
   }
 }
 
 export async function updateRealConnection(
   connectionId: string,
   updates: Partial<{
+    approvalStatus: ConnectionApprovalStatus;
+    resellerName: string;
+    resellerStorefrontName: string;
     reviewPhotos: boolean;
     paused: boolean;
     margins: Record<string, CategoryMargin>;

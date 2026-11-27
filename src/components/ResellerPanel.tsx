@@ -31,6 +31,7 @@ import {
 import type {
   CategoryMargin,
   CommercialReview,
+  ConnectionApprovalStatus,
   DualPaymentRecord,
   FactoryConnection,
   LogisticsType,
@@ -109,6 +110,9 @@ interface ResellerPanelProps {
   onUpdateConnection: (
     connectionId: string,
     updates: Partial<{
+      approvalStatus: ConnectionApprovalStatus;
+      resellerName: string;
+      resellerStorefrontName: string;
       reviewPhotos: boolean;
       paused: boolean;
       margins: Record<string, CategoryMargin>;
@@ -272,7 +276,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const pendingReviewItems = useMemo(() => {
     const items: Array<{ product: Product; connection: FactoryConnection }> = [];
     for (const conn of myConnections) {
-      if (conn.paused || !conn.reviewPhotos) continue;
+      if (conn.approvalStatus !== 'approved' || conn.paused || !conn.reviewPhotos) continue;
       const factoryProds = products.filter(
         (p) =>
           p.factoryId === conn.factoryId &&
@@ -336,6 +340,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
 
   const samplePreviewSellingPrice = useMemo(() => {
     for (const conn of myConnections) {
+      if (conn.approvalStatus !== 'approved' || conn.paused) continue;
       const prod = products.find(
         (p) => p.factoryId === conn.factoryId && p.moderationStatus === 'approved'
       );
@@ -397,7 +402,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 />
               </div>
               <p className="text-xs text-slate-500">
-                Painel Comercial · {myConnections.filter((c) => !c.paused).length} fábrica(s) ativa(s)
+                Painel Comercial · {myConnections.filter((c) => c.approvalStatus === 'approved' && !c.paused).length} fábrica(s) aprovada(s) e ativa(s)
               </p>
             </div>
           </div>
@@ -489,18 +494,18 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
             className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
           >
             <h2 className="text-sm font-bold text-slate-900">
-              Conectar Fornecedor pelo Telefone
+              Solicitar Parceria com Fabricante
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Digite o número de telefone de um fabricante no ChatFi para puxar os produtos automaticamente para sua vitrine e definir sua margem de lucro.
+              Digite o telefone ou Linha Virtual (ex: CFI-1234-5678) de um fabricante no ChatFi. O pedido de parceria será enviado ao fabricante e os produtos aparecerão na sua vitrine assim que ele aceitar você como revendedor.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
-                type="tel"
+                type="text"
                 required
                 value={factoryPhone}
                 onChange={(e) => setFactoryPhone(e.target.value)}
-                placeholder="(11) 99999-9999"
+                placeholder="(11) 99999-9999 ou CFI-1234-5678"
                 className="h-11 flex-1 rounded-xl border border-slate-200 px-3.5 font-mono text-sm focus:border-[#0E7A34] focus:outline-none"
               />
               <button
@@ -508,7 +513,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 disabled={busy}
                 className="h-11 rounded-xl bg-[#0E7A34] px-5 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
               >
-                {busy ? 'Buscando fabricante...' : 'Conectar Fabricante'}
+                {busy ? 'Enviando solicitação...' : 'Solicitar Parceria'}
               </button>
             </div>
           </form>
@@ -605,22 +610,48 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {myConnections.map((conn) => (
+              {myConnections.map((conn) => {
+                const isPendingApproval = conn.approvalStatus === 'pending';
+                const isRejected = conn.approvalStatus === 'rejected';
+                const isApproved = conn.approvalStatus === 'approved';
+                return (
                 <div
                   key={conn.id}
                   className={`rounded-2xl border p-5 shadow-sm transition ${
-                    conn.paused
-                      ? 'border-orange-300 bg-orange-50/40'
-                      : 'border-slate-200 bg-white'
+                    isPendingApproval
+                      ? 'border-amber-300 bg-amber-50/40'
+                      : isRejected
+                        ? 'border-red-200 bg-red-50/30'
+                        : conn.paused
+                          ? 'border-orange-300 bg-orange-50/40'
+                          : 'border-slate-200 bg-white'
                   }`}
                 >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-base font-bold text-slate-900">
                           {conn.factoryName}
                         </h3>
-                        {conn.paused && (
+                        {isPendingApproval && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                            <Clock className="h-3 w-3" />
+                            Aguardando aprovação do fabricante
+                          </span>
+                        )}
+                        {isRejected && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                            <XCircle className="h-3 w-3" />
+                            Solicitação recusada / revogada
+                          </span>
+                        )}
+                        {isApproved && !conn.paused && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0E7A34]">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Revendedor Aprovado
+                          </span>
+                        )}
+                        {isApproved && conn.paused && (
                           <span className="rounded-md bg-orange-100 px-2 py-0.5 text-[11px] font-bold text-orange-800">
                             Parceria Pausada
                           </span>
@@ -631,48 +662,85 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       </p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex min-h-[38px] cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={conn.reviewPhotos}
-                          onChange={(e) =>
-                            void onUpdateConnection(conn.id, {
-                              reviewPhotos: e.target.checked,
-                            })
-                          }
-                          className="h-4 w-4 rounded text-[#0E7A34]"
-                        />
-                        Revisar fotos antes de publicar
-                      </label>
+                    {isApproved && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="flex min-h-[38px] cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={conn.reviewPhotos}
+                            onChange={(e) =>
+                              void onUpdateConnection(conn.id, {
+                                reviewPhotos: e.target.checked,
+                              })
+                            }
+                            className="h-4 w-4 rounded text-[#0E7A34]"
+                          />
+                          Revisar fotos antes de publicar
+                        </label>
 
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void onUpdateConnection(conn.id, { paused: !conn.paused })
+                          }
+                          className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition ${
+                            conn.paused
+                              ? 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
+                              : 'bg-red-600 text-white hover:bg-red-700'
+                          }`}
+                        >
+                          {conn.paused ? (
+                            <>
+                              <PlayCircle className="h-4 w-4" />
+                              Reativar Parceria
+                            </>
+                          ) : (
+                            <>
+                              <PauseCircle className="h-4 w-4" />
+                              Pausar Parceria
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    {isRejected && (
                       <button
                         type="button"
-                        onClick={() =>
-                          void onUpdateConnection(conn.id, { paused: !conn.paused })
-                        }
-                        className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition ${
-                          conn.paused
-                            ? 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
-                            : 'bg-red-600 text-white hover:bg-red-700'
-                        }`}
+                        onClick={() => {
+                          void onUpdateConnection(conn.id, {
+                            approvalStatus: 'pending',
+                            resellerName: profile.name,
+                            resellerStorefrontName: profile.storefrontName || profile.name,
+                          }).then(() => {
+                            setFeedback(
+                              `Nova solicitação enviada para "${conn.factoryName}". Aguarde a aprovação do fabricante.`
+                            );
+                          });
+                        }}
+                        className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-3.5 text-xs font-semibold text-white hover:bg-[#143d57]"
                       >
-                        {conn.paused ? (
-                          <>
-                            <PlayCircle className="h-4 w-4" />
-                            Reativar Parceria
-                          </>
-                        ) : (
-                          <>
-                            <PauseCircle className="h-4 w-4" />
-                            Pausar Parceria
-                          </>
-                        )}
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Solicitar novamente
                       </button>
-                    </div>
+                    )}
                   </div>
 
+                  {isPendingApproval && (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                      Sua solicitação foi enviada para <strong>{conn.factoryName}</strong>. Nenhum produto desta fábrica será exibido na sua vitrine até o fabricante aceitar você como revendedor.
+                    </div>
+                  )}
+
+                  {isRejected && (
+                    <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800">
+                      O fabricante <strong>{conn.factoryName}</strong> recusou ou revogou sua autorização de revenda. Os produtos desta fábrica não aparecem na sua vitrine.
+                    </div>
+                  )}
+
                   {/* Per-category margins (10 categories) */}
+                  {isApproved && (
+                  <>
                   <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
                     {PRODUCT_CATEGORIES.map((cat) => {
                       const margin =
@@ -833,8 +901,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       </div>
                     );
                   })()}
+                  </>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

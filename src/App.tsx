@@ -42,6 +42,7 @@ import {
   registerOrCheckCurrentDevice,
   registerOrUpdateUserProfile,
   rejectDeviceAuthRequest,
+  respondToResellerConnection,
   resyncAllPhonebookContacts,
   resolveSupportTicket,
   saveRealContactToPhonebook,
@@ -171,6 +172,7 @@ import type {
   CommercialMode,
   CommercialReview,
   ConnectedDevice,
+  ConnectionApprovalStatus,
   Contact,
   DeliveryReport,
   DeviceAuthRequest,
@@ -2736,16 +2738,76 @@ export default function App() {
           message: `${match.displayName} está no ChatFi, mas ainda não ativou o perfil de Fabricante.`,
         };
       }
-      await createRealFactoryConnection({
+      const result = await createRealFactoryConnection({
         resellerId: profile.uid,
+        resellerName: profile.name,
+        resellerStorefrontName: profile.storefrontName || profile.name,
         factory: match,
       });
+
+      if (result === 'already_approved') {
+        return {
+          ok: true,
+          message: `Você já é um revendedor aprovado da fábrica "${match.displayName}".`,
+        };
+      }
+
+      if (result === 'already_pending') {
+        return {
+          ok: true,
+          message: `Sua solicitação para "${match.displayName}" já foi enviada e aguarda aprovação do fabricante.`,
+        };
+      }
+
+      const resellerLabel = profile.storefrontName || profile.name;
+      void sendRealChatMessage({
+        myUid: profile.uid,
+        myName: resellerLabel,
+        otherUid: match.uid,
+        otherName: match.displayName,
+        type: 'text',
+        text: `Olá ${match.displayName}! Solicitei autorização para atuar como seu revendedor no ChatFi (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para aceitar ou recusar minha solicitação.`,
+      }).catch(() => {});
+
       return {
         ok: true,
-        message: `Fábrica "${match.displayName}" conectada com sucesso! Configure suas margens por categoria abaixo.`,
+        message:
+          result === 're_requested'
+            ? `Nova solicitação enviada para "${match.displayName}"! Aguarde o fabricante aceitar você como revendedor.`
+            : `Solicitação enviada para "${match.displayName}"! Os produtos só serão liberados na sua vitrine após o fabricante aceitar você como revendedor.`,
       };
     },
     [profile]
+  );
+
+  const handleRespondResellerRequest = useCallback(
+    async (connection: FactoryConnection, decision: 'approved' | 'rejected') => {
+      if (!profile) return;
+      await respondToResellerConnection(connection.id, decision);
+
+      const factoryLabel = profile.factoryName || profile.name;
+      const resellerLabel =
+        connection.resellerStorefrontName || connection.resellerName || 'Revendedor';
+
+      void sendRealChatMessage({
+        myUid: profile.uid,
+        myName: factoryLabel,
+        otherUid: connection.resellerId,
+        otherName: resellerLabel,
+        type: 'text',
+        text:
+          decision === 'approved'
+            ? `Parabéns! A fábrica "${factoryLabel}" aceitou sua solicitação de revendedor. Nossos produtos já estão liberados no seu Painel de Revendedor para você configurar suas margens e divulgar na sua vitrine.`
+            : `A fábrica "${factoryLabel}" não aprovou (ou revogou) sua autorização como revendedor no momento. Os produtos desta fábrica foram removidos da sua vitrine.`,
+      }).catch(() => {});
+
+      showToast(
+        decision === 'approved'
+          ? `Revendedor "${resellerLabel}" aceito com sucesso!`
+          : `Autorização de "${resellerLabel}" recusada/revogada.`
+      );
+    },
+    [profile, showToast]
   );
 
   // Derived lists & WhatsApp-style unified search
@@ -3209,11 +3271,18 @@ export default function App() {
   }
 
   const hasCommercialPanel = profile.commercialMode !== 'buyer' && !profile.commercialBanned;
+  const pendingFactoryResellerCount =
+    profile.commercialMode === 'manufacturer' && !profile.commercialBanned
+      ? connections.filter(
+          (c) => c.factoryId === profile.uid && c.approvalStatus === 'pending'
+        ).length
+      : 0;
 
   const navItems: Array<{
     id: MainTab;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
+    badge?: number;
   }> = [
     { id: 'chats', label: 'Conversas', icon: MessageSquare },
     { id: 'calls', label: 'Ligações', icon: Phone },
@@ -3224,6 +3293,7 @@ export default function App() {
             id: 'commercial' as MainTab,
             label: profile.commercialMode === 'manufacturer' ? 'Fábrica' : 'Vitrine',
             icon: profile.commercialMode === 'manufacturer' ? Factory : Briefcase,
+            badge: pendingFactoryResellerCount > 0 ? pendingFactoryResellerCount : undefined,
           },
         ]
       : []),
@@ -3295,7 +3365,7 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`flex min-h-[44px] w-full items-center justify-center lg:justify-start gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                  className={`relative flex min-h-[44px] w-full items-center justify-center lg:justify-start gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
                     active
                       ? 'bg-[#0E7A34] text-white shadow-sm'
                       : 'text-slate-300 hover:bg-white/10 hover:text-white'
@@ -3303,6 +3373,11 @@ export default function App() {
                 >
                   <Icon className="h-5 w-5 shrink-0" />
                   <span className="hidden lg:inline truncate">{item.label}</span>
+                  {item.badge !== undefined && item.badge > 0 && (
+                    <span className="absolute right-2 top-1.5 lg:static lg:ml-auto inline-flex min-w-[20px] items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                      {item.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -4117,7 +4192,9 @@ export default function App() {
               subOrders={allSubOrders}
               orders={effectiveOrders}
               payments={effectivePayments}
+              connections={connections}
               receivedReviews={receivedReviews}
+              onRespondResellerRequest={handleRespondResellerRequest}
               onSavePolicy={async (factoryName, factoryPolicy: MinimumDeliveryPolicy) => {
                 await persistProfileUpdate({ factoryName, factoryPolicy });
               }}
@@ -4188,16 +4265,35 @@ export default function App() {
                 await persistProfileUpdate({ asaasWalletId });
               }}
               onConnectFactoryByPhone={handleConnectFactoryByPhone}
-              onUpdateConnection={(
+              onUpdateConnection={async (
                 connectionId: string,
                 updates: Partial<{
+                  approvalStatus: ConnectionApprovalStatus;
+                  resellerName: string;
+                  resellerStorefrontName: string;
                   reviewPhotos: boolean;
                   paused: boolean;
                   margins: Record<string, CategoryMargin>;
                   approvedProductIds: string[];
                   rejectedProductIds: string[];
                 }>
-              ) => updateRealConnection(connectionId, updates)}
+              ) => {
+                await updateRealConnection(connectionId, updates);
+                if (updates.approvalStatus === 'pending') {
+                  const targetConn = connections.find((c) => c.id === connectionId);
+                  if (targetConn) {
+                    const resellerLabel = profile.storefrontName || profile.name;
+                    void sendRealChatMessage({
+                      myUid: profile.uid,
+                      myName: resellerLabel,
+                      otherUid: targetConn.factoryId,
+                      otherName: targetConn.factoryName,
+                      type: 'text',
+                      text: `Olá ${targetConn.factoryName}! Enviei novamente uma solicitação para atuar como seu revendedor (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para analisar.`,
+                    }).catch(() => {});
+                  }
+                }
+              }}
               onApplyPunctualDiscount={handleApplyPunctualDiscount}
               onSubmitLogistics={async (
                 sub: SubOrder,
@@ -4341,11 +4437,18 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`flex min-h-[46px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[11px] font-semibold transition ${
+                  className={`relative flex min-h-[46px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[11px] font-semibold transition ${
                     active ? 'text-[#0E7A34]' : 'text-slate-500'
                   }`}
                 >
-                  <Icon className="h-5 w-5 shrink-0" />
+                  <div className="relative">
+                    <Icon className="h-5 w-5 shrink-0" />
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span className="absolute -right-2 -top-1.5 inline-flex min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-extrabold text-white">
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
                   <span className="w-full truncate text-center">{item.label}</span>
                 </button>
               );

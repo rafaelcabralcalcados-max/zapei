@@ -210,14 +210,18 @@ service cloud.firestore {
     function isValidConnection(data) {
       return data.keys().hasAll(['resellerId', 'factoryId', 'factoryName', 'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'resellerId', 'factoryId', 'factoryName', 'deliveryPolicyType',
-          'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+          'resellerId', 'resellerName', 'resellerStorefrontName',
+          'factoryId', 'factoryName', 'approvalStatus',
+          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
           'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds',
           'createdAt', 'updatedAt'
         ])
         && isValidId(data.resellerId)
+        && (!('resellerName' in data) || (data.resellerName is string && data.resellerName.size() <= 80))
+        && (!('resellerStorefrontName' in data) || (data.resellerStorefrontName is string && data.resellerStorefrontName.size() <= 80))
         && isValidId(data.factoryId)
         && data.factoryName is string && data.factoryName.size() >= 1 && data.factoryName.size() <= 100
+        && (!('approvalStatus' in data) || data.approvalStatus in ['pending', 'approved', 'rejected'])
         && (!('deliveryPolicyType' in data) || data.deliveryPolicyType in ['boxes', 'pieces', 'amount'])
         && (!('deliveryPolicyValue' in data) || (data.deliveryPolicyValue is number && data.deliveryPolicyValue >= 0))
         && (!('deliveryPolicyPickup' in data) || data.deliveryPolicyPickup is bool)
@@ -882,30 +886,61 @@ service cloud.firestore {
       allow delete: if isVerified() && isOwner(userId) && isValidId(userId);
     }
 
-    // 3. Reseller-to-Factory Connections
+    // 3. Reseller-to-Factory Connections (Requires explicit manufacturer approval)
     match /connections/{connectionId} {
       allow get: if isSignedIn() && isValidId(connectionId)
-        && (existing().resellerId == request.auth.uid || existing().factoryId == request.auth.uid || existing().paused == false);
+        && (
+          existing().resellerId == request.auth.uid ||
+          existing().factoryId == request.auth.uid ||
+          existing().approvalStatus == 'approved'
+        );
       allow list: if isSignedIn()
-        && (existing().resellerId == request.auth.uid || existing().factoryId == request.auth.uid || existing().paused == false);
+        && (
+          existing().resellerId == request.auth.uid ||
+          existing().factoryId == request.auth.uid ||
+          existing().approvalStatus == 'approved'
+        );
       allow create: if isVerified() && isValidId(connectionId)
         && isValidConnection(incoming())
         && incoming().resellerId == request.auth.uid
+        && 'approvalStatus' in incoming()
+        && incoming().approvalStatus == 'pending'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isVerified() && isValidId(connectionId)
         && isValidConnection(incoming())
-        && existing().resellerId == request.auth.uid
         && incoming().resellerId == existing().resellerId
         && incoming().factoryId == existing().factoryId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds',
-          'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
-          'updatedAt'
-        ]);
-      allow delete: if isVerified() && isValidId(connectionId) && existing().resellerId == request.auth.uid;
+        && (
+          // Action 1: Reseller manages own margins, photo review, pause state, or re-requests after rejection (NEVER self-approves)
+          (existing().resellerId == request.auth.uid
+            && (
+              (incoming().diff(existing()).affectedKeys().hasOnly([
+                'reviewPhotos', 'paused', 'margins', 'approvedProductIds', 'rejectedProductIds',
+                'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
+                'resellerName', 'resellerStorefrontName', 'updatedAt'
+              ])) ||
+              (incoming().diff(existing()).affectedKeys().hasOnly([
+                'approvalStatus', 'resellerName', 'resellerStorefrontName', 'updatedAt'
+              ])
+                && 'approvalStatus' in existing()
+                && existing().approvalStatus == 'rejected'
+                && 'approvalStatus' in incoming()
+                && incoming().approvalStatus == 'pending')
+            )) ||
+          // Action 2: Manufacturer accepts, rejects, or revokes reseller authorization
+          (existing().factoryId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'paused', 'updatedAt'])
+            && 'approvalStatus' in incoming()
+            && incoming().approvalStatus in ['pending', 'approved', 'rejected']) ||
+          // Action 3: Admin override
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['approvalStatus', 'paused', 'updatedAt']))
+        );
+      allow delete: if isVerified() && isValidId(connectionId)
+        && (existing().resellerId == request.auth.uid || existing().factoryId == request.auth.uid || isAdmin());
     }
 
     // 4. Manufacturer Products

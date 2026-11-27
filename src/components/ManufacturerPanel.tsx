@@ -17,11 +17,13 @@ import {
   Settings2,
   Truck,
   Upload,
+  Users,
   XCircle,
 } from 'lucide-react';
 import type {
   CommercialReview,
   DualPaymentRecord,
+  FactoryConnection,
   FavoriteGrade,
   MinimumDeliveryPolicy,
   MixedOrder,
@@ -80,7 +82,12 @@ interface ManufacturerPanelProps {
   subOrders: SubOrder[];
   orders?: MixedOrder[];
   payments: DualPaymentRecord[];
+  connections?: FactoryConnection[];
   receivedReviews?: CommercialReview[];
+  onRespondResellerRequest?: (
+    connection: FactoryConnection,
+    decision: 'approved' | 'rejected'
+  ) => Promise<void>;
   onSavePolicy: (factoryName: string, policy: MinimumDeliveryPolicy) => Promise<void>;
   onSaveWalletId: (walletId: string) => Promise<void>;
   onSyncAsaasStatus?: (order: MixedOrder) => Promise<AsaasOrderStatusResult | null>;
@@ -121,7 +128,7 @@ interface ManufacturerPanelProps {
   onOpenHelp?: (ctx: HelpCenterContext) => void;
 }
 
-type FactoryTab = 'catalog' | 'conference' | 'dispatch' | 'finance' | 'policy';
+type FactoryTab = 'catalog' | 'resellers' | 'conference' | 'dispatch' | 'finance' | 'policy';
 
 export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   profile,
@@ -129,7 +136,9 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   subOrders,
   orders = [],
   payments,
+  connections = [],
   receivedReviews = [],
+  onRespondResellerRequest,
   onSavePolicy,
   onSaveWalletId,
   onSyncAsaasStatus,
@@ -145,10 +154,48 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<FactoryTab>('catalog');
   const [feedback, setFeedback] = useState('');
+  const [respondingConnId, setRespondingConnId] = useState<string | null>(null);
   const [syncingPayId, setSyncingPayId] = useState<string | null>(null);
   const [confirmCancelOrderId, setConfirmCancelOrderId] = useState<string | null>(null);
   const [cancelLoadingId, setCancelLoadingId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  const factoryConnections = useMemo(
+    () => connections.filter((c) => c.factoryId === profile.uid),
+    [connections, profile.uid]
+  );
+  const pendingResellers = useMemo(
+    () => factoryConnections.filter((c) => c.approvalStatus === 'pending'),
+    [factoryConnections]
+  );
+  const approvedResellers = useMemo(
+    () => factoryConnections.filter((c) => c.approvalStatus === 'approved'),
+    [factoryConnections]
+  );
+  const rejectedResellers = useMemo(
+    () => factoryConnections.filter((c) => c.approvalStatus === 'rejected'),
+    [factoryConnections]
+  );
+
+  const handleResellerDecision = async (
+    conn: FactoryConnection,
+    decision: 'approved' | 'rejected'
+  ) => {
+    if (!onRespondResellerRequest) return;
+    setRespondingConnId(conn.id);
+    setFeedback('');
+    try {
+      await onRespondResellerRequest(conn, decision);
+      const label = conn.resellerStorefrontName || conn.resellerName || 'Revendedor';
+      setFeedback(
+        decision === 'approved'
+          ? `Revendedor "${label}" aprovado! Os produtos da sua fábrica já estão liberados para a vitrine dele.`
+          : `Autorização de "${label}" recusada/revogada. Os produtos foram removidos da vitrine dele.`
+      );
+    } finally {
+      setRespondingConnId(null);
+    }
+  };
   useEffect(() => {
     const t = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(t);
@@ -589,10 +636,40 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           </div>
         )}
 
+        {pendingResellers.length > 0 && (
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-950">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 shrink-0 text-amber-600" />
+              <span>
+                <strong>
+                  {pendingResellers.length}{' '}
+                  {pendingResellers.length === 1
+                    ? 'revendedor aguarda sua aprovação'
+                    : 'revendedores aguardam sua aprovação'}
+                </strong>{' '}
+                para vender os produtos da sua fábrica.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('resellers')}
+              className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 font-semibold text-white hover:bg-amber-700"
+            >
+              Analisar solicitações
+            </button>
+          </div>
+        )}
+
         {/* Sub-navigation */}
         <div className="mt-4 flex gap-1.5 overflow-x-auto border-t border-slate-100 pt-3">
           {[
             { id: 'catalog', label: `Catálogo & Estoque (${myProducts.length})`, icon: Package },
+            {
+              id: 'resellers',
+              label: `Revendedores (${approvedResellers.length})`,
+              icon: Users,
+              badge: pendingResellers.length,
+            },
             {
               id: 'conference',
               label: `Conferência (${pendingConference.length})`,
@@ -617,6 +694,11 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
               >
                 <Icon className="h-4 w-4" />
                 {tab.label}
+                {'badge' in tab && typeof tab.badge === 'number' && tab.badge > 0 && (
+                  <span className="ml-0.5 inline-flex min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                    {tab.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -2068,6 +2150,183 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             />
           </div>
         </form>
+      )}
+      {/* TAB: RESELLER APPROVAL & AUTHORIZATION */}
+      {activeTab === 'resellers' && (
+        <div className="space-y-5">
+          {/* Pending Requests */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Solicitações Pendentes ({pendingResellers.length})
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Revendedores só conseguem exibir os produtos da sua fábrica na vitrine depois que você clicar em &ldquo;Aceitar Revendedor&rdquo;.
+                </p>
+              </div>
+            </div>
+
+            {pendingResellers.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
+                Nenhuma solicitação pendente de aprovação no momento.
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {pendingResellers.map((conn) => {
+                  const busy = respondingConnId === conn.id;
+                  return (
+                    <div
+                      key={conn.id}
+                      className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-bold text-slate-900">
+                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                          </h3>
+                          <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                            Pendente
+                          </span>
+                        </div>
+                        {conn.resellerName &&
+                          conn.resellerStorefrontName &&
+                          conn.resellerName !== conn.resellerStorefrontName && (
+                            <p className="text-xs text-slate-600">
+                              Responsável: {conn.resellerName}
+                            </p>
+                          )}
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          Solicitou autorização para revender o catálogo da sua fábrica acima do seu preço de fábrica.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleResellerDecision(conn, 'approved')}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3.5 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="h-4 w-4" />
+                          {busy ? 'Salvando...' : 'Aceitar Revendedor'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void handleResellerDecision(conn, 'rejected')}
+                          className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <XCircle className="h-4 w-4" />
+                          Recusar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Approved Resellers */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-bold text-slate-900">
+              Revendedores Aprovados ({approvedResellers.length})
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Estes revendedores têm permissão ativa para publicar os seus produtos. Você pode revogar o acesso quando desejar.
+            </p>
+
+            {approvedResellers.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
+                Nenhum revendedor aprovado ainda.
+              </div>
+            ) : (
+              <div className="mt-4 space-y-2.5">
+                {approvedResellers.map((conn) => {
+                  const busy = respondingConnId === conn.id;
+                  return (
+                    <div
+                      key={conn.id}
+                      className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50/30 p-4 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-sm font-bold text-slate-900">
+                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                          </h3>
+                          <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-[#0E7A34]">
+                            Aprovado
+                          </span>
+                          {conn.paused && (
+                            <span className="rounded-md bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-800">
+                              Pausado pelo revendedor
+                            </span>
+                          )}
+                        </div>
+                        {conn.resellerName &&
+                          conn.resellerStorefrontName &&
+                          conn.resellerName !== conn.resellerStorefrontName && (
+                            <p className="text-xs text-slate-600">
+                              Responsável: {conn.resellerName}
+                            </p>
+                          )}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleResellerDecision(conn, 'rejected')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        {busy ? 'Revogando...' : 'Revogar Revendedor'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* Rejected / Revoked Resellers */}
+          {rejectedResellers.length > 0 && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h2 className="text-sm font-bold text-slate-900">
+                Recusados / Revogados ({rejectedResellers.length})
+              </h2>
+              <div className="mt-3 space-y-2.5">
+                {rejectedResellers.map((conn) => {
+                  const busy = respondingConnId === conn.id;
+                  return (
+                    <div
+                      key={conn.id}
+                      className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3.5 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-semibold text-slate-800">
+                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                          </h3>
+                          <span className="rounded-md bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">
+                            Recusado
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleResellerDecision(conn, 'approved')}
+                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        {busy ? 'Aprovando...' : 'Aprovar agora'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+        </div>
       )}
     </div>
   );
