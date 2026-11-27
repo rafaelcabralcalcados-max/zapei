@@ -329,6 +329,7 @@ export function packetToChatMessage(packet: ZapeiMessagePacket): ChatMessage {
     type: packet.type,
     text: packet.text,
     timestamp: formatPacketTimeLabel(packet.timestamp),
+    createdAtMs: packet.timestamp,
     mediaUrl: packet.mediaUrl,
     mediaMimeType: packet.mediaMimeType,
     audioDuration: packet.audioDuration,

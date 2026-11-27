@@ -992,7 +992,20 @@ export default function App() {
     if (!authUid || !profileUid || deviceAuthState !== 'authorized' || !isOnline) {
       return undefined;
     }
-    const publish = (onlineNow: boolean) => {
+    let lastPublishedAtMs = 0;
+    let lastPublishedOnline: boolean | null = null;
+    const publish = (onlineNow: boolean, force = false) => {
+      const now = Date.now();
+      // Avoid redundant writes on rapid focus/visibility flips while always allowing offline transition
+      if (
+        !force &&
+        lastPublishedOnline === onlineNow &&
+        now - lastPublishedAtMs < 60_000
+      ) {
+        return;
+      }
+      lastPublishedOnline = onlineNow;
+      lastPublishedAtMs = now;
       void updateUserPresenceHeartbeat(authUid, {
         isOnline: onlineNow,
         showOnlineStatus: showOnlineSetting,
@@ -1002,16 +1015,16 @@ export default function App() {
 
     const isVisible =
       typeof document === 'undefined' || document.visibilityState === 'visible';
-    publish(isVisible);
+    publish(isVisible, true);
 
-    // Only keep periodic heartbeat running if user exposes online or last seen
+    // Low-frequency heartbeat (every 5 minutes) to preserve Firestore daily write quota
     const intervalId =
       showOnlineSetting || showLastSeenSetting
         ? window.setInterval(() => {
             if (document.visibilityState === 'visible') {
-              publish(true);
+              publish(true, true);
             }
-          }, 45_000)
+          }, 300_000)
         : null;
 
     const handleVisibilityChange = () => {

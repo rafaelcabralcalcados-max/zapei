@@ -67,6 +67,54 @@ import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 import { PdfViewerCanvas, renderPdfToPrintHtml } from './PdfViewerCanvas';
 import { StarRatingBadge } from './StarRatingBadge';
 
+const PT_BR_WEEKDAYS = [
+  'Domingo',
+  'Segunda-feira',
+  'Terça-feira',
+  'Quarta-feira',
+  'Quinta-feira',
+  'Sexta-feira',
+  'Sábado',
+] as const;
+
+function getLocalDayKey(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+}
+
+function formatMessageShortDate(ms: number): string {
+  const d = new Date(ms);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function formatChatDaySeparatorLabel(ms: number, nowMs: number): string {
+  const msgDate = new Date(ms);
+  const nowDate = new Date(nowMs);
+  const msgMidnight = new Date(
+    msgDate.getFullYear(),
+    msgDate.getMonth(),
+    msgDate.getDate()
+  ).getTime();
+  const todayMidnight = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate()
+  ).getTime();
+  const diffDays = Math.round((todayMidnight - msgMidnight) / 86_400_000);
+
+  if (diffDays === 0) return 'Hoje';
+  if (diffDays === 1) return 'Ontem';
+  if (diffDays >= 2 && diffDays < 7) {
+    return PT_BR_WEEKDAYS[msgDate.getDay()];
+  }
+  return formatMessageShortDate(ms);
+}
+
 export interface ActiveChatPeer {
   uid: string;
   name: string;
@@ -1932,6 +1980,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       mediaDelivered: false,
       deliveryStatus: 'sending',
       timestamp: timeStr,
+      createdAtMs: now.getTime(),
     };
     setOptimisticAudios((prev) => [...prev, optimisticMsg]);
     setSending(true);
@@ -2093,6 +2142,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       mediaDelivered: false,
       deliveryStatus: 'sending',
       timestamp: nowTime,
+      createdAtMs: Date.now(),
     };
     setOptimisticAudios((prev) => [...prev, optimisticPdf]);
     try {
@@ -2269,6 +2319,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       mediaDelivered: false,
       deliveryStatus: 'sending',
       timestamp: nowTime,
+      createdAtMs: Date.now(),
     };
     setOptimisticAudios((prev) => [...prev, optimisticImg]);
 
@@ -2313,6 +2364,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       mediaDelivered: false,
       deliveryStatus: 'sending',
       timestamp: nowTime,
+      createdAtMs: Date.now(),
     };
     setOptimisticAudios((prev) => [...prev, optimisticVid]);
 
@@ -2556,19 +2608,46 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 : parsedQuote.quoteSender
               : '';
 
+            const msgMs =
+              typeof msg.createdAtMs === 'number' && Number.isFinite(msg.createdAtMs)
+                ? msg.createdAtMs
+                : presenceNowMs;
+            const prevMsg = msgIdx > 0 ? renderedMessages[msgIdx - 1] : null;
+            const prevMs =
+              prevMsg &&
+              typeof prevMsg.createdAtMs === 'number' &&
+              Number.isFinite(prevMsg.createdAtMs)
+                ? prevMsg.createdAtMs
+                : prevMsg
+                  ? presenceNowMs
+                  : null;
+            const showDayDivider =
+              prevMs === null || getLocalDayKey(msgMs) !== getLocalDayKey(prevMs);
+            const dayDividerLabel = showDayDivider
+              ? formatChatDaySeparatorLabel(msgMs, presenceNowMs)
+              : '';
+            const msgDateLabel = formatMessageShortDate(msgMs);
+
             return (
-              <div
-                key={msg.id}
-                data-chat-msg-id={msg.id}
-                onTouchStart={(e) => handleRowTouchStart(msg, e)}
-                onTouchMove={handleRowTouchMove}
-                onTouchEnd={() => handleRowTouchEnd(msg)}
-                onTouchCancel={() => {
-                  swipeStateRef.current = null;
-                  setSwipingMsg(null);
-                }}
-                className={`group relative flex items-center ${isMine ? 'justify-end' : 'justify-start'}`}
-              >
+              <React.Fragment key={msg.id}>
+                {showDayDivider && (
+                  <div className="my-2 flex justify-center">
+                    <span className="rounded-lg border border-slate-200/80 bg-white/90 px-3 py-1 text-[11px] font-semibold tracking-wide text-slate-600 shadow-[0_1px_3px_rgba(15,23,42,0.08)] backdrop-blur-xs dark:border-slate-700/80 dark:bg-[#182229]/90 dark:text-slate-300">
+                      {dayDividerLabel}
+                    </span>
+                  </div>
+                )}
+                <div
+                  data-chat-msg-id={msg.id}
+                  onTouchStart={(e) => handleRowTouchStart(msg, e)}
+                  onTouchMove={handleRowTouchMove}
+                  onTouchEnd={() => handleRowTouchEnd(msg)}
+                  onTouchCancel={() => {
+                    swipeStateRef.current = null;
+                    setSwipingMsg(null);
+                  }}
+                  className={`group relative flex items-center ${isMine ? 'justify-end' : 'justify-start'}`}
+                >
                 {/* Swipe-right Reply indicator (WhatsApp mobile feel) */}
                 {swipeOffset > 4 && (
                   <div
@@ -3056,7 +3135,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                         <Radio className="h-3 w-3" />
                       </span>
                     )}
-                    <span className="font-mono tabular-nums">{msg.timestamp}</span>
+                    <span className="font-mono tabular-nums whitespace-nowrap">
+                      {msgDateLabel} {msg.timestamp}
+                    </span>
                     {isMine &&
                       (msg.deliveryStatus === 'pending' || msg.deliveryStatus === 'sending' ? (
                         <span
@@ -3081,7 +3162,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       ))}
                   </div>
                 </div>
-              </div>
+                </div>
+              </React.Fragment>
             );
           })
         )}
@@ -3488,7 +3570,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 <p className="truncate text-sm font-bold">
                   {lightboxMsg.senderId === myUid ? myName || 'Você' : peer.name}
                 </p>
-                <p className="text-[11px] text-white/70">{lightboxMsg.timestamp}</p>
+                <p className="text-[11px] text-white/70">
+                  {typeof lightboxMsg.createdAtMs === 'number'
+                    ? `${formatMessageShortDate(lightboxMsg.createdAtMs)} ${lightboxMsg.timestamp}`
+                    : lightboxMsg.timestamp}
+                </p>
               </div>
             </div>
 

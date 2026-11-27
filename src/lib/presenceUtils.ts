@@ -8,11 +8,10 @@
 export const DEFAULT_STATUS_MESSAGE = 'Disponível';
 
 /**
- * Heartbeat freshness window (2 minutes). Heartbeats run every 45s while the tab
- * is active, so if a user closes the app abruptly without firing pagehide/unload,
- * they cleanly transition to "visto por último às HH:mm".
+ * Heartbeat freshness window (6 minutes). Heartbeats run every 5 minutes while the tab
+ * is active, keeping "online" accurate while minimizing Firestore write units.
  */
-export const ONLINE_FRESHNESS_MS = 2 * 60 * 1000;
+export const ONLINE_FRESHNESS_MS = 6 * 60 * 1000;
 
 export interface PresenceSnapshot {
   isOnline?: boolean;

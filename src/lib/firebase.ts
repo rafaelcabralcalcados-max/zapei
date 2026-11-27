@@ -988,6 +988,24 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
 
   try {
     if (existing?.exists()) {
+      const prev = existing.data() as Record<string, unknown>;
+      const unchanged =
+        prev.displayName === payload.displayName &&
+        prev.initials === payload.initials &&
+        prev.statusMessage === payload.statusMessage &&
+        prev.avatarColor === payload.avatarColor &&
+        (prev.avatarUrl || '') === payload.avatarUrl &&
+        prev.role === payload.role &&
+        Boolean(prev.hasStorefront) === Boolean(payload.hasStorefront) &&
+        (prev.storefrontName || '') === payload.storefrontName &&
+        (prev.deliveryPolicyLabel || '') === payload.deliveryPolicyLabel &&
+        (prev.virtualLine || '') === (payload.virtualLine || '') &&
+        Boolean(prev.commercialBanned) === Boolean(payload.commercialBanned) &&
+        prev.showOnlineStatus === payload.showOnlineStatus &&
+        prev.showLastSeen === payload.showLastSeen;
+      if (unchanged) {
+        return;
+      }
       await updateDoc(dirRef, payload);
     } else {
       const ratingAverage = Number(profile.ratingAverage ?? 0) || 0;
@@ -1017,6 +1035,8 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
  * `public_directory/{uid}` without touching `users/{uid}` (so the local session never flickers).
  * Respects user privacy at the data layer: never publishes online=true or timestamps when disabled.
  */
+let presenceQuotaBackoffUntilMs = 0;
+
 export async function updateUserPresenceHeartbeat(
   uid: string,
   opts: {
@@ -1026,6 +1046,7 @@ export async function updateUserPresenceHeartbeat(
   }
 ): Promise<void> {
   if (!uid) return;
+  if (Date.now() < presenceQuotaBackoffUntilMs) return;
   const showOnline = opts.showOnlineStatus !== false;
   const showLastSeen = opts.showLastSeen !== false;
   const effectiveOnline = showOnline ? opts.isOnline : false;
@@ -1039,7 +1060,11 @@ export async function updateUserPresenceHeartbeat(
       showLastSeen,
       updatedAt: serverTimestamp(),
     });
-  } catch {
+  } catch (err) {
+    if (getErrorCodeString(err) === 'resource-exhausted') {
+      // Pause background heartbeats for 15 minutes when daily write quota is hit
+      presenceQuotaBackoffUntilMs = Date.now() + 15 * 60 * 1000;
+    }
     // Non-fatal: directory entry may not exist yet or network is temporarily offline
   }
 }
@@ -1534,6 +1559,7 @@ export function subscribeChatMessages(
         type: (d.type as ChatMessage['type']) ?? 'text',
         text: String(d.text || ''),
         timestamp: formatTimestampShort(d.createdAt as Timestamp | undefined) || 'Agora',
+        createdAtMs: ms,
         mediaUrl: d.mediaUrl ? String(d.mediaUrl) : undefined,
         audioDuration: d.audioDuration ? String(d.audioDuration) : undefined,
         videoDuration: d.videoDuration ? String(d.videoDuration) : undefined,
@@ -3925,6 +3951,15 @@ export async function syncCommercialIdentityHashes(params: {
   try {
     const snap = await getDoc(ref).catch(() => null);
     if (snap?.exists()) {
+      const prev = snap.data() as Record<string, unknown>;
+      const cpfChanged = Boolean(payload.cpfHash && prev.cpfHash !== payload.cpfHash);
+      const phoneChanged = Boolean(payload.phoneHash && prev.phoneHash !== payload.phoneHash);
+      const vlineChanged = Boolean(
+        payload.virtualLineHash && prev.virtualLineHash !== payload.virtualLineHash
+      );
+      if (!cpfChanged && !phoneChanged && !vlineChanged) {
+        return;
+      }
       const updatePayload: Record<string, unknown> = { updatedAt: serverTimestamp() };
       if (payload.cpfHash) updatePayload.cpfHash = payload.cpfHash;
       if (payload.phoneHash) updatePayload.phoneHash = payload.phoneHash;

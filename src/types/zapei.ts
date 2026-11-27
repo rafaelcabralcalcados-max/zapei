@@ -97,6 +97,7 @@ export interface ChatMessage {
   type: 'text' | 'audio' | 'image' | 'video' | 'order_card' | 'billing_reminder';
   text: string;
   timestamp: string;
+  createdAtMs?: number;
   mediaUrl?: string;
   audioDuration?: string;
   videoDuration?: string;
