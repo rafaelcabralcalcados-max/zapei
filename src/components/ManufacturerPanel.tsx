@@ -40,6 +40,7 @@ import type {
   SubOrder,
   UserProfile,
 } from '../types/zapei';
+import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
 import {
   MAX_PRODUCT_IMAGES,
   PRODUCT_CATEGORIES,
@@ -196,6 +197,18 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   const [confirmCancelOrderId, setConfirmCancelOrderId] = useState<string | null>(null);
   const [cancelLoadingId, setCancelLoadingId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useSystemBackHandler(
+    activeTab !== 'catalog',
+    () => setActiveTab('catalog'),
+    BACK_PRIORITY.PANEL_SUBTAB,
+    activeTab
+  );
+  useSystemBackHandler(
+    Boolean(confirmCancelOrderId),
+    () => setConfirmCancelOrderId(null),
+    BACK_PRIORITY.DRAWER
+  );
 
   const factoryConnections = useMemo(
     () => connections.filter((c) => c.factoryId === profile.uid),

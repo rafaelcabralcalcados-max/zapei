@@ -45,6 +45,7 @@ import type {
   TargetCommercialRole,
   UserProfile,
 } from '../types/zapei';
+import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
 import {
   canCancelUnpaidOrder,
   formatAsaasStatusLabel,
@@ -267,6 +268,38 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   }, []);
   const [activeModalCharge, setActiveModalCharge] =
     useState<AsaasChargeModalData | null>(null);
+
+  useSystemBackHandler(
+    activeTab !== 'connections',
+    () => setActiveTab('connections'),
+    BACK_PRIORITY.PANEL_SUBTAB,
+    activeTab
+  );
+  useSystemBackHandler(
+    Boolean(confirmSubDeliveryId),
+    () => setConfirmSubDeliveryId(null),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    Boolean(confirmCancelOrderId),
+    () => setConfirmCancelOrderId(null),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    Boolean(activeModalCharge),
+    () => setActiveModalCharge(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(reviewTarget),
+    () => setReviewTarget(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(reportTarget),
+    () => setReportTarget(null),
+    BACK_PRIORITY.MODAL
+  );
 
   // R05 Logistics drafts keyed by subOrderId
   const [logTypeMap, setLogTypeMap] = useState<Record<string, LogisticsType>>({});

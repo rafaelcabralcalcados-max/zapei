@@ -32,6 +32,7 @@ import {
   supportsNativeContactPicker,
 } from '../lib/phoneUtils';
 import { getContactPresenceDisplay } from '../lib/presenceUtils';
+import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 import { StarRatingBadge } from './StarRatingBadge';
 
@@ -109,6 +110,21 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const [liveLookupCheckedPhone, setLiveLookupCheckedPhone] = useState('');
 
   const hasNativePicker = supportsNativeContactPicker();
+
+  useSystemBackHandler(
+    showAddForm,
+    () => setShowAddForm(false),
+    BACK_PRIORITY.PANEL_SUBTAB
+  );
+  useSystemBackHandler(
+    selectedDirectoryCategory !== null,
+    () => {
+      setSelectedDirectoryCategory(null);
+      setSelectedDirectorySubcategory('Todas');
+    },
+    BACK_PRIORITY.PANEL_SUBTAB - 1,
+    selectedDirectoryCategory || ''
+  );
 
   const directoryByUid = useMemo(() => {
     const map = new Map<string, PublicDirectoryUser>();

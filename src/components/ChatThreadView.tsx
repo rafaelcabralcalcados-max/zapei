@@ -62,6 +62,7 @@ import {
   type PresenceSnapshot,
 } from '../lib/presenceUtils';
 import { unlockCallAudio } from '../lib/webrtcService';
+import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 import { PdfViewerCanvas, renderPdfToPrintHtml } from './PdfViewerCanvas';
 import { StarRatingBadge } from './StarRatingBadge';
@@ -2202,6 +2203,43 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       setPendingVideo(null);
     }
   };
+
+  // Android system Back arrow (◀) & browser Back for all in-chat overlays/viewers
+  useSystemBackHandler(
+    showEmojiPicker,
+    () => setShowEmojiPicker(false),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    Boolean(pendingPhoto),
+    closePendingPhoto,
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(pendingVideo),
+    closePendingVideo,
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(actionSheetMsg),
+    () => setActionSheetMsg(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(forwardMsg),
+    () => setForwardMsg(null),
+    BACK_PRIORITY.MODAL + 1
+  );
+  useSystemBackHandler(
+    Boolean(lightboxMsg),
+    () => setLightboxMsg(null),
+    BACK_PRIORITY.LIGHTBOX
+  );
+  useSystemBackHandler(
+    Boolean(pdfViewerMsg),
+    () => setPdfViewerMsg(null),
+    BACK_PRIORITY.LIGHTBOX
+  );
 
   const handleConfirmSendPendingPhoto = async (e: React.FormEvent) => {
     e.preventDefault();

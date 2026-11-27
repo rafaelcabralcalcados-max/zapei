@@ -148,6 +148,7 @@ import {
   toggleThemeMode,
   type ThemeMode,
 } from './lib/appearancePrefs';
+import { BACK_PRIORITY, useSystemBackHandler } from './lib/backNavigation';
 import { calculateOrderSplit } from './lib/splitCalculator';
 import {
   canCancelUnpaidOrder,
@@ -1874,7 +1875,7 @@ export default function App() {
     const isSharedLaunch = params.get('shared') === '1';
 
     if (incomingCall || openChatUid || isSharedLaunch) {
-      window.history.replaceState({}, '', '/');
+      window.history.replaceState(window.history.state || {}, '', '/');
     }
     if (incomingCall || openChatUid) {
       void processPushWakeAction({ callId: incomingCall, callAction, openChatUid });
@@ -1996,6 +1997,96 @@ export default function App() {
     setPendingSharedPayloads([]);
     await clearPendingSharedPayloads(ids);
   }, [pendingSharedPayloads]);
+
+  // Track previous main tabs so Android Back (◀) returns to the previous visited tab and then 'chats'
+  const tabHistoryRef = useRef<MainTab[]>([]);
+  const prevActiveTabRef = useRef<MainTab>(activeTab);
+  const poppingTabBackRef = useRef(false);
+
+  useEffect(() => {
+    const prev = prevActiveTabRef.current;
+    prevActiveTabRef.current = activeTab;
+    if (poppingTabBackRef.current) {
+      poppingTabBackRef.current = false;
+      return;
+    }
+    if (activeTab === 'chats') {
+      tabHistoryRef.current = [];
+      return;
+    }
+    if (prev !== activeTab) {
+      tabHistoryRef.current = [
+        ...tabHistoryRef.current.filter((t) => t !== prev && t !== activeTab),
+        prev,
+      ].slice(-6);
+    }
+  }, [activeTab]);
+
+  // Android system Back arrow (◀) & browser Back navigation across all app layers
+  useSystemBackHandler(
+    activeTab === 'chats' && !selectedPeer && chatSearch.trim().length > 0,
+    () => setChatSearch(''),
+    BACK_PRIORITY.SEARCH
+  );
+  useSystemBackHandler(
+    activeTab !== 'chats',
+    () => {
+      const nextBackTab = tabHistoryRef.current.pop() || 'chats';
+      poppingTabBackRef.current = true;
+      setActiveTab(nextBackTab);
+    },
+    BACK_PRIORITY.TAB,
+    activeTab
+  );
+  useSystemBackHandler(
+    Boolean(selectedPeer),
+    () => setSelectedPeer(null),
+    BACK_PRIORITY.SCREEN,
+    selectedPeer?.uid || ''
+  );
+  useSystemBackHandler(
+    Boolean(activeStorefrontOwner),
+    () => setActiveStorefrontOwner(null),
+    BACK_PRIORITY.SCREEN + 2,
+    activeStorefrontOwner?.uid || ''
+  );
+  useSystemBackHandler(
+    showEditProfile,
+    () => setShowEditProfile(false),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(trialPromptRole),
+    () => setTrialPromptRole(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    showBillingModal,
+    () => setShowBillingModal(false),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    showPoliciesModal,
+    () => setShowPoliciesModal(false),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    helpModalOpen,
+    () => setHelpModalOpen(false),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    pendingSharedPayloads.length > 0,
+    () => {
+      void handleDismissSharedPayloads();
+    },
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(avatarPreview),
+    () => setAvatarPreview(null),
+    BACK_PRIORITY.LIGHTBOX
+  );
 
   const handleSendSharedContent = useCallback(
     async (params: {

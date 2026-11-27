@@ -41,6 +41,7 @@ import type {
   SubscriptionStatus,
   TargetCommercialRole,
 } from '../types/zapei';
+import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
 import {
   PRODUCT_CATEGORIES,
   type MainCategoryId,
@@ -238,6 +239,44 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   useEffect(() => {
     setDetailPhotoIdx(0);
   }, [selectedProductListing?.product.id]);
+
+  // Android system Back arrow (◀) inside Storefront: close topmost modal/detail, then sub-view, then storefront
+  useSystemBackHandler(
+    activeSubView !== 'catalog',
+    () => setActiveSubView('catalog'),
+    BACK_PRIORITY.SCREEN_SUBVIEW,
+    activeSubView
+  );
+  useSystemBackHandler(
+    Boolean(confirmDeliveryOrderId),
+    () => setConfirmDeliveryOrderId(null),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    Boolean(confirmCancelOrderId),
+    () => setConfirmCancelOrderId(null),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    Boolean(selectedProductListing),
+    () => setSelectedProductListing(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(activeModalCharge),
+    () => setActiveModalCharge(null),
+    BACK_PRIORITY.MODAL + 1
+  );
+  useSystemBackHandler(
+    Boolean(reviewTarget),
+    () => setReviewTarget(null),
+    BACK_PRIORITY.MODAL + 1
+  );
+  useSystemBackHandler(
+    Boolean(reportTarget),
+    () => setReportTarget(null),
+    BACK_PRIORITY.MODAL + 1
+  );
 
   const anchorDiscountPct = Math.min(
     80,
