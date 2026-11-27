@@ -94,6 +94,9 @@ export interface ForwardTarget {
 interface ChatThreadViewProps {
   myUid: string;
   myName: string;
+  myAvatarUrl?: string;
+  myInitials?: string;
+  myAvatarBg?: string;
   peer: ActiveChatPeer;
   peerPresence?: PresenceSnapshot | null;
   messages: ChatMessage[];
@@ -395,6 +398,10 @@ const RealAudioBubble: React.FC<{
   currentSec: number;
   measuredDurationSec?: number;
   speed: 1 | 1.5 | 2;
+  senderName: string;
+  senderAvatarUrl?: string;
+  senderInitials?: string;
+  senderAvatarBg?: string;
   onTogglePlay: () => void;
   onSeek: (nextSec: number, isDraggingNow: boolean) => void;
   onCycleSpeed: () => void;
@@ -407,6 +414,10 @@ const RealAudioBubble: React.FC<{
   currentSec,
   measuredDurationSec,
   speed,
+  senderName,
+  senderAvatarUrl,
+  senderInitials,
+  senderAvatarBg,
   onTogglePlay,
   onSeek,
   onCycleSpeed,
@@ -493,18 +504,61 @@ const RealAudioBubble: React.FC<{
         type="button"
         onClick={onTogglePlay}
         disabled={!mediaUrl}
-        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-xs transition active:scale-95 disabled:opacity-40 ${
+        className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-xs transition active:scale-95 disabled:opacity-40 ${
           isMine
             ? isListened
-              ? 'bg-sky-400/30 text-sky-100 ring-1 ring-sky-200/60 hover:bg-sky-400/40'
-              : 'bg-white/20 text-white ring-1 ring-white/25 hover:bg-white/30'
+              ? 'ring-2 ring-sky-200/85'
+              : 'ring-2 ring-white/45'
             : isListened
-              ? 'bg-[#0284C7] text-white shadow-sky-900/15 hover:bg-[#0369A1]'
-              : 'bg-[#0E7A34] text-white shadow-emerald-900/15 hover:bg-[#0B5D27]'
+              ? 'ring-2 ring-[#0284C7]'
+              : 'ring-2 ring-[#0E7A34]'
         }`}
         aria-label={isPlaying ? 'Pausar áudio' : 'Reproduzir áudio'}
       >
-        {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+        {senderAvatarUrl ? (
+          <img
+            src={senderAvatarUrl}
+            alt={senderName}
+            className="h-full w-full rounded-full object-cover"
+          />
+        ) : (
+          <span
+            className="flex h-full w-full items-center justify-center rounded-full text-xs font-bold text-white"
+            style={{
+              backgroundColor:
+                senderAvatarBg || (isListened ? '#0284C7' : '#0E7A34'),
+            }}
+          >
+            {senderInitials || senderName.slice(0, 2).toUpperCase()}
+          </span>
+        )}
+
+        {/* Show crisp Pause overlay while actively playing so pausing is effortless */}
+        {isPlaying && (
+          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-[1px]">
+            <Pause className="h-4 w-4 fill-white/95" />
+          </span>
+        )}
+
+        {/* Small corner play/voice badge indicating tap-to-play & listened state */}
+        <span
+          aria-hidden="true"
+          className={`absolute -bottom-0.5 -right-0.5 flex h-[18px] w-[18px] items-center justify-center rounded-full text-white shadow-xs ring-2 ${
+            isMine
+              ? isListened
+                ? 'bg-[#0284C7] ring-[#0B632A]'
+                : 'bg-[#16A34A] ring-[#0B632A]'
+              : isListened
+                ? 'bg-[#0284C7] ring-sky-50'
+                : 'bg-[#0E7A34] ring-white'
+          }`}
+        >
+          {isPlaying ? (
+            <Mic className="h-2.5 w-2.5" />
+          ) : (
+            <Play className="h-2.5 w-2.5 fill-white ml-[1px]" />
+          )}
+        </span>
       </button>
 
       <div className="min-w-0 flex-1">
@@ -618,6 +672,9 @@ const RealAudioBubble: React.FC<{
 export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   myUid,
   myName,
+  myAvatarUrl,
+  myInitials,
+  myAvatarBg,
   peer,
   peerPresence,
   messages,
@@ -2573,6 +2630,14 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                           }
                           measuredDurationSec={voiceDurationsById[msg.id]}
                           speed={voiceSpeed}
+                          senderName={isMine ? myName : peer.name}
+                          senderAvatarUrl={isMine ? myAvatarUrl : peer.avatarUrl}
+                          senderInitials={
+                            isMine
+                              ? myInitials || myName.slice(0, 2).toUpperCase()
+                              : peer.initials
+                          }
+                          senderAvatarBg={isMine ? myAvatarBg : peer.avatarBg}
                           onTogglePlay={() => handleToggleVoiceMessage(msg.id, resolvedUrl)}
                           onSeek={(nextSec, draggingNow) =>
                             handleSeekVoiceMessage(msg.id, nextSec, draggingNow)

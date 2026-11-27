@@ -3928,6 +3928,9 @@ export default function App() {
                   <ChatThreadView
                     myUid={profile.uid}
                     myName={profile.name}
+                    myAvatarUrl={profile.avatarUrl}
+                    myInitials={getInitials(profile.name)}
+                    myAvatarBg={profile.avatarBg || '#0E7A34'}
                     peer={selectedPeer}
                     peerPresence={directoryByUid.get(selectedPeer.uid) ?? null}
                     onPreviewAvatar={setAvatarPreview}
