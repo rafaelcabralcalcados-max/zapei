@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Camera,
@@ -349,12 +349,49 @@ function stopAllChatMediaExcept(
   return activeChatAudioToken;
 }
 
+const LISTENED_AUDIO_STORAGE_PREFIX = 'chatfi_listened_audios_v1_';
+const MAX_LISTENED_AUDIO_RECORDS = 1500;
+
+function readListenedAudioIds(uid: string): Set<string> {
+  if (!uid || typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(`${LISTENED_AUDIO_STORAGE_PREFIX}${uid}`);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((id): id is string => typeof id === 'string' && id.length > 0));
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return new Set();
+}
+
+function persistListenedAudioIds(uid: string, ids: Set<string>): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    const arr = Array.from(ids);
+    const trimmed =
+      arr.length > MAX_LISTENED_AUDIO_RECORDS
+        ? arr.slice(arr.length - MAX_LISTENED_AUDIO_RECORDS)
+        : arr;
+    window.localStorage.setItem(
+      `${LISTENED_AUDIO_STORAGE_PREFIX}${uid}`,
+      JSON.stringify(trimmed)
+    );
+  } catch {
+    // Ignore quota / storage errors
+  }
+}
+
 const RealAudioBubble: React.FC<{
   messageId: string;
   mediaUrl?: string;
   duration?: string;
   isMine: boolean;
-}> = ({ messageId, mediaUrl, duration, isMine }) => {
+  isListened?: boolean;
+  onMarkListened?: () => void;
+}> = ({ messageId, mediaUrl, duration, isMine, isListened = false, onMarkListened }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
@@ -755,6 +792,7 @@ const RealAudioBubble: React.FC<{
             }
             playingRef.current = true;
             setPlaying(true);
+            onMarkListened?.();
           }}
           onPause={() => {
             if (stallTimerRef.current !== null) {
@@ -775,6 +813,7 @@ const RealAudioBubble: React.FC<{
             playingRef.current = false;
             setPlaying(false);
             setCurrentSec(0);
+            onMarkListened?.();
             if (audioRef.current) {
               if (activeChatAudioElement === audioRef.current) {
                 activeChatAudioElement = null;
@@ -800,6 +839,9 @@ const RealAudioBubble: React.FC<{
             if (el.currentTime > 0.02 && stallTimerRef.current !== null) {
               window.clearTimeout(stallTimerRef.current);
               stallTimerRef.current = null;
+            }
+            if (el.currentTime > 0.15) {
+              onMarkListened?.();
             }
             setCurrentSec(el.currentTime);
           }}
@@ -827,10 +869,14 @@ const RealAudioBubble: React.FC<{
         type="button"
         onClick={togglePlay}
         disabled={!activeSrc}
-        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-40 ${
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-xs transition active:scale-95 disabled:opacity-40 ${
           isMine
-            ? 'bg-white/20 text-white hover:bg-white/30'
-            : 'bg-[#0E7A34] text-white hover:bg-[#0B5D27]'
+            ? isListened
+              ? 'bg-sky-400/30 text-sky-100 ring-1 ring-sky-200/60 hover:bg-sky-400/40'
+              : 'bg-white/20 text-white ring-1 ring-white/25 hover:bg-white/30'
+            : isListened
+              ? 'bg-[#0284C7] text-white shadow-sky-900/15 hover:bg-[#0369A1]'
+              : 'bg-[#0E7A34] text-white shadow-emerald-900/15 hover:bg-[#0B5D27]'
         }`}
         aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'}
       >
@@ -861,14 +907,22 @@ const RealAudioBubble: React.FC<{
               return (
                 <span
                   key={idx}
-                  className={`block flex-1 rounded-full ${
+                  className={`block flex-1 rounded-full transition-colors ${
                     isFilled
                       ? isMine
-                        ? 'bg-white'
-                        : 'bg-[#0E7A34]'
+                        ? isListened
+                          ? 'bg-sky-200'
+                          : 'bg-white'
+                        : isListened
+                          ? 'bg-[#0284C7]'
+                          : 'bg-[#0E7A34]'
                       : isMine
-                        ? 'bg-white/30'
-                        : 'bg-slate-300'
+                        ? isListened
+                          ? 'bg-sky-200/35'
+                          : 'bg-white/30'
+                        : isListened
+                          ? 'bg-sky-200'
+                          : 'bg-slate-300/90'
                   }`}
                   style={{ height: `${heightPct}%` }}
                 />
@@ -878,25 +932,54 @@ const RealAudioBubble: React.FC<{
           {/* Draggable scrubber thumb */}
           <span
             aria-hidden="true"
-            className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-xs ${
+            className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-xs transition-colors ${
               dragging ? 'scale-110' : ''
             } ${
               isMine
-                ? 'bg-white ring-2 ring-[#0E7A34]'
-                : 'bg-[#0E7A34] ring-2 ring-white'
+                ? isListened
+                  ? 'bg-sky-300 ring-2 ring-[#0B632A]'
+                  : 'bg-white ring-2 ring-[#0E7A34]'
+                : isListened
+                  ? 'bg-[#0284C7] ring-2 ring-white'
+                  : 'bg-[#0E7A34] ring-2 ring-white'
             }`}
             style={{ left: `${progressPct}%` }}
           />
         </div>
-        <div className="flex items-center justify-between gap-2 text-[11px] opacity-90">
-          <span className="font-mono tabular-nums">{displayTimeLabel}</span>
+        <div className="flex items-center justify-between gap-2 text-[11px] opacity-95">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={`font-mono tabular-nums ${
+                !isMine && isListened ? 'text-sky-900 font-semibold' : ''
+              }`}
+            >
+              {displayTimeLabel}
+            </span>
+            {isListened ? (
+              <span
+                className={`inline-flex items-center gap-0.5 text-[10px] font-semibold ${
+                  isMine ? 'text-sky-200' : 'text-[#0284C7]'
+                }`}
+              >
+                <CheckCheck className="h-3 w-3 shrink-0" />
+                <span>Ouvido</span>
+              </span>
+            ) : !isMine ? (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#0E7A34]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#0E7A34]" aria-hidden="true" />
+                <span>Novo</span>
+              </span>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={cycleSpeed}
             className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold transition ${
               isMine
                 ? 'bg-white/20 text-white hover:bg-white/30'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                : isListened
+                  ? 'bg-sky-100 text-sky-800 hover:bg-sky-200'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
             title="Alterar velocidade do áudio"
           >
@@ -939,6 +1022,26 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
   const appliedPrefillIdRef = useRef<string | null>(null);
+  const [listenedAudioIds, setListenedAudioIds] = useState<Set<string>>(() =>
+    readListenedAudioIds(myUid)
+  );
+
+  useEffect(() => {
+    setListenedAudioIds(readListenedAudioIds(myUid));
+  }, [myUid]);
+
+  const handleMarkAudioListened = useCallback(
+    (messageId: string) => {
+      setListenedAudioIds((prev) => {
+        if (prev.has(messageId)) return prev;
+        const next = new Set(prev);
+        next.add(messageId);
+        persistListenedAudioIds(myUid, next);
+        return next;
+      });
+    },
+    [myUid]
+  );
 
   useEffect(() => {
     if (!prefilledDraft || !prefilledDraft.text.trim()) return;
@@ -1814,16 +1917,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#F4F6F8]">
+    <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#EDF3EF]">
       <div className="safe-top-strip w-full shrink-0 md:hidden" aria-hidden="true" />
-      {/* Top Chat Header */}
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-2.5 py-2.5 sm:px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      {/* Top Chat Header — ChatFi Deep Emerald Wave */}
+      <header className="chatfi-header-wave flex shrink-0 items-center justify-between gap-2 border-b border-emerald-950/30 px-2.5 py-2.5 text-white shadow-sm sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 md:hidden"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15 md:hidden"
               aria-label="Voltar para conversas"
             >
               <ArrowLeft className="h-5 w-5" />
@@ -1848,17 +1951,17 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             }
             title="Ver foto de perfil"
             aria-label={`Ampliar foto de ${peer.name}`}
-            className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
+            className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-95 active:scale-95 focus:outline-none focus:ring-2 focus:ring-white/50"
           >
             {peer.avatarUrl ? (
               <img
                 src={peer.avatarUrl}
                 alt={peer.name}
-                className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-2 ring-white/35"
               />
             ) : (
               <div
-                className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/30"
                 style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
               >
                 {peer.initials}
@@ -1866,27 +1969,28 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             )}
             {peerPresenceDisplay.isOnline && (
               <span
-                className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#22C55E] ring-2 ring-[#064A21]"
                 aria-label="Online"
               />
             )}
           </button>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-sm font-bold text-slate-900 sm:text-base">
+              <h2 className="truncate text-sm font-bold text-white sm:text-base">
                 {peer.name}
               </h2>
               <StarRatingBadge
                 average={peer.ratingAverage}
                 count={peer.ratingCount}
                 variant="inline"
+                tone="dark"
               />
             </div>
             <p
               className={`truncate text-xs ${
                 peerPresenceDisplay.isOnline
-                  ? 'font-semibold text-[#0E7A34]'
-                  : 'text-slate-500'
+                  ? 'font-semibold text-emerald-200'
+                  : 'text-emerald-100/80'
               }`}
             >
               {peerPresenceDisplay.isOnline
@@ -1902,13 +2006,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {peer.hasStorefront && (
             <button
               type="button"
               onClick={onOpenStorefront}
               title="Abrir vitrine"
-              className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0E7A34] px-2.5 text-xs font-semibold text-white transition hover:bg-[#0B5D27] sm:h-10 sm:px-3"
+              className="flex h-9 items-center gap-1.5 rounded-full bg-[#16A34A] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-white/25 transition hover:bg-[#15803D] sm:h-10 sm:px-3.5"
             >
               <Store className="h-4 w-4 shrink-0" />
               <span className="hidden sm:inline">Vitrine</span>
@@ -1918,7 +2022,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             type="button"
             onClick={() => onStartCall('audio')}
             title="Ligação de voz"
-            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0E7A34]"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
           >
             <Phone className="h-4 w-4" />
           </button>
@@ -1926,7 +2030,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             type="button"
             onClick={() => onStartCall('video')}
             title="Chamada de vídeo"
-            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-50 hover:text-[#0D2B3E]"
+            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
           >
             <Video className="h-4 w-4" />
           </button>
@@ -1951,10 +2055,10 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       )}
 
-      {/* Messages Stream */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
+      {/* Messages Stream with Bespoke ChatFi Messenger Wallpaper */}
+      <div className="chatfi-chat-wallpaper flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
         {messages.length === 0 ? (
-          <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm">
+          <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-emerald-900/10 bg-white/92 p-5 text-center shadow-sm backdrop-blur-xs">
             <p className="text-sm font-semibold text-slate-800">
               Conversa iniciada com {peer.name}
             </p>
@@ -2030,18 +2134,22 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               );
             };
 
+            const isAudioListened = msg.type === 'audio' && listenedAudioIds.has(msg.id);
+
             return (
               <div
                 key={msg.id}
                 className={`group flex ${isMine ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl shadow-sm sm:max-w-[70%] ${
-                    msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2'
+                  className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl transition-colors sm:max-w-[70%] ${
+                    msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2.5'
                   } ${
                     isMine
-                      ? 'rounded-br-sm bg-[#0E7A34] text-white'
-                      : 'rounded-bl-sm border border-slate-200/90 bg-white text-slate-800'
+                      ? 'rounded-br-sm bg-gradient-to-br from-[#0F8238] to-[#0B632A] text-white shadow-[0_2px_8px_rgba(11,99,42,0.22)]'
+                      : isAudioListened
+                        ? 'rounded-bl-sm border border-sky-200/95 bg-sky-50/95 text-slate-800 shadow-[0_1px_4px_rgba(2,132,199,0.10)]'
+                        : 'rounded-bl-sm border border-slate-200/80 bg-white text-slate-800 shadow-[0_1px_4px_rgba(15,23,42,0.07)]'
                   }`}
                 >
                   {/* WhatsApp-style Message Options Trigger */}
@@ -2054,8 +2162,10 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       msg.type === 'image' || msg.type === 'video'
                         ? 'bg-black/50 text-white hover:bg-black/70'
                         : isMine
-                          ? 'bg-[#0E7A34]/85 text-emerald-100 hover:bg-white/20 hover:text-white'
-                          : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                          ? 'bg-[#0B632A]/75 text-emerald-100 hover:bg-white/20 hover:text-white'
+                          : isAudioListened
+                            ? 'bg-sky-50/90 text-sky-600/80 hover:bg-sky-100 hover:text-sky-800'
+                            : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
                     }`}
                   >
                     <ChevronDown className="h-4 w-4" />
@@ -2069,6 +2179,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                           mediaUrl={resolvedUrl}
                           duration={msg.audioDuration}
                           isMine={isMine}
+                          isListened={isAudioListened}
+                          onMarkListened={() => handleMarkAudioListened(msg.id)}
                         />
                       ) : (
                         mediaStatusPlaceholder('Áudio')
@@ -2440,7 +2552,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   <div
                     className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${
                       msg.type === 'image' || msg.type === 'video' ? 'px-1.5 pb-0.5' : ''
-                    } ${isMine ? 'text-emerald-100/80' : 'text-slate-400'}`}
+                    } ${
+                      isMine
+                        ? 'text-emerald-100/85'
+                        : isAudioListened
+                          ? 'text-sky-700/80'
+                          : 'text-slate-400'
+                    }`}
                   >
                     {msg.viaMesh && (
                       <span
@@ -2471,7 +2589,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                           <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
                         </span>
                       ) : (
-                        <CheckCheck className="h-3.5 w-3.5" />
+                        <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
                       ))}
                   </div>
                 </div>
@@ -2537,8 +2655,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         </div>
       )}
 
-      {/* Composer */}
-      <footer className="shrink-0 border-t border-slate-200 bg-white px-2 pt-2 pb-safe sm:px-4">
+      {/* Composer — Floating Pill Bar */}
+      <footer className="shrink-0 border-t border-emerald-950/10 bg-white/95 px-2 pt-2 pb-safe backdrop-blur-md shadow-[0_-4px_16px_rgba(4,61,27,0.05)] sm:px-4">
         {/* Gallery photo, video, PDF & phone audio picker */}
         <input
           ref={galleryInputRef}
@@ -2574,7 +2692,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         />
 
         {recording ? (
-          <div className="flex items-center justify-between gap-2 rounded-2xl border border-red-200 bg-red-50 px-3 py-2">
+          <div className="flex items-center justify-between gap-2 rounded-full border border-red-200 bg-red-50 px-3.5 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" />
               <span className="truncate text-xs font-semibold text-red-700">
@@ -2589,7 +2707,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={cancelRecording}
-                className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
                 title="Cancelar gravação"
               >
                 <Trash2 className="h-4 w-4" />
@@ -2597,7 +2715,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="button"
                 onClick={() => void stopAndSendRecording()}
-                className="flex min-h-[40px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0B5D27]"
+                className="flex min-h-[40px] items-center gap-1.5 rounded-full bg-[#0E7A34] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0B5D27]"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
                 Enviar
@@ -2605,15 +2723,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1 sm:gap-2">
+          <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1 sm:gap-1.5">
             <button
               type="button"
               onClick={() => setShowEmojiPicker((v) => !v)}
               title="Emojis"
-              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition sm:h-11 sm:w-11 ${
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition sm:h-11 sm:w-11 ${
                 showEmojiPicker
-                  ? 'border-[#0E7A34] bg-emerald-50 text-[#0E7A34]'
-                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-[#0E7A34]'
               }`}
               aria-label="Abrir emojis"
             >
@@ -2627,7 +2745,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onChange={(e) => setDraft(e.target.value)}
               onFocus={() => setShowEmojiPicker(false)}
               placeholder="Mensagem"
-              className="h-9 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:bg-white focus:outline-none sm:h-11"
+              className="h-10 min-w-0 flex-1 rounded-full border border-slate-200/90 bg-[#F3F7F4] px-4 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-[#0E7A34] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15 sm:h-11"
             />
 
             <button
@@ -2635,7 +2753,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onClick={() => galleryInputRef.current?.click()}
               disabled={sending}
               title="Enviar foto, vídeo ou áudio do aparelho"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34] sm:h-10 sm:w-10"
               aria-label="Galeria de fotos e áudios"
             >
               <ImageIcon className="h-5 w-5" />
@@ -2646,7 +2764,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onClick={() => pdfInputRef.current?.click()}
               disabled={sending}
               title="Enviar arquivo PDF (até 25 MB)"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34] sm:h-10 sm:w-10"
               aria-label="Enviar PDF"
             >
               <FileText className="h-5 w-5" />
@@ -2657,7 +2775,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               onClick={() => videoInputRef.current?.click()}
               disabled={sending}
               title="Enviar vídeo (até 25 MB)"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34] sm:h-10 sm:w-10"
               aria-label="Enviar vídeo"
             >
               <Film className="h-5 w-5" />
@@ -2669,7 +2787,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => cameraInputRef.current?.click()}
                 disabled={sending}
                 title="Tirar foto com a câmera"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-slate-100 hover:text-[#0E7A34] sm:h-11 sm:w-11"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34] sm:h-10 sm:w-10"
                 aria-label="Câmera"
               >
                 <Camera className="h-5 w-5" />
@@ -2680,7 +2798,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <button
                 type="submit"
                 disabled={sending}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-50 sm:h-11 sm:w-11"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#16A34A] to-[#0E7A34] text-white shadow-md shadow-emerald-900/20 transition hover:brightness-105 active:scale-95 disabled:opacity-50 sm:h-11 sm:w-11"
                 aria-label="Enviar mensagem"
               >
                 <Send className="h-5 w-5" />
@@ -2691,7 +2809,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 onClick={() => void startRealRecording()}
                 disabled={sending}
                 title={sending ? 'Enviando...' : 'Gravar mensagem de voz'}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#0E7A34] text-white transition hover:bg-[#0B5D27] disabled:opacity-70 sm:h-11 sm:w-11"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#16A34A] to-[#0E7A34] text-white shadow-md shadow-emerald-900/20 transition hover:brightness-105 active:scale-95 disabled:opacity-70 sm:h-11 sm:w-11"
                 aria-label={sending ? 'Enviando áudio' : 'Gravar áudio'}
               >
                 {sending ? (

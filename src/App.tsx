@@ -3,8 +3,10 @@ import {
   Briefcase,
   Clock,
   Factory,
+  FileText,
   Loader2,
   MessageSquare,
+  Mic,
   Phone,
   Search,
   Settings,
@@ -1226,23 +1228,20 @@ export default function App() {
       ) {
         void navigator.serviceWorker.ready
           .then((reg) =>
-            reg.showNotification(
-              incoming.callType === 'video'
-                ? `Chamada de vídeo · ${incoming.callerName}`
-                : `Ligação de voz · ${incoming.callerName}`,
-              {
-                body: 'ChatFi está chamando · Toque para atender agora',
-                icon: '/pwa-192x192.png',
-                badge: '/pwa-192x192.png',
-                tag: `zapei-call-${incoming.id}`,
-                requireInteraction: true,
-                data: {
-                  type: 'incoming_call',
-                  callId: incoming.id,
-                  url: `/?incomingCall=${encodeURIComponent(incoming.id)}`,
-                },
-              }
-            )
+            reg.showNotification(incoming.callerName, {
+              body:
+                incoming.callType === 'video'
+                  ? '📹 Chamada de vídeo recebida · Toque para atender'
+                  : '📞 Ligação de voz recebida · Toque para atender',
+              ...(callerDir?.avatarUrl ? { icon: callerDir.avatarUrl } : {}),
+              tag: `zapei-call-${incoming.id}`,
+              requireInteraction: true,
+              data: {
+                type: 'incoming_call',
+                callId: incoming.id,
+                url: `/?incomingCall=${encodeURIComponent(incoming.id)}`,
+              },
+            })
           )
           .catch(() => {});
       }
@@ -3304,12 +3303,12 @@ export default function App() {
   const mobileInChat = activeTab === 'chats' && Boolean(selectedPeer);
 
   return (
-    <div className="flex h-[100dvh] w-full max-w-full overflow-hidden bg-[#F8FAFC] text-slate-900">
-      {/* Desktop Left Navigation Rail */}
-      <aside className="hidden md:flex md:w-20 lg:w-60 shrink-0 flex-col justify-between border-r border-slate-200 bg-[#0D2B3E] text-white">
+    <div className="chatfi-app-bg flex h-[100dvh] w-full max-w-full overflow-hidden text-slate-900">
+      {/* Desktop Left Navigation Rail — Deep Emerald Wave */}
+      <aside className="chatfi-rail-wave hidden md:flex md:w-20 lg:w-60 shrink-0 flex-col justify-between border-r border-emerald-950/30 text-white shadow-sm">
         <div>
           <div className="border-b border-white/10 p-3">
-            <div className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-xl p-2 hover:bg-white/10 transition">
+            <div className="flex w-full items-center justify-center lg:justify-start gap-2.5 rounded-2xl p-2 hover:bg-white/10 transition">
               <button
                 type="button"
                 onClick={() =>
@@ -3333,11 +3332,11 @@ export default function App() {
                   <img
                     src={profile.avatarUrl}
                     alt={profile.name}
-                    className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/25"
+                    className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/30"
                   />
                 ) : (
                   <div
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-white/20"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-white/25"
                     style={{ backgroundColor: profile.avatarBg || '#0E7A34' }}
                   >
                     {profile.initials}
@@ -3350,7 +3349,7 @@ export default function App() {
                 className="hidden lg:block min-w-0 flex-1 text-left"
               >
                 <p className="truncate text-sm font-bold text-white">{profile.name}</p>
-                <p className="truncate font-mono text-[11px] text-slate-300 tabular-nums">
+                <p className="truncate font-mono text-[11px] text-emerald-100/75 tabular-nums">
                   {profile.virtualLine || profile.phone}
                 </p>
               </button>
@@ -3366,10 +3365,10 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`relative flex min-h-[44px] w-full items-center justify-center lg:justify-start gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                  className={`relative flex min-h-[44px] w-full items-center justify-center lg:justify-start gap-3 rounded-2xl px-3 py-2.5 text-sm font-semibold transition ${
                     active
-                      ? 'bg-[#0E7A34] text-white shadow-sm'
-                      : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                      ? 'bg-[#16A34A] text-white shadow-sm ring-1 ring-white/20'
+                      : 'text-emerald-100/80 hover:bg-white/10 hover:text-white'
                   }`}
                 >
                   <Icon className="h-5 w-5 shrink-0" />
@@ -3386,15 +3385,17 @@ export default function App() {
         </div>
 
         <div className="flex items-center justify-center lg:justify-start gap-3 px-4 py-4 border-t border-white/10">
-          <ChatFiLogo className="h-10 w-10 shrink-0 rounded-xl shadow-sm" />
+          <ChatFiLogo className="h-10 w-10 shrink-0 rounded-xl shadow-sm ring-1 ring-white/15" />
           <div className="hidden lg:block min-w-0">
-            <span className="block text-base font-extrabold tracking-tight">ChatFi</span>
-            <span className="block truncate text-[11px] text-emerald-200/80">
+            <span className="block text-base font-extrabold tracking-tight text-white">
+              Chat<span className="text-[#4ADE80]">Fi</span>
+            </span>
+            <span className="block truncate text-[11px] text-emerald-100/80">
               {profile.commercialMode === 'manufacturer'
                 ? 'Anunciante / Fabricante'
                 : profile.commercialMode === 'reseller'
                   ? 'Revendedor'
-                  : 'Mensageiro Grátis'}
+                  : 'Conectando pessoas!'}
             </span>
           </div>
         </div>
@@ -3402,12 +3403,19 @@ export default function App() {
 
       {/* Main Content Workspace */}
       <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-        {/* Mobile Compact Top Header (hidden when inside an active mobile chat thread) */}
+        {/* Mobile Compact Emerald Wave Header (hidden when inside an active mobile chat thread) */}
         {!mobileInChat && (
-          <header className="flex md:hidden items-center justify-between gap-2 border-b border-[#0A2233] bg-[#0D2B3E] px-3.5 pb-2.5 header-pt-safe text-white shrink-0">
+          <header className="chatfi-header-wave relative flex md:hidden items-center justify-between gap-2 px-4 pb-5 header-pt-safe text-white shrink-0">
             <div className="flex min-w-0 items-center gap-2.5">
-              <ChatFiLogo className="h-8 w-8 shrink-0 rounded-lg" />
-              <span className="truncate text-base font-extrabold tracking-tight">ChatFi</span>
+              <ChatFiLogo className="h-9 w-9 shrink-0 rounded-xl shadow-sm ring-1 ring-white/20" />
+              <div className="min-w-0 leading-tight">
+                <span className="block truncate text-lg font-extrabold tracking-tight text-white">
+                  Chat<span className="text-[#4ADE80]">Fi</span>
+                </span>
+                <span className="block truncate text-[11px] font-medium text-emerald-100/85">
+                  Conectando pessoas!
+                </span>
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <PWAInstallButton compact />
@@ -3476,28 +3484,36 @@ export default function App() {
         )}
 
         {/* Active Tab Viewport */}
-        <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+        <main
+          className={`relative z-10 flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${
+            !mobileInChat
+              ? '-mt-3 rounded-t-[24px] bg-[#F2F7F4] shadow-[0_-6px_20px_rgba(3,51,22,0.18)] md:mt-0 md:rounded-none md:bg-transparent md:shadow-none'
+              : ''
+          }`}
+        >
           {activeTab === 'chats' && (
             <div className="flex h-full min-h-0 w-full overflow-hidden">
               {/* Chat List Sidebar */}
               <section
-                className={`w-full md:w-80 lg:w-96 shrink-0 flex-col border-r border-slate-200 bg-white ${
+                className={`w-full md:w-80 lg:w-96 shrink-0 flex-col border-r border-emerald-950/10 bg-white/95 backdrop-blur-xs ${
                   selectedPeer ? 'hidden md:flex' : 'flex'
                 }`}
               >
-                <div className="border-b border-slate-100 p-3.5">
-                  <div className="flex items-center justify-between">
-                    <h1 className="text-base font-bold text-slate-900">Conversas</h1>
+                <div className="border-b border-slate-100 px-4 pt-4 pb-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h1 className="text-lg font-extrabold tracking-tight text-slate-900">
+                      Conversas
+                    </h1>
                     <button
                       type="button"
                       onClick={() => setActiveTab('contacts')}
-                      className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-[#0E7A34] hover:bg-emerald-100"
+                      className="rounded-full bg-gradient-to-r from-[#16A34A] to-[#0E7A34] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm shadow-emerald-900/15 transition hover:brightness-105 active:scale-95"
                     >
                       + Nova conversa
                     </button>
                   </div>
-                  <div className="relative mt-2.5">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <div className="relative mt-3">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
                       type="text"
                       inputMode="search"
@@ -3507,8 +3523,8 @@ export default function App() {
                       spellCheck={false}
                       value={chatSearch}
                       onChange={(e) => setChatSearch(e.target.value)}
-                      placeholder="Buscar conversa, contato, telefone ou CFI-..."
-                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm focus:border-[#0E7A34] focus:bg-white focus:outline-none"
+                      placeholder="Buscar conversa, contato, telefone ou CFI..."
+                      className="h-10 w-full rounded-full border border-slate-200/90 bg-[#F4F8F5] pl-10 pr-9 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-[#0E7A34] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
                     />
                     {chatPhoneLookupBusy ? (
                       <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0E7A34]" />
@@ -3575,11 +3591,17 @@ export default function App() {
                         const avatarBg =
                           matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34';
                         const isSelected = selectedPeer?.uid === thread.otherUid;
+                        const lastText = thread.lastMessage || 'Conversa iniciada';
+                        const isVoicePreview = /^(mensagem de voz|áudio|audio)\b/i.test(lastText.trim());
+                        const isPdfPreview = /\.pdf\b|^pdf\b/i.test(lastText.trim());
+
                         return (
                           <div
                             key={thread.id}
                             className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
-                              isSelected ? 'bg-emerald-50/70' : 'hover:bg-slate-50'
+                              isSelected
+                                ? 'bg-emerald-50/90'
+                                : 'hover:bg-[#F3F8F5]'
                             }`}
                           >
                             <button
@@ -3604,11 +3626,11 @@ export default function App() {
                                 <img
                                   src={photoUrl}
                                   alt={displayName}
-                                  className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
+                                  className="h-12 w-12 shrink-0 rounded-full object-cover ring-1 ring-slate-200"
                                 />
                               ) : (
                                 <div
-                                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white"
+                                  className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white shadow-xs"
                                   style={{ backgroundColor: avatarBg }}
                                 >
                                   {getInitials(displayName)}
@@ -3616,7 +3638,7 @@ export default function App() {
                               )}
                               {isUserEffectivelyOnline(dir) && (
                                 <span
-                                  className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#0E7A34] ring-2 ring-white"
+                                  className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-[#16A34A] ring-2 ring-white"
                                   aria-label="Online"
                                 />
                               )}
@@ -3653,19 +3675,23 @@ export default function App() {
                                 </span>
                               </div>
                               <div className="mt-0.5 flex items-center justify-between gap-2">
-                                <p className="flex min-w-0 items-center gap-1 truncate text-xs text-slate-500">
+                                <p className="flex min-w-0 items-center gap-1.5 truncate text-xs text-slate-500">
                                   {(pendingOutboxByChatId.get(thread.id)?.length || 0) > 0 && (
                                     <Clock
                                       className="h-3.5 w-3.5 shrink-0 text-amber-600"
                                       aria-label="Aguardando rede"
                                     />
                                   )}
-                                  <span className="truncate">
-                                    {thread.lastMessage || 'Conversa iniciada'}
-                                  </span>
+                                  {isVoicePreview && (
+                                    <Mic className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
+                                  )}
+                                  {isPdfPreview && (
+                                    <FileText className="h-3.5 w-3.5 shrink-0 text-rose-600" />
+                                  )}
+                                  <span className="truncate">{lastText}</span>
                                 </p>
                                 {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
-                                  <Store className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
+                                  <Store className="h-4 w-4 shrink-0 text-[#0E7A34]" />
                                 )}
                               </div>
                             </button>
@@ -4023,14 +4049,16 @@ export default function App() {
                     }}
                   />
                 ) : (
-                  <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-                    <ChatFiLogo className="h-20 w-20 rounded-3xl border border-slate-200/80 shadow-xs" />
-                    <h2 className="mt-5 text-lg font-bold text-slate-900">
-                      ChatFi Mensageiro em Tempo Real
-                    </h2>
-                    <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-                      Selecione uma conversa à esquerda ou abra sua agenda de contatos para enviar mensagens, gravar áudios, enviar fotos ou fazer chamadas reais de voz e vídeo.
-                    </p>
+                  <div className="chatfi-chat-wallpaper flex flex-1 flex-col items-center justify-center p-8 text-center">
+                    <div className="max-w-md rounded-3xl border border-emerald-900/10 bg-white/90 px-8 py-8 shadow-sm backdrop-blur-sm">
+                      <ChatFiLogo className="mx-auto h-20 w-20 rounded-3xl border border-emerald-200/70 shadow-sm" />
+                      <h2 className="mt-5 text-lg font-extrabold text-slate-900">
+                        Chat<span className="text-[#0E7A34]">Fi</span> Mensageiro em Tempo Real
+                      </h2>
+                      <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                        Selecione uma conversa à esquerda ou abra sua agenda de contatos para enviar mensagens, gravar áudios, enviar fotos ou fazer chamadas reais de voz e vídeo.
+                      </p>
+                    </div>
                   </div>
                 )}
               </section>
@@ -4430,9 +4458,9 @@ export default function App() {
           )}
         </main>
 
-        {/* Mobile Bottom Navigation Bar */}
+        {/* Mobile Bottom Navigation Bar — Elevated Rounded Dock */}
         {!mobileInChat && (
-          <nav className="fixed bottom-0 left-0 right-0 z-30 flex md:hidden w-full max-w-full items-center justify-around border-t border-slate-200 bg-white px-1 pt-1.5 pb-safe shadow-[0_-2px_10px_rgba(0,0,0,0.04)]">
+          <nav className="fixed bottom-0 left-0 right-0 z-30 flex md:hidden w-full max-w-full items-center justify-around rounded-t-[22px] border-t border-emerald-950/10 bg-white/95 px-2 pt-2 pb-safe backdrop-blur-md shadow-[0_-6px_24px_rgba(4,61,27,0.08)]">
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
@@ -4441,8 +4469,10 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`relative flex min-h-[46px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-0.5 text-[11px] font-semibold transition ${
-                    active ? 'text-[#0E7A34]' : 'text-slate-500'
+                  className={`relative flex min-h-[48px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1 py-1 text-[11px] font-semibold transition ${
+                    active
+                      ? 'bg-emerald-50/95 text-[#0E7A34]'
+                      : 'text-slate-500 hover:text-slate-700'
                   }`}
                 >
                   <div className="relative">
@@ -4454,6 +4484,12 @@ export default function App() {
                     )}
                   </div>
                   <span className="w-full truncate text-center">{item.label}</span>
+                  {active && (
+                    <span
+                      className="mt-0.5 h-[3px] w-6 rounded-full bg-[#0E7A34]"
+                      aria-hidden="true"
+                    />
+                  )}
                 </button>
               );
             })}

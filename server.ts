@@ -483,6 +483,171 @@ async function dispatchPushToUser(
   return { sent, removed };
 }
 
+// --- Push Notification Sender Avatar Cache (Serves real profile photo URL for Web Push icon) ---
+interface CachedPushAvatar {
+  buffer: Buffer;
+  contentType: string;
+  hash: string;
+  fetchedAtMs: number;
+}
+
+const pushAvatarCache = new Map<string, CachedPushAvatar>();
+const pushAvatarDir = path.join(os.tmpdir(), 'chatfi-push-avatars');
+
+function escapeSvgText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildInitialsAvatarSvg(name: string, bgColor?: string): Buffer {
+  const parts = (name || 'U')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const initials =
+    parts.length >= 2
+      ? `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+      : (parts[0] || 'U').slice(0, 2).toUpperCase();
+  const safeColor =
+    typeof bgColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(bgColor.trim())
+      ? bgColor.trim()
+      : '#0E7A34';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192"><rect width="192" height="192" rx="96" fill="${safeColor}"/><text x="96" y="114" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif" font-size="72" font-weight="700" fill="#ffffff">${escapeSvgText(initials)}</text></svg>`;
+  return Buffer.from(svg, 'utf-8');
+}
+
+function parseAvatarDataUrl(
+  dataUrl: string
+): { buffer: Buffer; contentType: string } | null {
+  const match = dataUrl.match(/^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) return null;
+  const rawMime = match[1].toLowerCase();
+  const contentType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+  try {
+    const buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+    if (buffer.length === 0 || buffer.length > 260 * 1024) return null;
+    return { buffer, contentType };
+  } catch {
+    return null;
+  }
+}
+
+function persistPushAvatarEntry(uid: string, entry: CachedPushAvatar): void {
+  if (pushAvatarCache.size > 300) {
+    const firstKey = pushAvatarCache.keys().next().value;
+    if (firstKey) pushAvatarCache.delete(firstKey);
+  }
+  pushAvatarCache.set(uid, entry);
+  try {
+    fs.mkdirSync(pushAvatarDir, { recursive: true });
+    fs.writeFileSync(path.join(pushAvatarDir, `${uid}.bin`), entry.buffer);
+    fs.writeFileSync(
+      path.join(pushAvatarDir, `${uid}.json`),
+      JSON.stringify({ contentType: entry.contentType, hash: entry.hash }),
+      'utf-8'
+    );
+  } catch {
+    // Non-fatal disk cache failure
+  }
+}
+
+function loadPushAvatarEntryFromDisk(uid: string): CachedPushAvatar | null {
+  if (!VALID_UID_REGEX.test(uid)) return null;
+  try {
+    const binPath = path.join(pushAvatarDir, `${uid}.bin`);
+    const metaPath = path.join(pushAvatarDir, `${uid}.json`);
+    if (!fs.existsSync(binPath) || !fs.existsSync(metaPath)) return null;
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as {
+      contentType?: string;
+      hash?: string;
+    };
+    const buffer = fs.readFileSync(binPath);
+    if (!buffer.length || !meta.contentType) return null;
+    return {
+      buffer,
+      contentType: meta.contentType,
+      hash: meta.hash || 'cached',
+      fetchedAtMs: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSenderAvatarForPush(
+  uid: string,
+  bearerToken: string,
+  fallbackName: string
+): Promise<string | undefined> {
+  if (!VALID_UID_REGEX.test(uid)) return undefined;
+  const existing = pushAvatarCache.get(uid);
+  if (existing && Date.now() - existing.fetchedAtMs < 30_000) {
+    return `/api/push/avatar/${encodeURIComponent(uid)}?v=${existing.hash}`;
+  }
+
+  let avatarUrl = '';
+  let avatarColor = '#0E7A34';
+  let displayName = fallbackName;
+
+  if (firebaseProjectId && bearerToken) {
+    const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      firebaseProjectId
+    )}/databases/${encodeURIComponent(
+      firebaseDatabaseId
+    )}/documents/users_public/${encodeURIComponent(uid)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    try {
+      const res = await fetch(docUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const docData = (await res.json()) as {
+          fields?: {
+            avatarUrl?: { stringValue?: string };
+            avatarColor?: { stringValue?: string };
+            displayName?: { stringValue?: string };
+          };
+        };
+        avatarUrl = (docData.fields?.avatarUrl?.stringValue || '').trim();
+        if (docData.fields?.avatarColor?.stringValue) {
+          avatarColor = docData.fields.avatarColor.stringValue;
+        }
+        if (docData.fields?.displayName?.stringValue) {
+          displayName = docData.fields.displayName.stringValue;
+        }
+      }
+    } catch {
+      // Ignore network/timeout errors and fall back to initials avatar
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  if (avatarUrl.startsWith('https://') && avatarUrl.length <= 1000) {
+    return avatarUrl;
+  }
+
+  const parsed = avatarUrl ? parseAvatarDataUrl(avatarUrl) : null;
+  const buffer = parsed ? parsed.buffer : buildInitialsAvatarSvg(displayName, avatarColor);
+  const contentType = parsed ? parsed.contentType : 'image/svg+xml';
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 10);
+
+  persistPushAvatarEntry(uid, {
+    buffer,
+    contentType,
+    hash,
+    fetchedAtMs: Date.now(),
+  });
+  return `/api/push/avatar/${encodeURIComponent(uid)}?v=${hash}`;
+}
+
 async function startServer(): Promise<void> {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
@@ -490,6 +655,28 @@ async function startServer(): Promise<void> {
   // 1. Public VAPID Key for browser PushManager.subscribe()
   app.get('/api/push/vapid-public-key', (_req, res) => {
     res.json({ publicKey: vapidKeys.publicKey });
+  });
+
+  // 1a. Cached sender avatar image for Web Push notification icon (never falls back to ChatFi logo)
+  app.get('/api/push/avatar/:uid', (req, res) => {
+    const uid = typeof req.params.uid === 'string' ? req.params.uid : '';
+    if (!VALID_UID_REGEX.test(uid)) {
+      res.status(400).end();
+      return;
+    }
+    let entry = pushAvatarCache.get(uid) || loadPushAvatarEntryFromDisk(uid);
+    if (entry) {
+      pushAvatarCache.set(uid, entry);
+      res.setHeader('Content-Type', entry.contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(entry.buffer);
+      return;
+    }
+    const fallbackSvg = buildInitialsAvatarSvg('?', '#0E7A34');
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(fallbackSvg);
   });
 
   // 1b. Non-sensitive push service health check (helps verify Render backend & VAPID env setup)
@@ -622,6 +809,8 @@ async function startServer(): Promise<void> {
     // Stop any previous loop for the same callId
     stopCallRingLoop(callId);
 
+    const callerAvatarUrl = await resolveSenderAvatarForPush(actorUid, callerIdToken, callerName);
+
     const sendRingPulse = async (ringIndex: number) =>
       dispatchPushToUser(
         calleeId,
@@ -630,6 +819,7 @@ async function startServer(): Promise<void> {
           callId,
           callerId: actorUid,
           callerName,
+          callerAvatarUrl,
           callType,
           ringIndex,
         },
@@ -692,12 +882,19 @@ async function startServer(): Promise<void> {
         return;
       }
 
+      const senderAvatarUrl = await resolveSenderAvatarForPush(
+        senderId,
+        callerIdToken,
+        senderName
+      );
+
       const result = await dispatchPushToUser(
         recipientId,
         {
           type: 'new_message',
           senderId,
           senderName,
+          senderAvatarUrl,
           body: previewText,
           messageType,
           messageId,

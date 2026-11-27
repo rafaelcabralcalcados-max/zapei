@@ -129,10 +129,12 @@ interface ZapeiPushPayload {
   callId?: string;
   callerId?: string;
   callerName?: string;
+  callerAvatarUrl?: string;
   callType?: 'audio' | 'video';
   ringIndex?: number;
   senderId?: string;
   senderName?: string;
+  senderAvatarUrl?: string;
   body?: string;
   messageType?: 'text' | 'audio' | 'image' | 'video';
   messageId?: string;
@@ -147,7 +149,7 @@ self.addEventListener('push', (event: PushEvent) => {
   } catch {
     payload = {
       type: 'new_message',
-      senderName: 'ChatFi',
+      senderName: 'Nova mensagem',
       body: event.data.text(),
     };
   }
@@ -172,10 +174,8 @@ self.addEventListener('push', (event: PushEvent) => {
   if (payload.type === 'incoming_call' && payload.callId) {
     const isVideo = payload.callType === 'video';
     const ringIndex = Number(payload.ringIndex || 1);
-    const caller = payload.callerName || 'ChatFi';
-    const title = isVideo
-      ? `📹 CHAMADA DE VÍDEO · ${caller}`
-      : `📞 LIGAÇÃO · ${caller}`;
+    const caller = payload.callerName || 'Ligação recebida';
+    const title = caller;
 
     const callData = {
       type: 'incoming_call',
@@ -186,9 +186,8 @@ self.addEventListener('push', (event: PushEvent) => {
     };
 
     const minimalOptions: NotificationOptions = {
-      body: 'Toque para atender ou recusar',
-      icon: '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
+      body: isVideo ? '📹 Chamada de vídeo recebida' : '📞 Ligação de voz recebida',
+      ...(payload.callerAvatarUrl ? { icon: payload.callerAvatarUrl } : {}),
       tag: `zapei-call-${payload.callId}-${ringIndex}`,
       data: callData,
     };
@@ -254,7 +253,8 @@ self.addEventListener('push', (event: PushEvent) => {
   }
 
   // Real background chat message notification (text, audio, photo)
-  const msgTitle = payload.senderName || 'Nova mensagem no ChatFi';
+  // Show ONLY sender photo, sender name, and message (never the ChatFi app logo)
+  const msgTitle = payload.senderName || 'Nova mensagem';
   const rawBody = payload.body || 'Você recebeu uma nova mensagem.';
   const formattedBody =
     payload.messageType === 'audio' && !rawBody.startsWith('🎤')
@@ -267,8 +267,7 @@ self.addEventListener('push', (event: PushEvent) => {
   const uniqueMsgKey = payload.messageId || String(Date.now());
   const msgMinimalOptions: NotificationOptions = {
     body: formattedBody,
-    icon: '/pwa-192x192.png',
-    badge: '/pwa-192x192.png',
+    ...(payload.senderAvatarUrl ? { icon: payload.senderAvatarUrl } : {}),
     tag: payload.senderId
       ? `zapei-msg-${payload.senderId}-${uniqueMsgKey}`
       : `zapei-msg-${uniqueMsgKey}`,
