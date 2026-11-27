@@ -70,6 +70,7 @@ interface ContactsViewProps {
     rawPhone: string,
     type: 'audio' | 'video'
   ) => Promise<void>;
+  onBrowseStorefronts?: () => void;
   onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
 }
 
@@ -92,6 +93,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   onOpenDirectoryStorefront,
   onOpenDirectFoundChat,
   onStartDirectFoundCall,
+  onBrowseStorefronts,
   onPreviewAvatar,
 }) => {
   const [search, setSearch] = useState('');
@@ -247,6 +249,12 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const showStorefrontDirectoryResults =
     selectedDirectoryCategory !== null ||
     (!looksLikePhoneQuery && normalizedQuery.length >= 2);
+
+  useEffect(() => {
+    if (showStorefrontDirectoryResults) {
+      onBrowseStorefronts?.();
+    }
+  }, [showStorefrontDirectoryResults, onBrowseStorefronts]);
 
   const filteredDirectoryStorefronts = useMemo(() => {
     if (!showStorefrontDirectoryResults) return [];

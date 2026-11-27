@@ -10,6 +10,7 @@ import * as webpush from 'web-push';
 import type { PushSubscription as WebPushSubscription } from 'web-push';
 import { getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { WebSocket, WebSocketServer } from 'ws';
 import {
   buildAsaasSplitEntries,
   calculateOrderSplit,
@@ -936,6 +937,467 @@ async function startServer(): Promise<void> {
       );
 
       res.json({ ok: true, ...result });
+    }
+  );
+
+  // 5b. Real-Time In-Memory Presence & WhatsApp-Style Ephemeral Message Relay (Zero Firestore Quota!)
+  interface ServerPresenceRecord {
+    uid: string;
+    isOnline: boolean;
+    lastSeenAt: number;
+    showOnlineStatus: boolean;
+    showLastSeen: boolean;
+  }
+
+  interface RelayedChatEnvelope {
+    id: string;
+    chatId: string;
+    userA: string;
+    userB: string;
+    senderId: string;
+    senderName: string;
+    recipientId: string;
+    recipientName: string;
+    type: 'text' | 'audio' | 'image' | 'video' | 'order_card' | 'billing_reminder';
+    text: string;
+    createdAtMs: number;
+    timestampLabel: string;
+    mediaUrl?: string;
+    audioDuration?: string;
+    videoDuration?: string;
+    mediaTransitPath?: string;
+    mediaDelivered?: boolean;
+    mediaSizeBytes?: number;
+    mediaMimeType?: string;
+    mediaExpiresAtMs?: number;
+    orderId?: string;
+    orderCode?: string;
+    orderSummary?: string;
+    orderTotal?: number;
+    orderStatusLabel?: string;
+    pushPreviewText?: string;
+    pushMessageType?: 'text' | 'audio' | 'image' | 'video';
+  }
+
+  interface DeliveryReceiptBatch {
+    chatId: string;
+    messageIds: string[];
+    deliveredAtMs: number;
+  }
+
+  const presenceByUid = new Map<string, ServerPresenceRecord>();
+  const socketsByUid = new Map<string, Set<WebSocket>>();
+  const socketMeta = new Map<
+    WebSocket,
+    { uid: string; subscribedPeers: Set<string>; isAlive: boolean }
+  >();
+  const subscribersByTargetUid = new Map<string, Set<WebSocket>>();
+
+  const RELAY_QUEUE_PATH = path.join(os.tmpdir(), 'chatfi-relay-queue.json');
+  const RELAY_MAX_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+  const pendingRelayByRecipient = new Map<string, RelayedChatEnvelope[]>();
+  const deliveryReceiptsBySender = new Map<string, DeliveryReceiptBatch[]>();
+
+  try {
+    if (fs.existsSync(RELAY_QUEUE_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(RELAY_QUEUE_PATH, 'utf-8')) as {
+        pendingByRecipient?: Record<string, RelayedChatEnvelope[]>;
+        receiptsBySender?: Record<string, DeliveryReceiptBatch[]>;
+      };
+      const nowMs = Date.now();
+      if (raw.pendingByRecipient) {
+        for (const [uid, list] of Object.entries(raw.pendingByRecipient)) {
+          if (Array.isArray(list)) {
+            const valid = list.filter((m) => m && nowMs - (m.createdAtMs || 0) < RELAY_MAX_TTL_MS);
+            if (valid.length > 0) pendingRelayByRecipient.set(uid, valid);
+          }
+        }
+      }
+      if (raw.receiptsBySender) {
+        for (const [uid, list] of Object.entries(raw.receiptsBySender)) {
+          if (Array.isArray(list)) {
+            const valid = list.filter((r) => r && nowMs - (r.deliveredAtMs || 0) < RELAY_MAX_TTL_MS);
+            if (valid.length > 0) deliveryReceiptsBySender.set(uid, valid);
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal relay queue init error
+  }
+
+  let relaySaveTimer: NodeJS.Timeout | null = null;
+  const scheduleSaveRelayQueue = () => {
+    if (relaySaveTimer) return;
+    relaySaveTimer = setTimeout(() => {
+      relaySaveTimer = null;
+      try {
+        const pendingObj: Record<string, RelayedChatEnvelope[]> = {};
+        pendingRelayByRecipient.forEach((v, k) => {
+          if (v.length > 0) pendingObj[k] = v;
+        });
+        const receiptsObj: Record<string, DeliveryReceiptBatch[]> = {};
+        deliveryReceiptsBySender.forEach((v, k) => {
+          if (v.length > 0) receiptsObj[k] = v;
+        });
+        fs.writeFileSync(
+          RELAY_QUEUE_PATH,
+          JSON.stringify({ pendingByRecipient: pendingObj, receiptsBySender: receiptsObj }),
+          'utf-8'
+        );
+      } catch {
+        // Non-fatal
+      }
+    }, 350);
+  };
+
+  const toPublicPresence = (uid: string) => {
+    const rec = presenceByUid.get(uid);
+    if (!rec) {
+      return {
+        uid,
+        isOnline: false,
+        lastSeenAt: 0,
+        showOnlineStatus: true,
+        showLastSeen: true,
+      };
+    }
+    const showOnline = rec.showOnlineStatus !== false;
+    const showLastSeen = rec.showLastSeen !== false;
+    return {
+      uid,
+      isOnline: showOnline ? rec.isOnline : false,
+      lastSeenAt: showLastSeen ? rec.lastSeenAt : 0,
+      showOnlineStatus: showOnline,
+      showLastSeen,
+    };
+  };
+
+  const sendWsJson = (socket: WebSocket, payload: Record<string, unknown>) => {
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify(payload));
+      } catch {
+        // ignore closed socket race
+      }
+    }
+  };
+
+  const broadcastPresenceDelta = (uid: string) => {
+    const subs = subscribersByTargetUid.get(uid);
+    if (!subs || subs.size === 0) return;
+    const entry = toPublicPresence(uid);
+    subs.forEach((sock) => {
+      sendWsJson(sock, { type: 'presence:update', entries: [entry] });
+    });
+  };
+
+  const updateUserPresenceInMemory = (
+    uid: string,
+    patch: Partial<Omit<ServerPresenceRecord, 'uid'>>
+  ) => {
+    const prev = presenceByUid.get(uid) || {
+      uid,
+      isOnline: false,
+      lastSeenAt: Date.now(),
+      showOnlineStatus: true,
+      showLastSeen: true,
+    };
+    const next: ServerPresenceRecord = {
+      uid,
+      isOnline: patch.isOnline ?? prev.isOnline,
+      lastSeenAt: patch.lastSeenAt ?? prev.lastSeenAt,
+      showOnlineStatus: patch.showOnlineStatus ?? prev.showOnlineStatus,
+      showLastSeen: patch.showLastSeen ?? prev.showLastSeen,
+    };
+    presenceByUid.set(uid, next);
+    broadcastPresenceDelta(uid);
+  };
+
+  const sanitizeRelayEnvelope = (
+    actorUid: string,
+    raw: Record<string, unknown>
+  ): RelayedChatEnvelope | null => {
+    const recipientId =
+      typeof raw.recipientId === 'string' ? raw.recipientId.trim().slice(0, 128) : '';
+    if (!recipientId || !VALID_UID_REGEX.test(recipientId)) return null;
+    const [userA, userB] = [actorUid, recipientId].sort();
+    const chatId = `${userA}__${userB}`;
+    const createdAtMs =
+      typeof raw.createdAtMs === 'number' && Number.isFinite(raw.createdAtMs)
+        ? Math.round(raw.createdAtMs)
+        : Date.now();
+    const rawId = typeof raw.id === 'string' ? raw.id.trim().slice(0, 96) : '';
+    const id =
+      rawId && VALID_MESSAGE_ID_REGEX.test(rawId)
+        ? rawId
+        : `m_${createdAtMs}_${Math.random().toString(36).slice(2, 7)}`;
+    const allowedTypes = new Set([
+      'text',
+      'audio',
+      'image',
+      'video',
+      'order_card',
+      'billing_reminder',
+    ]);
+    const type = allowedTypes.has(String(raw.type))
+      ? (String(raw.type) as RelayedChatEnvelope['type'])
+      : 'text';
+    const d = new Date(createdAtMs);
+    const defaultLabel = `${d.getHours().toString().padStart(2, '0')}:${d
+      .getMinutes()
+      .toString()
+      .padStart(2, '0')}`;
+
+    const env: RelayedChatEnvelope = {
+      id,
+      chatId,
+      userA,
+      userB,
+      senderId: actorUid,
+      senderName:
+        typeof raw.senderName === 'string' && raw.senderName.trim()
+          ? raw.senderName.trim().slice(0, 80)
+          : 'Usuário',
+      recipientId,
+      recipientName:
+        typeof raw.recipientName === 'string' && raw.recipientName.trim()
+          ? raw.recipientName.trim().slice(0, 80)
+          : 'Contato',
+      type,
+      text:
+        typeof raw.text === 'string' && raw.text.trim()
+          ? raw.text.trim().slice(0, 1000)
+          : 'Mensagem',
+      createdAtMs,
+      timestampLabel:
+        typeof raw.timestampLabel === 'string' && raw.timestampLabel.trim()
+          ? raw.timestampLabel.trim().slice(0, 16)
+          : defaultLabel,
+    };
+
+    if (typeof raw.mediaUrl === 'string' && raw.mediaUrl.length > 0 && raw.mediaUrl.length <= 520000) {
+      env.mediaUrl = raw.mediaUrl;
+    }
+    if (typeof raw.audioDuration === 'string' && raw.audioDuration) {
+      env.audioDuration = raw.audioDuration.slice(0, 16);
+    }
+    if (typeof raw.videoDuration === 'string' && raw.videoDuration) {
+      env.videoDuration = raw.videoDuration.slice(0, 16);
+    }
+    if (typeof raw.mediaTransitPath === 'string' && raw.mediaTransitPath) {
+      env.mediaTransitPath = raw.mediaTransitPath.slice(0, 260);
+    }
+    if (typeof raw.mediaDelivered === 'boolean') {
+      env.mediaDelivered = raw.mediaDelivered;
+    }
+    if (typeof raw.mediaSizeBytes === 'number' && raw.mediaSizeBytes >= 0) {
+      env.mediaSizeBytes = Math.round(raw.mediaSizeBytes);
+    }
+    if (typeof raw.mediaMimeType === 'string' && raw.mediaMimeType) {
+      env.mediaMimeType = raw.mediaMimeType.slice(0, 80);
+    }
+    if (typeof raw.mediaExpiresAtMs === 'number' && raw.mediaExpiresAtMs >= 0) {
+      env.mediaExpiresAtMs = Math.round(raw.mediaExpiresAtMs);
+    }
+    if (typeof raw.orderId === 'string' && raw.orderId) {
+      env.orderId = raw.orderId.slice(0, 128);
+    }
+    if (typeof raw.orderCode === 'string' && raw.orderCode) {
+      env.orderCode = raw.orderCode.slice(0, 32);
+    }
+    if (typeof raw.orderSummary === 'string' && raw.orderSummary) {
+      env.orderSummary = raw.orderSummary.slice(0, 240);
+    }
+    if (typeof raw.orderTotal === 'number' && Number.isFinite(raw.orderTotal)) {
+      env.orderTotal = raw.orderTotal;
+    }
+    if (typeof raw.orderStatusLabel === 'string' && raw.orderStatusLabel) {
+      env.orderStatusLabel = raw.orderStatusLabel.slice(0, 120);
+    }
+    if (typeof raw.pushPreviewText === 'string' && raw.pushPreviewText) {
+      env.pushPreviewText = raw.pushPreviewText.slice(0, 180);
+    }
+    if (
+      raw.pushMessageType === 'text' ||
+      raw.pushMessageType === 'audio' ||
+      raw.pushMessageType === 'image' ||
+      raw.pushMessageType === 'video'
+    ) {
+      env.pushMessageType = raw.pushMessageType;
+    }
+    return env;
+  };
+
+  const relayAndDeliverChatMessage = async (
+    env: RelayedChatEnvelope,
+    callerIdToken?: string,
+    originSocket?: WebSocket
+  ): Promise<void> => {
+    // 1) Store in recipient temporary pending queue until recipient device ACKs saving to IndexedDB
+    if (env.recipientId !== env.senderId) {
+      const q = pendingRelayByRecipient.get(env.recipientId) || [];
+      if (!q.some((item) => item.id === env.id)) {
+        q.push(env);
+        // Keep queue bounded cleanly (newest 500 pending envelopes)
+        if (q.length > 500) {
+          q.splice(0, q.length - 500);
+        }
+        pendingRelayByRecipient.set(env.recipientId, q);
+        scheduleSaveRelayQueue();
+      }
+    }
+
+    // 2) Push immediately over WebSocket to all online sockets of recipient
+    const recipientSockets = socketsByUid.get(env.recipientId);
+    if (recipientSockets && recipientSockets.size > 0) {
+      recipientSockets.forEach((sock) => {
+        sendWsJson(sock, { type: 'chat:message', envelope: env });
+      });
+    }
+
+    // 3) Sync sender's other open tabs/devices so multi-tab chats stay identical
+    const senderSockets = socketsByUid.get(env.senderId);
+    if (senderSockets && senderSockets.size > 0) {
+      senderSockets.forEach((sock) => {
+        if (sock !== originSocket) {
+          sendWsJson(sock, { type: 'chat:message', envelope: env });
+        }
+      });
+    }
+
+    // 4) Trigger Web Push only if recipient is not actively viewing this exact chat on screen
+    if (env.recipientId !== env.senderId) {
+      const activeChat = activeChatByUid.get(env.recipientId);
+      const isViewingThisChat =
+        activeChat &&
+        Date.now() - activeChat.updatedAt <= ACTIVE_CHAT_TTL_MS &&
+        activeChat.peerId === env.senderId;
+
+      if (!isViewingThisChat) {
+        const preview = env.pushPreviewText || env.text || 'Nova mensagem';
+        const msgType =
+          env.pushMessageType ||
+          (env.type === 'audio' || env.type === 'image' || env.type === 'video'
+            ? env.type
+            : 'text');
+        void resolveSenderAvatarForPush(
+          env.senderId,
+          callerIdToken || '',
+          env.senderName
+        ).then((senderAvatarUrl) =>
+          dispatchPushToUser(
+            env.recipientId,
+            {
+              type: 'new_message',
+              senderId: env.senderId,
+              senderName: env.senderName,
+              senderAvatarUrl,
+              body: preview.slice(0, 180),
+              messageType: msgType,
+              messageId: env.id,
+            },
+            { ttl: 3600, urgency: 'high' },
+            callerIdToken || ''
+          )
+        );
+      }
+    }
+  };
+
+  const acknowledgeRelayedMessages = (recipientUid: string, messageIds: string[]): void => {
+    if (!recipientUid || messageIds.length === 0) return;
+    const queue = pendingRelayByRecipient.get(recipientUid);
+    if (!queue || queue.length === 0) return;
+    const ackSet = new Set(messageIds);
+    const ackedBySenderAndChat = new Map<string, { senderId: string; chatId: string; ids: string[] }>();
+    const remaining: RelayedChatEnvelope[] = [];
+
+    for (const env of queue) {
+      if (ackSet.has(env.id)) {
+        const key = `${env.senderId}::${env.chatId}`;
+        const bucket = ackedBySenderAndChat.get(key) || {
+          senderId: env.senderId,
+          chatId: env.chatId,
+          ids: [],
+        };
+        bucket.ids.push(env.id);
+        ackedBySenderAndChat.set(key, bucket);
+      } else {
+        remaining.push(env);
+      }
+    }
+
+    if (remaining.length > 0) {
+      pendingRelayByRecipient.set(recipientUid, remaining);
+    } else {
+      pendingRelayByRecipient.delete(recipientUid);
+    }
+
+    const nowMs = Date.now();
+    ackedBySenderAndChat.forEach(({ senderId, chatId, ids }) => {
+      const senderSockets = socketsByUid.get(senderId);
+      if (senderSockets && senderSockets.size > 0) {
+        senderSockets.forEach((sock) => {
+          sendWsJson(sock, { type: 'chat:delivered', chatId, messageIds: ids });
+        });
+      } else {
+        const list = deliveryReceiptsBySender.get(senderId) || [];
+        list.push({ chatId, messageIds: ids, deliveredAtMs: nowMs });
+        if (list.length > 200) list.splice(0, list.length - 200);
+        deliveryReceiptsBySender.set(senderId, list);
+      }
+    });
+
+    scheduleSaveRelayQueue();
+  };
+
+  app.post(
+    '/api/chat/relay/send',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const rawEnv =
+        req.body && typeof req.body.envelope === 'object' && req.body.envelope !== null
+          ? (req.body.envelope as Record<string, unknown>)
+          : (req.body as Record<string, unknown>);
+      const env = sanitizeRelayEnvelope(actorUid, rawEnv || {});
+      if (!env) {
+        res.status(400).json({ error: 'Envelope de mensagem inválido.' });
+        return;
+      }
+      await relayAndDeliverChatMessage(env, req.idToken || '');
+      res.json({ ok: true, id: env.id, chatId: env.chatId });
+    }
+  );
+
+  app.post(
+    '/api/chat/relay/ack',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const messageIds = Array.isArray(req.body?.messageIds)
+        ? (req.body.messageIds as unknown[]).filter(
+            (id): id is string => typeof id === 'string' && id.length > 0
+          )
+        : [];
+      acknowledgeRelayedMessages(uid, messageIds);
+      res.json({ ok: true, acknowledged: messageIds.length });
+    }
+  );
+
+  app.get(
+    '/api/chat/relay/pending',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const envelopes = pendingRelayByRecipient.get(uid) || [];
+      const receipts = deliveryReceiptsBySender.get(uid) || [];
+      if (receipts.length > 0) {
+        deliveryReceiptsBySender.delete(uid);
+        scheduleSaveRelayQueue();
+      }
+      res.json({ ok: true, envelopes, deliveredReceipts: receipts });
     }
   );
 
@@ -2522,6 +2984,269 @@ async function startServer(): Promise<void> {
   });
 
   const httpServer = http.createServer(app);
+
+  // Attach real WebSocket relay & in-memory presence server on /ws/chatfi
+  const chatWsServer = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+
+  const cleanupSocketSubscriptions = (socket: WebSocket) => {
+    const meta = socketMeta.get(socket);
+    if (!meta) return;
+    meta.subscribedPeers.forEach((targetUid) => {
+      const set = subscribersByTargetUid.get(targetUid);
+      if (set) {
+        set.delete(socket);
+        if (set.size === 0) subscribersByTargetUid.delete(targetUid);
+      }
+    });
+    meta.subscribedPeers.clear();
+
+    const userSockets = socketsByUid.get(meta.uid);
+    if (userSockets) {
+      userSockets.delete(socket);
+      if (userSockets.size === 0) {
+        socketsByUid.delete(meta.uid);
+        activeChatByUid.delete(meta.uid);
+        updateUserPresenceInMemory(meta.uid, {
+          isOnline: false,
+          lastSeenAt: Date.now(),
+        });
+      }
+    }
+    socketMeta.delete(socket);
+  };
+
+  chatWsServer.on('connection', (socket) => {
+    const authTimeout = setTimeout(() => {
+      if (!socketMeta.has(socket) && socket.readyState === WebSocket.OPEN) {
+        socket.close(4001, 'auth_timeout');
+      }
+    }, 10_000);
+
+    socket.on('pong', () => {
+      const meta = socketMeta.get(socket);
+      if (meta) meta.isAlive = true;
+    });
+
+    socket.on('message', async (rawData) => {
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(rawData.toString('utf-8')) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+
+      const type = String(msg.type || '');
+      const meta = socketMeta.get(socket);
+
+      if (type === 'auth') {
+        const token = typeof msg.token === 'string' ? msg.token.trim() : '';
+        if (!token) {
+          socket.close(4002, 'missing_token');
+          return;
+        }
+        try {
+          const decoded = await adminAuth.verifyIdToken(token);
+          const uid = decoded.uid;
+          clearTimeout(authTimeout);
+
+          if (socket.readyState !== WebSocket.OPEN) return;
+
+          // Replace previous meta if re-authenticating on same socket
+          if (meta) cleanupSocketSubscriptions(socket);
+
+          socketMeta.set(socket, {
+            uid,
+            subscribedPeers: new Set(),
+            isAlive: true,
+          });
+          let userSockets = socketsByUid.get(uid);
+          if (!userSockets) {
+            userSockets = new Set();
+            socketsByUid.set(uid, userSockets);
+          }
+          userSockets.add(socket);
+
+          const isOnlineNow = msg.isOnline !== false;
+          const showOnlineStatus = msg.showOnlineStatus !== false;
+          const showLastSeen = msg.showLastSeen !== false;
+          updateUserPresenceInMemory(uid, {
+            isOnline: isOnlineNow,
+            lastSeenAt: Date.now(),
+            showOnlineStatus,
+            showLastSeen,
+          });
+
+          if (typeof msg.activePeerId === 'string' && msg.activePeerId.trim()) {
+            activeChatByUid.set(uid, {
+              peerId: msg.activePeerId.trim().slice(0, 128),
+              updatedAt: Date.now(),
+            });
+          }
+
+          sendWsJson(socket, { type: 'auth:ok', uid });
+
+          // Push any pending offline messages queued while recipient was away
+          const pending = pendingRelayByRecipient.get(uid);
+          if (pending && pending.length > 0) {
+            sendWsJson(socket, { type: 'chat:sync', envelopes: pending });
+          }
+
+          // Push any pending delivery receipts for messages sent while sender was offline
+          const receipts = deliveryReceiptsBySender.get(uid);
+          if (receipts && receipts.length > 0) {
+            for (const r of receipts) {
+              sendWsJson(socket, {
+                type: 'chat:delivered',
+                chatId: r.chatId,
+                messageIds: r.messageIds,
+              });
+            }
+          }
+        } catch {
+          socket.close(4003, 'invalid_token');
+        }
+        return;
+      }
+
+      if (!meta) return;
+      meta.isAlive = true;
+
+      if (type === 'presence:subscribe') {
+        const uids = Array.isArray(msg.uids)
+          ? (msg.uids as unknown[])
+              .filter((u): u is string => typeof u === 'string' && VALID_UID_REGEX.test(u))
+              .slice(0, 500)
+          : [];
+        const entries: Array<ReturnType<typeof toPublicPresence>> = [];
+        for (const targetUid of uids) {
+          if (!meta.subscribedPeers.has(targetUid)) {
+            meta.subscribedPeers.add(targetUid);
+            let subs = subscribersByTargetUid.get(targetUid);
+            if (!subs) {
+              subs = new Set();
+              subscribersByTargetUid.set(targetUid, subs);
+            }
+            subs.add(socket);
+          }
+          entries.push(toPublicPresence(targetUid));
+        }
+        sendWsJson(socket, { type: 'presence:snapshot', entries });
+        return;
+      }
+
+      if (type === 'presence:set') {
+        updateUserPresenceInMemory(meta.uid, {
+          isOnline: msg.isOnline !== false,
+          lastSeenAt: Date.now(),
+          ...(typeof msg.showOnlineStatus === 'boolean'
+            ? { showOnlineStatus: msg.showOnlineStatus }
+            : {}),
+          ...(typeof msg.showLastSeen === 'boolean'
+            ? { showLastSeen: msg.showLastSeen }
+            : {}),
+        });
+        return;
+      }
+
+      if (type === 'chat:active') {
+        const rawPeer =
+          typeof msg.peerId === 'string' ? msg.peerId.trim().slice(0, 128) : '';
+        if (rawPeer) {
+          activeChatByUid.set(meta.uid, { peerId: rawPeer, updatedAt: Date.now() });
+        } else {
+          activeChatByUid.delete(meta.uid);
+        }
+        return;
+      }
+
+      if (type === 'chat:send' && typeof msg.envelope === 'object' && msg.envelope !== null) {
+        const env = sanitizeRelayEnvelope(
+          meta.uid,
+          msg.envelope as Record<string, unknown>
+        );
+        if (!env) return;
+        await relayAndDeliverChatMessage(env, undefined, socket);
+        sendWsJson(socket, {
+          type: 'chat:sent',
+          clientReqId: typeof msg.clientReqId === 'string' ? msg.clientReqId : undefined,
+          id: env.id,
+          chatId: env.chatId,
+        });
+        return;
+      }
+
+      if (type === 'chat:ack') {
+        const messageIds = Array.isArray(msg.messageIds)
+          ? (msg.messageIds as unknown[]).filter(
+              (id): id is string => typeof id === 'string' && id.length > 0
+            )
+          : [];
+        acknowledgeRelayedMessages(meta.uid, messageIds);
+        return;
+      }
+
+      if (type === 'chat:receipt_ack') {
+        const receiptIds = Array.isArray(msg.messageIds)
+          ? new Set(
+              (msg.messageIds as unknown[]).filter(
+                (id): id is string => typeof id === 'string' && id.length > 0
+              )
+            )
+          : new Set<string>();
+        const existing = deliveryReceiptsBySender.get(meta.uid);
+        if (existing && existing.length > 0 && receiptIds.size > 0) {
+          const remaining = existing
+            .map((batch) => ({
+              ...batch,
+              messageIds: batch.messageIds.filter((id) => !receiptIds.has(id)),
+            }))
+            .filter((batch) => batch.messageIds.length > 0);
+          if (remaining.length > 0) {
+            deliveryReceiptsBySender.set(meta.uid, remaining);
+          } else {
+            deliveryReceiptsBySender.delete(meta.uid);
+          }
+          scheduleSaveRelayQueue();
+        }
+      }
+    });
+
+    socket.on('close', () => {
+      clearTimeout(authTimeout);
+      cleanupSocketSubscriptions(socket);
+    });
+  });
+
+  // Heartbeat keep-alive so disconnected mobile tabs drop promptly and update "last seen"
+  setInterval(() => {
+    chatWsServer.clients.forEach((socket) => {
+      const meta = socketMeta.get(socket);
+      if (!meta) return;
+      if (!meta.isAlive) {
+        socket.terminate();
+        return;
+      }
+      meta.isAlive = false;
+      try {
+        socket.ping();
+      } catch {
+        // ignore
+      }
+    });
+  }, 25_000);
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    try {
+      const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+      if (url.pathname === '/ws/chatfi') {
+        chatWsServer.handleUpgrade(request, socket, head, (ws) => {
+          chatWsServer.emit('connection', ws, request);
+        });
+      }
+    } catch {
+      // Ignore malformed upgrade URLs
+    }
+  });
 
   // Mount Vite middleware in dev OR serve dist/ in production
   const isProd = process.env.NODE_ENV === 'production';
