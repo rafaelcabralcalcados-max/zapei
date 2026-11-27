@@ -105,6 +105,34 @@ function notifyPresenceListeners(): void {
   });
 }
 
+const HIDDEN_PRESENCE_LS_PREFIX = 'chatfi_hidden_presence_v1_';
+
+function loadHiddenPresenceCache(uid: string): string[] {
+  if (typeof window === 'undefined' || !uid) return [];
+  try {
+    const raw = window.localStorage.getItem(`${HIDDEN_PRESENCE_LS_PREFIX}${uid}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHiddenPresenceCache(uid: string | undefined): void {
+  if (typeof window === 'undefined' || !uid) return;
+  try {
+    window.localStorage.setItem(
+      `${HIDDEN_PRESENCE_LS_PREFIX}${uid}`,
+      JSON.stringify(Array.from(hiddenPresenceUids).slice(-500))
+    );
+  } catch {
+    // ignore storage quota
+  }
+}
+
 function notifyHiddenPresenceListeners(): void {
   const snapshot = new Set(hiddenPresenceUids);
   hiddenPresenceListeners.forEach((cb) => {
@@ -123,6 +151,7 @@ export function markPeerHiddenPresence(peerUid: string, hidden: boolean): void {
     : hiddenPresenceUids.delete(peerUid);
   if (changed || hidden) {
     if (hidden) hiddenPresenceUids.add(peerUid);
+    saveHiddenPresenceCache(currentAuthUser?.uid);
     notifyHiddenPresenceListeners();
   }
 }
@@ -403,6 +432,7 @@ async function openSocket(): Promise<void> {
               }
             }
           }
+          saveHiddenPresenceCache(currentAuthUser?.uid);
           notifyPresenceListeners();
           notifyHiddenPresenceListeners();
           notifyActivityListeners();
@@ -518,6 +548,11 @@ export function startRealtimeClient(user: User | null): void {
   if (!sameUser) {
     const prefs = loadLocalChatPrefs(user.uid);
     setRealtimeBlockedUids(prefs.blockedUids);
+    hiddenPresenceUids.clear();
+    for (const hUid of loadHiddenPresenceCache(user.uid)) {
+      hiddenPresenceUids.add(hUid);
+    }
+    notifyHiddenPresenceListeners();
   }
   if (!sameUser || !ws || ws.readyState === WebSocket.CLOSED) {
     void openSocket();
@@ -561,6 +596,15 @@ export function setPresenceSubscribedPeers(uids: string[]): void {
     }
   }
   if (changed && wsAuthenticated && subscribedPeerUids.size > 0) {
+    sendRaw({
+      type: 'presence:subscribe',
+      uids: Array.from(subscribedPeerUids).slice(0, 500),
+    });
+  }
+}
+
+export function refreshPresenceSubscriptions(): void {
+  if (wsAuthenticated && subscribedPeerUids.size > 0) {
     sendRaw({
       type: 'presence:subscribe',
       uids: Array.from(subscribedPeerUids).slice(0, 500),

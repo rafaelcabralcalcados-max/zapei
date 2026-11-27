@@ -214,7 +214,8 @@ function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
 const subscriptionsByUid: SubscriptionMap = loadSubscriptions();
 
 // --- Persistent Encrypted Chat Preferences + Push Subscriptions Store (Survives Container Restarts) ---
-const chatPrefsStorePath = path.join(os.tmpdir(), 'chatfi-chat-prefs.json');
+const chatPrefsStorePath = path.resolve(__dirname, '.zapei-chat-prefs.json');
+const legacyTmpChatPrefsPath = path.join(os.tmpdir(), 'chatfi-chat-prefs.json');
 
 interface ChatCustomListServer {
   id: string;
@@ -320,22 +321,24 @@ const sanitizeServerChatPrefs = (raw: unknown): ServerUserChatPreferences => {
     customLists,
     shortcutChatIds: sanitizeServerIdArray(obj.shortcutChatIds, 100),
     updatedAtMs:
-      typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs)
+      typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs) && obj.updatedAtMs > 0
         ? Math.round(obj.updatedAtMs)
-        : Date.now(),
+        : 0,
   };
 };
 
 const loadChatPrefsStore = (): Record<string, ServerUserChatPreferences> => {
-  try {
-    if (fs.existsSync(chatPrefsStorePath)) {
-      const raw = JSON.parse(fs.readFileSync(chatPrefsStorePath, 'utf-8')) as unknown;
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        return raw as Record<string, ServerUserChatPreferences>;
+  for (const candidatePath of [chatPrefsStorePath, legacyTmpChatPrefsPath]) {
+    try {
+      if (fs.existsSync(candidatePath)) {
+        const raw = JSON.parse(fs.readFileSync(candidatePath, 'utf-8')) as unknown;
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          return raw as Record<string, ServerUserChatPreferences>;
+        }
       }
+    } catch {
+      // ignore corrupted store
     }
-  } catch {
-    // ignore corrupted store
   }
   return {};
 };
@@ -3439,6 +3442,7 @@ async function startServer(): Promise<void> {
       const body = (req.body || {}) as { prefs?: unknown };
       const sanitized = sanitizeServerChatPrefs(body.prefs);
       const now = Date.now();
+      sanitized.updatedAtMs = Math.max(sanitized.updatedAtMs || 0, now);
       for (const uid of sanitized.blockedUids) {
         if (!sanitized.blockedAtByUid[uid]) {
           sanitized.blockedAtByUid[uid] =
@@ -3449,16 +3453,14 @@ async function startServer(): Promise<void> {
       saveChatPrefsStore();
       await persistUserStateToFirestore(actorUid, idToken);
 
-      // Push live presence & clear activity for any newly blocked or unblocked peers
+      // Push live presence & clear activity for all blocked, newly blocked, or unblocked peers
       const nextBlocked = new Set(sanitized.blockedUids);
-      const changedPeers = new Set<string>();
+      const peersToNotify = new Set<string>(sanitized.blockedUids);
       prevBlocked.forEach((uid) => {
-        if (!nextBlocked.has(uid)) changedPeers.add(uid);
+        if (!nextBlocked.has(uid)) peersToNotify.add(uid);
       });
-      nextBlocked.forEach((uid) => {
-        if (!prevBlocked.has(uid)) changedPeers.add(uid);
-      });
-      changedPeers.forEach((peerUid) => {
+      const actorSocks = socketsByUid.get(actorUid);
+      peersToNotify.forEach((peerUid) => {
         setChatActivityInMemory(actorUid, peerUid, 'idle');
         setChatActivityInMemory(peerUid, actorUid, 'idle');
         const peerSocks = socketsByUid.get(peerUid);
@@ -3466,6 +3468,12 @@ async function startServer(): Promise<void> {
           sendWsJson(sock, {
             type: 'presence:update',
             entries: [toPublicPresence(actorUid, peerUid)],
+          });
+        });
+        actorSocks?.forEach((sock) => {
+          sendWsJson(sock, {
+            type: 'presence:update',
+            entries: [toPublicPresence(peerUid, actorUid)],
           });
         });
       });
@@ -3730,11 +3738,18 @@ async function startServer(): Promise<void> {
               .filter((u): u is string => typeof u === 'string' && VALID_UID_REGEX.test(u))
               .slice(0, 500)
           : [];
-        // Hydrate any uncached peers (capped cleanly to avoid thundering herd) so blocks persist across restarts
-        const uncachedPeers = uids.filter((targetUid) => !chatPrefsStore[targetUid]).slice(0, 40);
-        if (uncachedPeers.length > 0 && meta.token) {
+        // Hydrate uncached or stale peers (capped cleanly to avoid thundering herd) so blocks sync across restarts
+        const nowHydrateMs = Date.now();
+        const peersToHydrate = uids
+          .filter(
+            (targetUid) =>
+              !chatPrefsStore[targetUid] ||
+              nowHydrateMs - (firestoreHydratedAtByUid.get(targetUid) || 0) > 30_000
+          )
+          .slice(0, 40);
+        if (peersToHydrate.length > 0 && meta.token) {
           await Promise.all(
-            uncachedPeers.map((targetUid) => hydrateUserStateFromFirestore(targetUid, meta.token))
+            peersToHydrate.map((targetUid) => hydrateUserStateFromFirestore(targetUid, meta.token))
           );
         }
         const entries: Array<ReturnType<typeof toPublicPresence>> = [];

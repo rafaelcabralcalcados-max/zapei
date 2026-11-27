@@ -1565,6 +1565,12 @@ export function subscribeChatMessages(
         videoDuration: d.videoDuration ? String(d.videoDuration) : undefined,
         mediaTransitPath: d.mediaTransitPath ? String(d.mediaTransitPath) : undefined,
         mediaDelivered: typeof d.mediaDelivered === 'boolean' ? d.mediaDelivered : undefined,
+        deliveryStatus:
+          d.mediaDelivered === true
+            ? 'delivered'
+            : d.mediaDelivered === false
+              ? 'sent'
+              : undefined,
         mediaSizeBytes: typeof d.mediaSizeBytes === 'number' ? d.mediaSizeBytes : undefined,
         mediaMimeType: d.mediaMimeType ? String(d.mediaMimeType) : undefined,
         mediaExpiresAtMs: typeof d.mediaExpiresAtMs === 'number' ? d.mediaExpiresAtMs : undefined,

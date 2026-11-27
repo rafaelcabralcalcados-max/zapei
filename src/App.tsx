@@ -152,6 +152,7 @@ import {
 } from './lib/messageTransport';
 import {
   checkPeerReachability,
+  refreshPresenceSubscriptions,
   sendChatActivity,
   setPresenceSubscribedPeers,
   setRealtimeBlockedUids,
@@ -1042,14 +1043,20 @@ export default function App() {
     // Load per-user chat organization preferences (local cache + server sync)
     const localPrefs = loadLocalChatPrefs(uid);
     setChatPrefs(localPrefs);
+    setRealtimeBlockedUids(localPrefs.blockedUids);
     const curAuth = authUserRef.current;
     if (curAuth) {
       void fetchServerChatPrefs(curAuth).then((srvPrefs) => {
         if (!srvPrefs) return;
-        const winner = pickNewerChatPrefs(loadLocalChatPrefs(uid), srvPrefs);
+        const localNow = loadLocalChatPrefs(uid);
+        const srvEmpty =
+          (srvPrefs.updatedAtMs || 0) === 0 &&
+          (localNow.blockedUids.length > 0 || (localNow.updatedAtMs || 0) > 0);
+        const winner = srvEmpty ? localNow : pickNewerChatPrefs(localNow, srvPrefs);
         setChatPrefs(winner);
+        setRealtimeBlockedUids(winner.blockedUids);
         saveLocalChatPrefs(uid, winner);
-        if ((winner.updatedAtMs || 0) > (srvPrefs.updatedAtMs || 0)) {
+        if (srvEmpty || (winner.updatedAtMs || 0) > (srvPrefs.updatedAtMs || 0)) {
           void saveServerChatPrefs(curAuth, winner);
         }
       });
@@ -1372,6 +1379,43 @@ export default function App() {
     updateActiveChatWs(activeOpenPeerId);
   }, [authUser, deviceAuthState, activeOpenPeerId]);
 
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized' || !isOnline) return undefined;
+    const peerUid =
+      selectedPeer?.uid && selectedPeer.uid !== OFFICIAL_SUPPORT_UID ? selectedPeer.uid : null;
+
+    const refreshNow = () => {
+      refreshPresenceSubscriptions();
+      if (peerUid) {
+        void checkPeerReachability(peerUid, authUser, true);
+      }
+    };
+
+    refreshNow();
+
+    const intervalId = peerUid
+      ? window.setInterval(() => {
+          if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+            void checkPeerReachability(peerUid, authUser, true);
+          }
+        }, 12_000)
+      : null;
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshNow();
+      }
+    };
+
+    window.addEventListener('focus', refreshNow);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      if (intervalId !== null) window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshNow);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [authUser, deviceAuthState, isOnline, selectedPeer?.uid]);
+
   // 4b. WhatsApp-style incoming text/audio/photo message chime & floating banner across ALL chats
   useEffect(() => {
     if (!profile) {
@@ -1418,11 +1462,13 @@ export default function App() {
     }
 
     // Confirm delivery (2 blue ticks) for unblocked incoming threads received by this client
+    const localBlockedSet = new Set(loadLocalChatPrefs(profile.uid).blockedUids);
     for (const c of chats) {
       if (
         c.lastSenderId &&
         c.lastSenderId !== profile.uid &&
-        !chatPrefs.blockedUids.includes(c.otherUid)
+        !chatPrefs.blockedUids.includes(c.otherUid) &&
+        !localBlockedSet.has(c.otherUid)
       ) {
         const ackSig = `ack:${c.id}:${c.lastSenderId}:${c.updatedAtMs}:${c.lastMessage}`;
         if (seenChatSigRef.current.get(ackSig) !== '1') {
@@ -1488,11 +1534,13 @@ export default function App() {
   useEffect(() => {
     if (!profile || !selectedPeer) return;
     const activeChatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
+    const localBlockedActiveSet = new Set(loadLocalChatPrefs(profile.uid).blockedUids);
     const pendingTextAckIds = activeMessages
       .filter(
         (m) =>
           m.senderId !== profile.uid &&
           !chatPrefs.blockedUids.includes(m.senderId) &&
+          !localBlockedActiveSet.has(m.senderId) &&
           m.mediaDelivered === false &&
           m.type !== 'image' &&
           m.type !== 'audio' &&
@@ -3844,6 +3892,7 @@ export default function App() {
             return {
               ...c,
               lastMessage: 'Contato bloqueado',
+              updatedAtLabel: blockedAt > 1 ? formatPacketTimeLabel(blockedAt) : '',
               updatedAtMs: blockedAt > 1 ? Math.min(c.updatedAtMs, blockedAt) : c.updatedAtMs,
             };
           }
