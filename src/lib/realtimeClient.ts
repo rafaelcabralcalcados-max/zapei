@@ -1,5 +1,6 @@
 import type { User } from 'firebase/auth';
 import type { ChatMessage } from '../types/zapei';
+import { loadLocalChatPrefs } from './chatPreferences';
 import { auth, getDeterministicChatId } from './firebase';
 import {
   formatShortTimePt,
@@ -71,6 +72,7 @@ const reachabilityCache = new Map<
   string,
   { reachable: boolean; hidePresence: boolean; fetchedAt: number }
 >();
+const blockedSenderUids = new Set<string>();
 const outboundActivityByTarget = new Map<string, ChatActivityKind>();
 const subscribedPeerUids = new Set<string>();
 const pendingWsRequests = new Map<
@@ -123,6 +125,18 @@ export function markPeerHiddenPresence(peerUid: string, hidden: boolean): void {
     if (hidden) hiddenPresenceUids.add(peerUid);
     notifyHiddenPresenceListeners();
   }
+}
+
+export function setRealtimeBlockedUids(uids: string[]): void {
+  blockedSenderUids.clear();
+  for (const raw of uids) {
+    const clean = (raw || '').trim();
+    if (clean) {
+      blockedSenderUids.add(clean);
+      peerActivityMap.delete(clean);
+    }
+  }
+  notifyActivityListeners();
 }
 
 function notifyActivityListeners(): void {
@@ -191,7 +205,13 @@ async function handleIncomingEnvelopes(envelopes: RelayedChatEnvelope[]): Promis
   const uid = currentAuthUser?.uid;
   if (!uid || envelopes.length === 0) return;
 
-  const toStore = envelopes.map((env) => {
+  // Never accept, persist, notify, or ACK messages from locally blocked senders
+  const allowedEnvelopes = envelopes.filter(
+    (env) => env.senderId === uid || !blockedSenderUids.has(env.senderId)
+  );
+  if (allowedEnvelopes.length === 0) return;
+
+  const toStore = allowedEnvelopes.map((env) => {
     const isMine = env.senderId === uid;
     const otherUid = isMine ? env.recipientId : env.senderId;
     const otherName = isMine ? env.recipientName : env.senderName;
@@ -231,7 +251,7 @@ async function handleIncomingEnvelopes(envelopes: RelayedChatEnvelope[]): Promis
   await upsertLocalChatMessagesBatch(uid, toStore);
 
   // 2) Acknowledge to server ONLY after device persistence succeeds -> server deletes relayed copy
-  const ackIds = envelopes
+  const ackIds = allowedEnvelopes
     .filter((e) => e.recipientId === uid)
     .map((e) => e.id);
   if (ackIds.length > 0) {
@@ -254,7 +274,7 @@ async function handleIncomingEnvelopes(envelopes: RelayedChatEnvelope[]): Promis
   }
 
   // 3) Notify listeners (triggers incoming message chime / floating banner for new peer msgs)
-  const peerIncoming = envelopes.filter((e) => e.senderId !== uid);
+  const peerIncoming = allowedEnvelopes.filter((e) => e.senderId !== uid);
   if (peerIncoming.length > 0) {
     incomingListeners.forEach((cb) => {
       try {
@@ -330,7 +350,7 @@ async function openSocket(): Promise<void> {
         const peerUid = typeof msg.peerUid === 'string' ? msg.peerUid.trim() : '';
         const chatId = typeof msg.chatId === 'string' ? msg.chatId.trim() : '';
         const activity = String(msg.activity || 'idle') as ChatActivityKind;
-        if (!peerUid) return;
+        if (!peerUid || blockedSenderUids.has(peerUid)) return;
         if (activity === 'idle') {
           if (peerActivityMap.delete(peerUid)) {
             notifyActivityListeners();
@@ -481,6 +501,7 @@ export function startRealtimeClient(user: User | null): void {
     presenceMap.clear();
     peerActivityMap.clear();
     hiddenPresenceUids.clear();
+    blockedSenderUids.clear();
     reachabilityCache.clear();
     outboundActivityByTarget.clear();
     ensureActivitySweepTimer();
@@ -494,6 +515,10 @@ export function startRealtimeClient(user: User | null): void {
   const sameUser = currentAuthUser?.uid === user.uid;
   currentAuthUser = user;
   manualDisconnect = false;
+  if (!sameUser) {
+    const prefs = loadLocalChatPrefs(user.uid);
+    setRealtimeBlockedUids(prefs.blockedUids);
+  }
   if (!sameUser || !ws || ws.readyState === WebSocket.CLOSED) {
     void openSocket();
   }
@@ -622,37 +647,53 @@ export async function checkPeerReachability(
   if (!cleanPeer) return { reachable: true, hidePresence: false };
 
   const cached = reachabilityCache.get(cleanPeer);
-  if (!forceFresh && cached && Date.now() - cached.fetchedAt < 5000) {
+  if (!forceFresh && cached && Date.now() - cached.fetchedAt < 2500) {
     return { reachable: cached.reachable, hidePresence: cached.hidePresence };
   }
 
   const activeUser = authUserFallback || currentAuthUser || auth.currentUser;
-  if (!activeUser) return { reachable: true, hidePresence: false };
-
-  try {
-    const token = await activeUser.getIdToken();
-    const res = await fetch(
-      `/api/chats/peer-reachability?peerUid=${encodeURIComponent(cleanPeer)}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!res.ok) return { reachable: true, hidePresence: false };
-    const data = (await res.json()) as {
-      ok?: boolean;
-      reachable?: boolean;
-      hidePresence?: boolean;
-    };
-    const reachable = data.reachable !== false;
-    const hidePresence = Boolean(data.hidePresence);
-    reachabilityCache.set(cleanPeer, {
-      reachable,
-      hidePresence,
-      fetchedAt: Date.now(),
-    });
-    markPeerHiddenPresence(cleanPeer, hidePresence);
-    return { reachable, hidePresence };
-  } catch {
+  if (!activeUser) {
+    if (cached && !cached.reachable) {
+      return { reachable: false, hidePresence: cached.hidePresence };
+    }
     return { reachable: true, hidePresence: false };
   }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const token = await activeUser.getIdToken();
+      const res = await fetch(
+        `/api/chats/peer-reachability?peerUid=${encodeURIComponent(cleanPeer)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) {
+        const data = (await res.json()) as {
+          ok?: boolean;
+          reachable?: boolean;
+          hidePresence?: boolean;
+        };
+        const reachable = data.reachable !== false;
+        const hidePresence = Boolean(data.hidePresence);
+        reachabilityCache.set(cleanPeer, {
+          reachable,
+          hidePresence,
+          fetchedAt: Date.now(),
+        });
+        markPeerHiddenPresence(cleanPeer, hidePresence);
+        return { reachable, hidePresence };
+      }
+    } catch {
+      // retry once on transient network hiccup
+    }
+    if (attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  if (cached && !cached.reachable) {
+    return { reachable: false, hidePresence: cached.hidePresence };
+  }
+  return { reachable: true, hidePresence: false };
 }
 
 export interface SendRelayChatParams {

@@ -239,7 +239,7 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
   channelName: 'cloud_firebase',
   isAvailable: () => typeof navigator === 'undefined' || navigator.onLine,
   sendPacket: async (packet, authUser) => {
-    const reach = await checkPeerReachability(packet.recipientId, authUser);
+    const reach = await checkPeerReachability(packet.recipientId, authUser, true);
     if (!reach.reachable) {
       // Stealth block: behave as if recipient has no internet.
       // Save only on sender's device with single check ('sent'), never touch Firestore or Push.
@@ -251,12 +251,27 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
           otherName: packet.recipientName,
           message: {
             ...packetToChatMessage(packet),
+            mediaDelivered: false,
             deliveryStatus: 'sent',
           },
         },
       ]);
       return { ok: true, viaMesh: false, hops: 0 };
     }
+
+    await upsertLocalChatMessagesBatch(packet.senderId, [
+      {
+        ownerUid: packet.senderId,
+        createdAtMs: packet.timestamp,
+        otherUid: packet.recipientId,
+        otherName: packet.recipientName,
+        message: {
+          ...packetToChatMessage(packet),
+          mediaDelivered: false,
+          deliveryStatus: 'sent',
+        },
+      },
+    ]);
 
     await sendRealChatMessage({
       myUid: packet.senderId,
@@ -266,6 +281,7 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
       type: packet.type,
       text: packet.text,
       mediaUrl: packet.mediaUrl,
+      mediaDelivered: false,
       mediaMimeType: packet.mediaMimeType,
       audioDuration: packet.audioDuration,
       videoDuration: packet.videoDuration,

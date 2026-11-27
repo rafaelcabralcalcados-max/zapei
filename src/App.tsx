@@ -52,6 +52,7 @@ import {
   createSupportTicket,
   db,
   deleteCallHistoryRecord,
+  confirmIncomingThreadMessagesDelivered,
   deleteChatMessagesForAll,
   deletePhonebookContact,
   disconnectUserDevice,
@@ -63,6 +64,7 @@ import {
   getDismissedCallIds,
   liftCommercialBan,
   lookupRegisteredUserByPhone,
+  markChatMessagesDelivered,
   markContactInvited,
   markOrderCompletedByParticipant,
   persistDeletedForMeOnServer,
@@ -152,6 +154,7 @@ import {
   checkPeerReachability,
   sendChatActivity,
   setPresenceSubscribedPeers,
+  setRealtimeBlockedUids,
   startRealtimeClient,
   subscribeHiddenPresenceUids,
   subscribePeerChatActivityMap,
@@ -1414,6 +1417,21 @@ export default function App() {
       }
     }
 
+    // Confirm delivery (2 blue ticks) for unblocked incoming threads received by this client
+    for (const c of chats) {
+      if (
+        c.lastSenderId &&
+        c.lastSenderId !== profile.uid &&
+        !chatPrefs.blockedUids.includes(c.otherUid)
+      ) {
+        const ackSig = `ack:${c.id}:${c.lastSenderId}:${c.updatedAtMs}:${c.lastMessage}`;
+        if (seenChatSigRef.current.get(ackSig) !== '1') {
+          seenChatSigRef.current.set(ackSig, '1');
+          void confirmIncomingThreadMessagesDelivered(c.id, profile.uid, c.otherUid);
+        }
+      }
+    }
+
     if (newestIncoming) {
       const isBlockedSender = chatPrefs.blockedUids.includes(newestIncoming.otherUid);
       const isMutedThread = chatPrefs.mutedChatIds.includes(newestIncoming.id);
@@ -1466,8 +1484,25 @@ export default function App() {
   }, [chats, profile, activeTab, selectedPeer?.uid, contacts, directoryUsers, showIncomingMsgBanner, chatPrefs.blockedUids, chatPrefs.mutedChatIds, chatPrefs.lockedChatIds]);
 
   // 4c. Chime ONLY when a genuinely new message arrives from another user inside the open chat
+  // and confirm delivery for unblocked incoming text/order/billing messages
   useEffect(() => {
     if (!profile || !selectedPeer) return;
+    const activeChatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
+    const pendingTextAckIds = activeMessages
+      .filter(
+        (m) =>
+          m.senderId !== profile.uid &&
+          !chatPrefs.blockedUids.includes(m.senderId) &&
+          m.mediaDelivered === false &&
+          m.type !== 'image' &&
+          m.type !== 'audio' &&
+          m.type !== 'video'
+      )
+      .map((m) => m.id);
+    if (pendingTextAckIds.length > 0) {
+      void markChatMessagesDelivered(activeChatId, pendingTextAckIds);
+    }
+
     if (!activeChatHydratedRef.current) {
       for (const m of activeMessages) seenActiveMsgIdsRef.current.add(m.id);
       if (activeMessages.length > 0 || Date.now() - activeChatOpenedAtRef.current > 1200) {
@@ -1667,7 +1702,7 @@ export default function App() {
         remoteStream: null,
       });
 
-      const reach = await checkPeerReachability(peer.uid, authUser);
+      const reach = await checkPeerReachability(peer.uid, authUser, true);
       if (!reach.reachable) {
         // Stealth block: behave as if recipient is unreachable/offline without notifying them
         const tRing = window.setTimeout(() => {
@@ -1923,6 +1958,10 @@ export default function App() {
     [authUid]
   );
 
+  useEffect(() => {
+    setRealtimeBlockedUids(chatPrefs.blockedUids);
+  }, [chatPrefs.blockedUids]);
+
   // --- CHAT & STOREFRONT NAVIGATION HANDLERS ---
 
   const openChatWithPeerDirect = useCallback(
@@ -1953,7 +1992,7 @@ export default function App() {
       });
       setActiveTab('chats');
       if (peer.uid === OFFICIAL_SUPPORT_UID) return;
-      void checkPeerReachability(peer.uid, authUserRef.current);
+      void checkPeerReachability(peer.uid, authUserRef.current, true);
       // Refresh live storefront info for this peer
       const live = await fetchPublicUserStorefront(peer.uid);
       if (live) {
@@ -2236,7 +2275,16 @@ export default function App() {
         for (const uid of peerUids) {
           if (mode === 'block') {
             set.add(uid);
-            nextBlockedAt[uid] = nowMs;
+            // Compute clock-skew-safe cutoff from known messages/threads so messages sent right after
+            // blocking can never slip under a skewed local device clock.
+            const chatTs = chats.find((c) => c.otherUid === uid)?.updatedAtMs || 0;
+            const localTs = localThreads.find((c) => c.otherUid === uid)?.updatedAtMs || 0;
+            const activeTs =
+              selectedPeer?.uid === uid
+                ? activeMessages.reduce((mx, m) => Math.max(mx, m.createdAtMs || 0), 0)
+                : 0;
+            const maxKnownTs = Math.max(chatTs, localTs, activeTs);
+            nextBlockedAt[uid] = maxKnownTs > 0 ? Math.min(nowMs, maxKnownTs) + 1 : 1;
             sendChatActivity(uid, 'idle', authUserRef.current);
           } else {
             set.delete(uid);
@@ -2260,7 +2308,7 @@ export default function App() {
             : `${peerUids.length} contatos desbloqueados.`
       );
     },
-    [updateChatPrefs, exitChatSelection, showToast]
+    [updateChatPrefs, exitChatSelection, showToast, chats, localThreads, selectedPeer?.uid, activeMessages]
   );
 
   const openHelpCenter = useCallback((ctx?: HelpCenterContext) => {
@@ -2327,7 +2375,12 @@ export default function App() {
             return;
           }
           const d = snap.data();
-          if (d.calleeId !== profile.uid || d.status !== 'ringing' || !d.offerSdp) {
+          if (
+            d.calleeId !== profile.uid ||
+            d.status !== 'ringing' ||
+            !d.offerSdp ||
+            chatPrefs.blockedUids.includes(String(d.callerId || ''))
+          ) {
             showToast('Esta chamada já foi encerrada.');
             return;
           }
@@ -3578,7 +3631,7 @@ export default function App() {
       }
 
       const resellerLabel = profile.storefrontName || profile.name;
-      void checkPeerReachability(match.uid, authUserRef.current).then((reach) => {
+      void checkPeerReachability(match.uid, authUserRef.current, true).then((reach) => {
         if (!reach.reachable) return;
         void sendRealChatMessage({
           myUid: profile.uid,
@@ -3610,7 +3663,7 @@ export default function App() {
       const resellerLabel =
         connection.resellerStorefrontName || connection.resellerName || 'Revendedor';
 
-      void checkPeerReachability(connection.resellerId, authUserRef.current).then((reach) => {
+      void checkPeerReachability(connection.resellerId, authUserRef.current, true).then((reach) => {
         if (!reach.reachable) return;
         void sendRealChatMessage({
           myUid: profile.uid,
@@ -3777,16 +3830,21 @@ export default function App() {
       .filter((c) => {
         const hiddenAt = chatPrefs.hiddenChatIds[c.id];
         if (hiddenAt && c.updatedAtMs <= hiddenAt) return false;
+        if (blockedSet.has(c.otherUid) && c.lastSenderId === c.otherUid) {
+          const blockedAt = chatPrefs.blockedAtByUid?.[c.otherUid] || 0;
+          // If blocked before any conversation history existed, never let blocked peer spawn a thread
+          if (blockedAt <= 1) return false;
+        }
         return true;
       })
       .map((c) => {
         if (blockedSet.has(c.otherUid) && c.lastSenderId === c.otherUid) {
           const blockedAt = chatPrefs.blockedAtByUid?.[c.otherUid] || 0;
-          if (c.updatedAtMs >= blockedAt) {
+          if (blockedAt <= 1 || c.updatedAtMs >= blockedAt) {
             return {
               ...c,
               lastMessage: 'Contato bloqueado',
-              updatedAtMs: blockedAt > 0 ? Math.min(c.updatedAtMs, blockedAt) : c.updatedAtMs,
+              updatedAtMs: blockedAt > 1 ? Math.min(c.updatedAtMs, blockedAt) : c.updatedAtMs,
             };
           }
         }
@@ -3829,8 +3887,21 @@ export default function App() {
       byId.set(m.id, m);
     }
     for (const m of activeMessages) {
-      // Firestore message overrides optimistic local copy if present
-      byId.set(m.id, m);
+      const prev = byId.get(m.id);
+      const mergedDelivered =
+        prev?.mediaDelivered === true || m.mediaDelivered === true
+          ? true
+          : m.mediaDelivered ?? prev?.mediaDelivered;
+      const mergedDeliveryStatus =
+        mergedDelivered === true
+          ? 'delivered'
+          : m.deliveryStatus ?? prev?.deliveryStatus;
+      byId.set(m.id, {
+        ...prev,
+        ...m,
+        mediaDelivered: mergedDelivered,
+        deliveryStatus: mergedDeliveryStatus,
+      });
     }
     if (pendingForChat && pendingForChat.length > 0) {
       for (const pkt of pendingForChat) {
@@ -3846,7 +3917,8 @@ export default function App() {
         if (clearedCutoff > 0 && (m.createdAtMs || 0) <= clearedCutoff) return false;
         if (blockedSet.has(m.senderId)) {
           const blockedAt = chatPrefs.blockedAtByUid?.[m.senderId] || 0;
-          if ((m.createdAtMs || 0) >= blockedAt) return false;
+          const msgTs = m.createdAtMs || 0;
+          if (blockedAt <= 1 || msgTs === 0 || msgTs >= blockedAt) return false;
         }
         return true;
       })
@@ -5943,7 +6015,19 @@ export default function App() {
           {activeTab === 'calls' && (
             <CallsView
               myUid={profile.uid}
-              calls={calls.filter((c) => !dismissedCallIds.has(c.id))}
+              calls={calls.filter((c) => {
+                if (dismissedCallIds.has(c.id)) return false;
+                if (
+                  c.callerId !== profile.uid &&
+                  chatPrefs.blockedUids.includes(c.callerId)
+                ) {
+                  const blockedAt = chatPrefs.blockedAtByUid?.[c.callerId] || 0;
+                  if (blockedAt <= 1 || c.createdAtMs === 0 || c.createdAtMs >= blockedAt) {
+                    return false;
+                  }
+                }
+                return true;
+              })}
               zapeiContacts={zapeiContacts}
               directoryUsers={effectiveDirectoryUsers}
               onPreviewAvatar={setAvatarPreview}
@@ -6190,7 +6274,7 @@ export default function App() {
                   const targetConn = connections.find((c) => c.id === connectionId);
                   if (targetConn) {
                     const resellerLabel = profile.storefrontName || profile.name;
-                    void checkPeerReachability(targetConn.factoryId, authUser).then((reach) => {
+                    void checkPeerReachability(targetConn.factoryId, authUser, true).then((reach) => {
                       if (!reach.reachable) return;
                       void sendRealChatMessage({
                         myUid: profile.uid,
@@ -6226,7 +6310,7 @@ export default function App() {
                   hour: '2-digit',
                   minute: '2-digit',
                 });
-                const reach = await checkPeerReachability(pay.counterpartyId, authUser);
+                const reach = await checkPeerReachability(pay.counterpartyId, authUser, true);
                 if (reach.reachable) {
                   await sendRealChatMessage({
                     myUid: profile.uid,
@@ -6446,7 +6530,7 @@ export default function App() {
 
             // Send real interactive order card directly to the storefront owner's chat
             if (ownerUid !== profile.uid) {
-              const reach = await checkPeerReachability(ownerUid, authUser);
+              const reach = await checkPeerReachability(ownerUid, authUser, true);
               if (reach.reachable) {
                 const totalBoxes = subOrders.reduce(
                   (acc, s) =>

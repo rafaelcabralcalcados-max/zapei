@@ -1237,7 +1237,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   useEffect(() => {
     let cancelled = false;
     const mediaMessages = messages.filter(
-      (m) => m.type === 'image' || m.type === 'audio' || m.type === 'video'
+      (m) =>
+        (m.type === 'image' || m.type === 'audio' || m.type === 'video') &&
+        (!isPeerBlocked || m.senderId === myUid)
     );
     if (mediaMessages.length === 0) return undefined;
 
@@ -1267,7 +1269,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [messages, myUid, peer.uid, peer.name, isOffline, localCacheTick]);
+  }, [messages, myUid, peer.uid, peer.name, isOffline, localCacheTick, isPeerBlocked]);
 
   useEffect(() => {
     return () => {
@@ -4057,11 +4059,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                             {msg.deliveryStatus === 'sending' ? 'Enviando...' : 'Aguardando rede'}
                           </span>
                         </span>
-                      ) : msg.deliveryStatus === 'sent' || msg.mediaDelivered === false ? (
+                      ) : msg.mediaDelivered === false || msg.deliveryStatus === 'sent' ? (
                         <span
                           title={
                             msg.mediaDelivered === false
-                              ? 'Enviado — aguardando contato baixar'
+                              ? 'Enviada — aguardando destinatário conectar'
                               : 'Enviada — aguardando contato conectar à internet'
                           }
                         >

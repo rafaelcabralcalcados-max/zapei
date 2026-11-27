@@ -171,7 +171,7 @@ export async function sendMediaWithTransitBridge(
 
   // Stealth block: if recipient blocked sender, store media ONLY on sender's device
   // with single tick ('sent', mediaDelivered: false), without uploading or notifying recipient.
-  const reach = await checkPeerReachability(recipientId, authUser || auth.currentUser);
+  const reach = await checkPeerReachability(recipientId, authUser || auth.currentUser, true);
   if (!reach.reachable) {
     const localObjectUrl = await saveLocalTask();
     const nowMs = Date.now();

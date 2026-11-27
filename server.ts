@@ -213,17 +213,160 @@ function isValidPushSubscription(sub: unknown): sub is WebPushSubscription {
 
 const subscriptionsByUid: SubscriptionMap = loadSubscriptions();
 
+// --- Persistent Encrypted Chat Preferences + Push Subscriptions Store (Survives Container Restarts) ---
+const chatPrefsStorePath = path.join(os.tmpdir(), 'chatfi-chat-prefs.json');
+
+interface ChatCustomListServer {
+  id: string;
+  name: string;
+  chatIds: string[];
+  createdAtMs: number;
+}
+
+interface ServerUserChatPreferences {
+  pinnedChatIds: string[];
+  archivedChatIds: string[];
+  mutedChatIds: string[];
+  favoriteChatIds: string[];
+  unreadChatIds: string[];
+  lockedChatIds: string[];
+  lockPinHash?: string;
+  clearedAtByChatId: Record<string, number>;
+  hiddenChatIds: Record<string, number>;
+  blockedUids: string[];
+  blockedAtByUid: Record<string, number>;
+  customLists: ChatCustomListServer[];
+  shortcutChatIds: string[];
+  updatedAtMs: number;
+}
+
+const sanitizeServerIdArray = (raw: unknown, maxLen = 1000): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const t = item.trim();
+    if (!t || t.length > 260 || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= maxLen) break;
+  }
+  return out;
+};
+
+const sanitizeServerTimestampMap = (raw: unknown): Record<string, number> => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = k.trim();
+    const num = Number(v);
+    if (!key || key.length > 260 || !Number.isFinite(num) || num <= 0) continue;
+    out[key] = Math.round(num);
+    count += 1;
+    if (count >= 1000) break;
+  }
+  return out;
+};
+
+const sanitizeServerChatPrefs = (raw: unknown): ServerUserChatPreferences => {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<ServerUserChatPreferences>;
+  const rawLists = Array.isArray(obj.customLists) ? obj.customLists : [];
+  const seenListIds = new Set<string>();
+  const customLists: ChatCustomListServer[] = [];
+  for (const item of rawLists) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Partial<ChatCustomListServer>;
+    const id = typeof entry.id === 'string' ? entry.id.trim().slice(0, 80) : '';
+    const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 48) : '';
+    if (!id || !name || seenListIds.has(id)) continue;
+    seenListIds.add(id);
+    customLists.push({
+      id,
+      name,
+      chatIds: sanitizeServerIdArray(entry.chatIds, 500),
+      createdAtMs:
+        typeof entry.createdAtMs === 'number' && Number.isFinite(entry.createdAtMs)
+          ? Math.round(entry.createdAtMs)
+          : Date.now(),
+    });
+    if (customLists.length >= 30) break;
+  }
+  const lockPinHash =
+    typeof obj.lockPinHash === 'string' && obj.lockPinHash.trim().length >= 16
+      ? obj.lockPinHash.trim().slice(0, 128)
+      : undefined;
+  const blockedUids = sanitizeServerIdArray(obj.blockedUids);
+  const rawBlockedAt = sanitizeServerTimestampMap(obj.blockedAtByUid);
+  const blockedAtByUid: Record<string, number> = {};
+  for (const uid of blockedUids) {
+    if (rawBlockedAt[uid]) {
+      blockedAtByUid[uid] = rawBlockedAt[uid];
+    }
+  }
+  return {
+    pinnedChatIds: sanitizeServerIdArray(obj.pinnedChatIds),
+    archivedChatIds: sanitizeServerIdArray(obj.archivedChatIds),
+    mutedChatIds: sanitizeServerIdArray(obj.mutedChatIds),
+    favoriteChatIds: sanitizeServerIdArray(obj.favoriteChatIds),
+    unreadChatIds: sanitizeServerIdArray(obj.unreadChatIds),
+    lockedChatIds: sanitizeServerIdArray(obj.lockedChatIds),
+    ...(lockPinHash ? { lockPinHash } : {}),
+    clearedAtByChatId: sanitizeServerTimestampMap(obj.clearedAtByChatId),
+    hiddenChatIds: sanitizeServerTimestampMap(obj.hiddenChatIds),
+    blockedUids,
+    blockedAtByUid,
+    customLists,
+    shortcutChatIds: sanitizeServerIdArray(obj.shortcutChatIds, 100),
+    updatedAtMs:
+      typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs)
+        ? Math.round(obj.updatedAtMs)
+        : Date.now(),
+  };
+};
+
+const loadChatPrefsStore = (): Record<string, ServerUserChatPreferences> => {
+  try {
+    if (fs.existsSync(chatPrefsStorePath)) {
+      const raw = JSON.parse(fs.readFileSync(chatPrefsStorePath, 'utf-8')) as unknown;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        return raw as Record<string, ServerUserChatPreferences>;
+      }
+    }
+  } catch {
+    // ignore corrupted store
+  }
+  return {};
+};
+
+const chatPrefsStore = loadChatPrefsStore();
+
+const saveChatPrefsStore = (): void => {
+  try {
+    fs.writeFileSync(chatPrefsStorePath, JSON.stringify(chatPrefsStore), { mode: 0o600 });
+  } catch {
+    // ignore disk write error
+  }
+};
+
 // --- AES-256-GCM Encryption + Firestore REST Persistence (Survives Render / Cloud Run Restarts) ---
 const pushEncryptionKey = crypto.createHash('sha256').update(vapidKeys.privateKey).digest();
 
-function encryptSubscriptions(subs: WebPushSubscription[]): {
+interface EncryptedUserVaultPayload {
+  v: 2;
+  subs: WebPushSubscription[];
+  chatPrefs?: ServerUserChatPreferences;
+}
+
+function encryptUserVault(payload: EncryptedUserVaultPayload): {
   ciphertext: string;
   iv: string;
   authTag: string;
 } {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', pushEncryptionKey, iv);
-  const plaintext = JSON.stringify(subs);
+  const plaintext = JSON.stringify(payload);
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   return {
     ciphertext: encrypted.toString('base64'),
@@ -232,11 +375,11 @@ function encryptSubscriptions(subs: WebPushSubscription[]): {
   };
 }
 
-function decryptSubscriptions(blob: {
+function decryptUserVault(blob: {
   ciphertext: string;
   iv: string;
   authTag: string;
-}): WebPushSubscription[] {
+}): { subs: WebPushSubscription[]; chatPrefs?: ServerUserChatPreferences } {
   try {
     const iv = Buffer.from(blob.iv, 'base64');
     const authTag = Buffer.from(blob.authTag, 'base64');
@@ -246,11 +389,20 @@ function decryptSubscriptions(blob: {
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
       'utf8'
     );
-    const parsed = JSON.parse(decrypted);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidPushSubscription);
+    const parsed = JSON.parse(decrypted) as unknown;
+    if (Array.isArray(parsed)) {
+      return { subs: parsed.filter(isValidPushSubscription) };
+    }
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Partial<EncryptedUserVaultPayload>;
+      return {
+        subs: Array.isArray(obj.subs) ? obj.subs.filter(isValidPushSubscription) : [],
+        chatPrefs: obj.chatPrefs ? sanitizeServerChatPrefs(obj.chatPrefs) : undefined,
+      };
+    }
+    return { subs: [] };
   } catch {
-    return [];
+    return { subs: [] };
   }
 }
 
@@ -263,22 +415,41 @@ function buildPushEndpointFirestoreUrl(uid: string): string | null {
   )}/documents/push_endpoints/${encodeURIComponent(uid)}`;
 }
 
-async function persistSubscriptionsToFirestore(
+async function persistUserStateToFirestore(
   uid: string,
-  subs: WebPushSubscription[],
   idToken: string
 ): Promise<void> {
   const url = buildPushEndpointFirestoreUrl(uid);
   if (!url || !idToken) return;
+  const subs = (subscriptionsByUid[uid] || [])
+    .filter((s) => isValidPushSubscription(s) && !isEndpointRevoked(s.endpoint))
+    .slice(-6);
+  const prefs = chatPrefsStore[uid];
   try {
-    if (subs.length === 0) {
+    if (subs.length === 0 && !prefs) {
       await fetch(url, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${idToken}` },
       });
       return;
     }
-    const enc = encryptSubscriptions(subs);
+    let enc = encryptUserVault({
+      v: 2,
+      subs,
+      ...(prefs ? { chatPrefs: prefs } : {}),
+    });
+    if (enc.ciphertext.length > 32000 && prefs) {
+      // Keep blockedUids/blockedAtByUid intact even if cleared/hidden maps grew large
+      enc = encryptUserVault({
+        v: 2,
+        subs,
+        chatPrefs: {
+          ...prefs,
+          clearedAtByChatId: {},
+          hiddenChatIds: {},
+        },
+      });
+    }
     if (enc.ciphertext.length > 32000) return;
     const res = await fetch(url, {
       method: 'PATCH',
@@ -292,7 +463,7 @@ async function persistSubscriptionsToFirestore(
           ciphertext: { stringValue: enc.ciphertext },
           iv: { stringValue: enc.iv },
           authTag: { stringValue: enc.authTag },
-          deviceCount: { integerValue: String(subs.length) },
+          deviceCount: { integerValue: String(Math.min(10, subs.length)) },
           updatedAtMs: { integerValue: String(Date.now()) },
         },
       }),
@@ -306,18 +477,18 @@ async function persistSubscriptionsToFirestore(
   }
 }
 
-async function fetchSubscriptionsFromFirestore(
+async function fetchUserVaultFromFirestore(
   targetUid: string,
   bearerToken: string
-): Promise<WebPushSubscription[]> {
+): Promise<{ subs: WebPushSubscription[]; chatPrefs?: ServerUserChatPreferences }> {
   const url = buildPushEndpointFirestoreUrl(targetUid);
-  if (!url || !bearerToken) return [];
+  if (!url || !bearerToken) return { subs: [] };
   try {
     const res = await fetch(url, {
       method: 'GET',
       headers: { Authorization: `Bearer ${bearerToken}` },
     });
-    if (!res.ok) return [];
+    if (!res.ok) return { subs: [] };
     const docData = (await res.json()) as {
       fields?: {
         ciphertext?: { stringValue?: string };
@@ -328,11 +499,19 @@ async function fetchSubscriptionsFromFirestore(
     const ciphertext = docData.fields?.ciphertext?.stringValue || '';
     const iv = docData.fields?.iv?.stringValue || '';
     const authTag = docData.fields?.authTag?.stringValue || '';
-    if (!ciphertext || !iv || !authTag) return [];
-    return decryptSubscriptions({ ciphertext, iv, authTag });
+    if (!ciphertext || !iv || !authTag) return { subs: [] };
+    return decryptUserVault({ ciphertext, iv, authTag });
   } catch {
-    return [];
+    return { subs: [] };
   }
+}
+
+async function fetchSubscriptionsFromFirestore(
+  targetUid: string,
+  bearerToken: string
+): Promise<WebPushSubscription[]> {
+  const vault = await fetchUserVaultFromFirestore(targetUid, bearerToken);
+  return vault.subs;
 }
 
 // --- Authenticated Express Request Helper ---
@@ -364,6 +543,50 @@ async function requireFirebaseAuth(
 }
 
 const firestoreHydratedAtByUid = new Map<string, number>();
+const inFlightVaultHydrations = new Map<string, Promise<void>>();
+
+async function hydrateUserStateFromFirestore(
+  targetUid: string,
+  bearerToken?: string,
+  force = false
+): Promise<void> {
+  if (!targetUid || !bearerToken || !VALID_UID_REGEX.test(targetUid)) return;
+  const lastHydrated = firestoreHydratedAtByUid.get(targetUid) || 0;
+  const hasPrefs = Boolean(chatPrefsStore[targetUid]);
+  if (!force && hasPrefs && Date.now() - lastHydrated < 12_000) {
+    return;
+  }
+  const existingPromise = inFlightVaultHydrations.get(targetUid);
+  if (existingPromise) {
+    await existingPromise;
+    return;
+  }
+  const task = (async () => {
+    firestoreHydratedAtByUid.set(targetUid, Date.now());
+    const vault = await fetchUserVaultFromFirestore(targetUid, bearerToken);
+    if (vault.subs.length > 0) {
+      const localSubs = (subscriptionsByUid[targetUid] || []).filter(
+        (s) => !isEndpointRevoked(s.endpoint)
+      );
+      const merged = mergeSubscriptions(localSubs, vault.subs);
+      if (merged.length !== localSubs.length) {
+        subscriptionsByUid[targetUid] = merged;
+        saveSubscriptions(subscriptionsByUid);
+      }
+    }
+    if (vault.chatPrefs) {
+      const current = chatPrefsStore[targetUid];
+      if (!current || (vault.chatPrefs.updatedAtMs || 0) >= (current.updatedAtMs || 0)) {
+        chatPrefsStore[targetUid] = vault.chatPrefs;
+        saveChatPrefsStore();
+      }
+    }
+  })().finally(() => {
+    inFlightVaultHydrations.delete(targetUid);
+  });
+  inFlightVaultHydrations.set(targetUid, task);
+  await task;
+}
 
 function rememberRevokedEndpoint(endpoint: string): void {
   if (revokedEndpointHashes.size > 1000) {
@@ -404,16 +627,8 @@ async function dispatchPushToUser(
 
   // Hydrate & merge from Firestore so newly registered phones are always reached across restarts/instances
   if (shouldHydrate && callerIdToken) {
-    firestoreHydratedAtByUid.set(targetUid, Date.now());
-    const restored = await fetchSubscriptionsFromFirestore(targetUid, callerIdToken);
-    if (restored.length > 0) {
-      const merged = mergeSubscriptions(subs, restored);
-      if (merged.length !== subs.length) {
-        subs = merged;
-        subscriptionsByUid[targetUid] = subs;
-        saveSubscriptions(subscriptionsByUid);
-      }
-    }
+    await hydrateUserStateFromFirestore(targetUid, callerIdToken, subs.length === 0);
+    subs = (subscriptionsByUid[targetUid] || []).filter((s) => !isEndpointRevoked(s.endpoint));
   }
   if (subs.length === 0) {
     console.log(`[push] No registered devices for uid=${targetUid} (type=${String(payload.type || '')})`);
@@ -712,10 +927,8 @@ async function startServer(): Promise<void> {
 
     let existing = subscriptionsByUid[uid] || [];
     if (idToken) {
-      const remote = await fetchSubscriptionsFromFirestore(uid, idToken);
-      if (remote.length > 0) {
-        existing = mergeSubscriptions(existing, remote);
-      }
+      await hydrateUserStateFromFirestore(uid, idToken, true);
+      existing = subscriptionsByUid[uid] || [];
     }
     const deduped = existing.filter(
       (item) => item.endpoint !== sub.endpoint && !isEndpointRevoked(item.endpoint)
@@ -726,7 +939,7 @@ async function startServer(): Promise<void> {
     subscriptionsByUid[uid] = nextList;
     firestoreHydratedAtByUid.set(uid, Date.now());
     saveSubscriptions(subscriptionsByUid);
-    await persistSubscriptionsToFirestore(uid, nextList, idToken);
+    await persistUserStateToFirestore(uid, idToken);
     console.log(`[push] Subscribed uid=${uid} devices=${nextList.length}`);
     res.json({ ok: true, devices: nextList.length });
   });
@@ -744,7 +957,7 @@ async function startServer(): Promise<void> {
       const nextList = existing.filter((item) => item.endpoint !== endpoint);
       subscriptionsByUid[uid] = nextList;
       saveSubscriptions(subscriptionsByUid);
-      await persistSubscriptionsToFirestore(uid, nextList, idToken);
+      await persistUserStateToFirestore(uid, idToken);
     }
     res.json({ ok: true });
   });
@@ -763,51 +976,6 @@ async function startServer(): Promise<void> {
     }
   };
 
-  // Per-user Chat Organization Preferences (pin, archive, mute, favorites, lists, lock PIN, clear, block, shortcuts)
-  const chatPrefsStorePath = path.join(os.tmpdir(), 'chatfi-chat-prefs.json');
-  interface ChatCustomListServer {
-    id: string;
-    name: string;
-    chatIds: string[];
-    createdAtMs: number;
-  }
-  interface ServerUserChatPreferences {
-    pinnedChatIds: string[];
-    archivedChatIds: string[];
-    mutedChatIds: string[];
-    favoriteChatIds: string[];
-    unreadChatIds: string[];
-    lockedChatIds: string[];
-    lockPinHash?: string;
-    clearedAtByChatId: Record<string, number>;
-    hiddenChatIds: Record<string, number>;
-    blockedUids: string[];
-    blockedAtByUid: Record<string, number>;
-    customLists: ChatCustomListServer[];
-    shortcutChatIds: string[];
-    updatedAtMs: number;
-  }
-  const loadChatPrefsStore = (): Record<string, ServerUserChatPreferences> => {
-    try {
-      if (fs.existsSync(chatPrefsStorePath)) {
-        const raw = JSON.parse(fs.readFileSync(chatPrefsStorePath, 'utf-8')) as unknown;
-        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-          return raw as Record<string, ServerUserChatPreferences>;
-        }
-      }
-    } catch {
-      // ignore corrupted store
-    }
-    return {};
-  };
-  const chatPrefsStore = loadChatPrefsStore();
-  const saveChatPrefsStore = (): void => {
-    try {
-      fs.writeFileSync(chatPrefsStorePath, JSON.stringify(chatPrefsStore), { mode: 0o600 });
-    } catch {
-      // ignore disk write error
-    }
-  };
   const isBlockedByPeer = (recipientUid: string, senderUid: string): boolean => {
     if (!recipientUid || !senderUid) return false;
     const prefs = chatPrefsStore[recipientUid];
@@ -815,6 +983,34 @@ async function startServer(): Promise<void> {
   };
   const shouldHidePresenceBetween = (viewerUid: string, targetUid: string): boolean =>
     isBlockedByPeer(targetUid, viewerUid) || isBlockedByPeer(viewerUid, targetUid);
+
+  const isBlockedByPeerAsync = async (
+    recipientUid: string,
+    senderUid: string,
+    bearerToken?: string
+  ): Promise<boolean> => {
+    if (!recipientUid || !senderUid) return false;
+    if (bearerToken && !chatPrefsStore[recipientUid]) {
+      await hydrateUserStateFromFirestore(recipientUid, bearerToken);
+    } else if (bearerToken) {
+      await hydrateUserStateFromFirestore(recipientUid, bearerToken);
+    }
+    return isBlockedByPeer(recipientUid, senderUid);
+  };
+
+  const shouldHidePresenceBetweenAsync = async (
+    viewerUid: string,
+    targetUid: string,
+    bearerToken?: string
+  ): Promise<boolean> => {
+    if (bearerToken) {
+      await Promise.all([
+        hydrateUserStateFromFirestore(targetUid, bearerToken),
+        hydrateUserStateFromFirestore(viewerUid, bearerToken),
+      ]);
+    }
+    return shouldHidePresenceBetween(viewerUid, targetUid);
+  };
 
   // 4. High-priority incoming call (repeated ring cadence) / cancellation Web Push
   app.post('/api/push/notify-call', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
@@ -861,7 +1057,7 @@ async function startServer(): Promise<void> {
     }
 
     // Stealth block: if callee blocked caller, silently drop call ring push without revealing block
-    if (isBlockedByPeer(calleeId, actorUid)) {
+    if (await isBlockedByPeerAsync(calleeId, actorUid, callerIdToken)) {
       res.json({ ok: true, sent: 0, removed: 0 });
       return;
     }
@@ -963,7 +1159,7 @@ async function startServer(): Promise<void> {
       }
 
       // Stealth block: never send push notification if recipient blocked sender
-      if (isBlockedByPeer(recipientId, senderId)) {
+      if (await isBlockedByPeerAsync(recipientId, senderId, callerIdToken)) {
         res.json({ ok: true, sent: 0, removed: 0 });
         return;
       }
@@ -1054,7 +1250,7 @@ async function startServer(): Promise<void> {
   const socketsByUid = new Map<string, Set<WebSocket>>();
   const socketMeta = new Map<
     WebSocket,
-    { uid: string; subscribedPeers: Set<string>; isAlive: boolean }
+    { uid: string; token: string; subscribedPeers: Set<string>; isAlive: boolean }
   >();
   const subscribersByTargetUid = new Map<string, Set<WebSocket>>();
 
@@ -1372,7 +1568,8 @@ async function startServer(): Promise<void> {
     originSocket?: WebSocket
   ): Promise<void> => {
     const blockedByRecipient =
-      env.recipientId !== env.senderId && isBlockedByPeer(env.recipientId, env.senderId);
+      env.recipientId !== env.senderId &&
+      (await isBlockedByPeerAsync(env.recipientId, env.senderId, callerIdToken));
 
     // 1) Store in recipient temporary pending queue until recipient device ACKs saving to IndexedDB
     if (env.recipientId !== env.senderId && !blockedByRecipient) {
@@ -3219,96 +3416,13 @@ async function startServer(): Promise<void> {
     }
   );
 
-  // 7e. Per-user Chat Organization Preferences (sanitizers + endpoints; store loaded above)
-  const sanitizeServerIdArray = (raw: unknown, maxLen = 1000): string[] => {
-    if (!Array.isArray(raw)) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const item of raw) {
-      if (typeof item !== 'string') continue;
-      const t = item.trim();
-      if (!t || t.length > 260 || seen.has(t)) continue;
-      seen.add(t);
-      out.push(t);
-      if (out.length >= maxLen) break;
-    }
-    return out;
-  };
-  const sanitizeServerTimestampMap = (raw: unknown): Record<string, number> => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-    const out: Record<string, number> = {};
-    let count = 0;
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      const key = k.trim();
-      const num = Number(v);
-      if (!key || key.length > 260 || !Number.isFinite(num) || num <= 0) continue;
-      out[key] = Math.round(num);
-      count += 1;
-      if (count >= 1000) break;
-    }
-    return out;
-  };
-  const sanitizeServerChatPrefs = (raw: unknown): ServerUserChatPreferences => {
-    const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<ServerUserChatPreferences>;
-    const rawLists = Array.isArray(obj.customLists) ? obj.customLists : [];
-    const seenListIds = new Set<string>();
-    const customLists: ChatCustomListServer[] = [];
-    for (const item of rawLists) {
-      if (!item || typeof item !== 'object') continue;
-      const entry = item as Partial<ChatCustomListServer>;
-      const id = typeof entry.id === 'string' ? entry.id.trim().slice(0, 80) : '';
-      const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 48) : '';
-      if (!id || !name || seenListIds.has(id)) continue;
-      seenListIds.add(id);
-      customLists.push({
-        id,
-        name,
-        chatIds: sanitizeServerIdArray(entry.chatIds, 500),
-        createdAtMs:
-          typeof entry.createdAtMs === 'number' && Number.isFinite(entry.createdAtMs)
-            ? Math.round(entry.createdAtMs)
-            : Date.now(),
-      });
-      if (customLists.length >= 30) break;
-    }
-    const lockPinHash =
-      typeof obj.lockPinHash === 'string' && obj.lockPinHash.trim().length >= 16
-        ? obj.lockPinHash.trim().slice(0, 128)
-        : undefined;
-    const blockedUids = sanitizeServerIdArray(obj.blockedUids);
-    const rawBlockedAt = sanitizeServerTimestampMap(obj.blockedAtByUid);
-    const blockedAtByUid: Record<string, number> = {};
-    for (const uid of blockedUids) {
-      if (rawBlockedAt[uid]) {
-        blockedAtByUid[uid] = rawBlockedAt[uid];
-      }
-    }
-    return {
-      pinnedChatIds: sanitizeServerIdArray(obj.pinnedChatIds),
-      archivedChatIds: sanitizeServerIdArray(obj.archivedChatIds),
-      mutedChatIds: sanitizeServerIdArray(obj.mutedChatIds),
-      favoriteChatIds: sanitizeServerIdArray(obj.favoriteChatIds),
-      unreadChatIds: sanitizeServerIdArray(obj.unreadChatIds),
-      lockedChatIds: sanitizeServerIdArray(obj.lockedChatIds),
-      ...(lockPinHash ? { lockPinHash } : {}),
-      clearedAtByChatId: sanitizeServerTimestampMap(obj.clearedAtByChatId),
-      hiddenChatIds: sanitizeServerTimestampMap(obj.hiddenChatIds),
-      blockedUids,
-      blockedAtByUid,
-      customLists,
-      shortcutChatIds: sanitizeServerIdArray(obj.shortcutChatIds, 100),
-      updatedAtMs:
-        typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs)
-          ? Math.round(obj.updatedAtMs)
-          : Date.now(),
-    };
-  };
-
+  // 7e. Per-user Chat Organization Preferences endpoints (sanitizers & store loaded above)
   app.get(
     '/api/chats/preferences',
     requireFirebaseAuth,
-    (req: AuthenticatedRequest, res: Response) => {
+    async (req: AuthenticatedRequest, res: Response) => {
       const actorUid = req.verifiedUid!;
+      await hydrateUserStateFromFirestore(actorUid, req.idToken || '', true);
       const existing = chatPrefsStore[actorUid] || sanitizeServerChatPrefs({});
       res.json({ ok: true, prefs: existing });
     }
@@ -3317,8 +3431,10 @@ async function startServer(): Promise<void> {
   app.put(
     '/api/chats/preferences',
     requireFirebaseAuth,
-    (req: AuthenticatedRequest, res: Response) => {
+    async (req: AuthenticatedRequest, res: Response) => {
       const actorUid = req.verifiedUid!;
+      const idToken = req.idToken || '';
+      await hydrateUserStateFromFirestore(actorUid, idToken, false);
       const prevBlocked = new Set(chatPrefsStore[actorUid]?.blockedUids || []);
       const body = (req.body || {}) as { prefs?: unknown };
       const sanitized = sanitizeServerChatPrefs(body.prefs);
@@ -3331,6 +3447,7 @@ async function startServer(): Promise<void> {
       }
       chatPrefsStore[actorUid] = sanitized;
       saveChatPrefsStore();
+      await persistUserStateToFirestore(actorUid, idToken);
 
       // Push live presence & clear activity for any newly blocked or unblocked peers
       const nextBlocked = new Set(sanitized.blockedUids);
@@ -3361,16 +3478,17 @@ async function startServer(): Promise<void> {
   app.get(
     '/api/chats/peer-reachability',
     requireFirebaseAuth,
-    (req: AuthenticatedRequest, res: Response) => {
+    async (req: AuthenticatedRequest, res: Response) => {
       const actorUid = req.verifiedUid!;
+      const callerToken = req.idToken || '';
       const peerUid =
         typeof req.query.peerUid === 'string' ? req.query.peerUid.trim().slice(0, 128) : '';
       if (!peerUid || !VALID_UID_REGEX.test(peerUid)) {
         res.status(400).json({ ok: false, error: 'Destinatário inválido.' });
         return;
       }
-      const blockedByRecipient = isBlockedByPeer(peerUid, actorUid);
-      const hidePresence = shouldHidePresenceBetween(actorUid, peerUid);
+      const blockedByRecipient = await isBlockedByPeerAsync(peerUid, actorUid, callerToken);
+      const hidePresence = await shouldHidePresenceBetweenAsync(actorUid, peerUid, callerToken);
       res.json({
         ok: true,
         reachable: !blockedByRecipient,
@@ -3383,7 +3501,7 @@ async function startServer(): Promise<void> {
   app.post(
     '/api/chat/activity',
     requireFirebaseAuth,
-    (req: AuthenticatedRequest, res: Response) => {
+    async (req: AuthenticatedRequest, res: Response) => {
       const actorUid = req.verifiedUid!;
       const body = (req.body || {}) as { targetUid?: unknown; activity?: unknown };
       const targetUid =
@@ -3397,6 +3515,10 @@ async function startServer(): Promise<void> {
       ]);
       if (!targetUid || !VALID_UID_REGEX.test(targetUid) || !allowed.has(rawActivity as ServerChatActivityKind)) {
         res.status(400).json({ ok: false, error: 'Parâmetros inválidos.' });
+        return;
+      }
+      if (await shouldHidePresenceBetweenAsync(actorUid, targetUid, req.idToken || '')) {
+        res.json({ ok: true });
         return;
       }
       setChatActivityInMemory(actorUid, targetUid, rawActivity as ServerChatActivityKind);
@@ -3527,9 +3649,11 @@ async function startServer(): Promise<void> {
 
           socketMeta.set(socket, {
             uid,
+            token,
             subscribedPeers: new Set(),
             isAlive: true,
           });
+          await hydrateUserStateFromFirestore(uid, token, false);
           let userSockets = socketsByUid.get(uid);
           if (!userSockets) {
             userSockets = new Set();
@@ -3606,6 +3730,13 @@ async function startServer(): Promise<void> {
               .filter((u): u is string => typeof u === 'string' && VALID_UID_REGEX.test(u))
               .slice(0, 500)
           : [];
+        // Hydrate any uncached peers (capped cleanly to avoid thundering herd) so blocks persist across restarts
+        const uncachedPeers = uids.filter((targetUid) => !chatPrefsStore[targetUid]).slice(0, 40);
+        if (uncachedPeers.length > 0 && meta.token) {
+          await Promise.all(
+            uncachedPeers.map((targetUid) => hydrateUserStateFromFirestore(targetUid, meta.token))
+          );
+        }
         const entries: Array<ReturnType<typeof toPublicPresence>> = [];
         for (const targetUid of uids) {
           if (!meta.subscribedPeers.has(targetUid)) {
@@ -3658,7 +3789,9 @@ async function startServer(): Promise<void> {
           rawActivity === 'recording_audio' ||
           rawActivity === 'recording_video'
         ) {
-          setChatActivityInMemory(meta.uid, targetUid, rawActivity);
+          if (!(await shouldHidePresenceBetweenAsync(meta.uid, targetUid, meta.token))) {
+            setChatActivityInMemory(meta.uid, targetUid, rawActivity);
+          }
         }
         return;
       }
@@ -3670,7 +3803,7 @@ async function startServer(): Promise<void> {
         );
         if (!env) return;
         setChatActivityInMemory(meta.uid, env.recipientId, 'idle');
-        await relayAndDeliverChatMessage(env, undefined, socket);
+        await relayAndDeliverChatMessage(env, meta.token, socket);
         sendWsJson(socket, {
           type: 'chat:sent',
           clientReqId: typeof msg.clientReqId === 'string' ? msg.clientReqId : undefined,

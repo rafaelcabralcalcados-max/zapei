@@ -1655,7 +1655,8 @@ export async function sendRealChatMessage(params: {
   if (params.audioDuration) payload.audioDuration = params.audioDuration.slice(0, 16);
   if (params.videoDuration) payload.videoDuration = params.videoDuration.slice(0, 16);
   if (params.mediaTransitPath) payload.mediaTransitPath = params.mediaTransitPath.slice(0, 260);
-  if (typeof params.mediaDelivered === 'boolean') payload.mediaDelivered = params.mediaDelivered;
+  payload.mediaDelivered =
+    typeof params.mediaDelivered === 'boolean' ? params.mediaDelivered : false;
   if (typeof params.mediaSizeBytes === 'number' && params.mediaSizeBytes >= 0) {
     payload.mediaSizeBytes = Math.round(params.mediaSizeBytes);
   }
@@ -1746,6 +1747,61 @@ export async function markChatMessageMediaDelivered(
     });
   } catch {
     // Ignore if already delivered or offline
+  }
+}
+
+export async function markChatMessagesDelivered(
+  chatId: string,
+  messageIds: string[]
+): Promise<void> {
+  if (!chatId || messageIds.length === 0) return;
+  const uniqueIds = Array.from(new Set(messageIds.filter(Boolean))).slice(0, 40);
+  await Promise.all(
+    uniqueIds.map(async (messageId) => {
+      try {
+        await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), {
+          mediaDelivered: true,
+        });
+      } catch {
+        // Ignore if already delivered or offline
+      }
+    })
+  );
+}
+
+export async function confirmIncomingThreadMessagesDelivered(
+  chatId: string,
+  myUid: string,
+  otherUid: string
+): Promise<void> {
+  if (!chatId || !myUid || !otherUid) return;
+  try {
+    const [uA] = [myUid, otherUid].sort();
+    const roleField = uA === myUid ? 'userA' : 'userB';
+    const q = query(
+      collection(db, 'chats', chatId, 'messages'),
+      where(roleField, '==', myUid)
+    );
+    const snap = await getDocs(q);
+    const toAckIds: string[] = [];
+    snap.forEach((ds) => {
+      const d = ds.data();
+      const msgType = String(d.type || 'text');
+      if (
+        d.senderId === otherUid &&
+        d.mediaDelivered === false &&
+        msgType !== 'image' &&
+        msgType !== 'audio' &&
+        msgType !== 'video'
+      ) {
+        toAckIds.push(ds.id);
+      }
+    });
+    if (toAckIds.length > 0) {
+      await markChatMessagesDelivered(chatId, toAckIds);
+    }
+  } catch {
+    // Ignore offline / transient errors
   }
 }
 
