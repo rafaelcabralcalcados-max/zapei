@@ -15,8 +15,10 @@ import {
   isMediaManuallyDeletedLocally,
   saveLocalMedia,
 } from './localMediaCache';
+import { formatShortTimePt, upsertLocalChatMessagesBatch } from './localChatStore';
 import { blobToDataUrl, dataUrlToBlob } from './phoneUtils';
 import { triggerRemoteMessagePush } from './pushService';
+import { checkPeerReachability } from './realtimeClient';
 
 /**
  * ZAPEI WHATSAPP-STYLE MEDIA TRANSIT BRIDGE
@@ -135,6 +137,21 @@ export async function sendMediaWithTransitBridge(
     (mediaType === 'audio' || mediaType === 'image' || mediaType === 'video') &&
     blob.size <= INLINE_FALLBACK_MAX_BYTES;
 
+  const stripQuoteHeader = (raw?: string): string => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed.startsWith('» ')) return trimmed;
+    const nl = trimmed.indexOf('\n');
+    return nl === -1 ? trimmed : trimmed.slice(nl + 1).trim();
+  };
+
+  const textLabel = isPdfFile
+    ? caption?.trim() || fileName?.trim() || 'Documento.pdf'
+    : mediaType === 'image'
+      ? caption?.trim() || 'Foto'
+      : mediaType === 'video'
+        ? caption?.trim() || (durationLabel ? `Vídeo (${durationLabel})` : 'Vídeo')
+        : caption?.trim() || `Mensagem de voz (${durationLabel || '0:00'})`;
+
   const saveLocalTask = () =>
     saveLocalMedia({
       messageId,
@@ -151,6 +168,44 @@ export async function sendMediaWithTransitBridge(
       fileName,
       savedAtMs: Date.now(),
     });
+
+  // Stealth block: if recipient blocked sender, store media ONLY on sender's device
+  // with single tick ('sent', mediaDelivered: false), without uploading or notifying recipient.
+  const reach = await checkPeerReachability(recipientId, authUser || auth.currentUser);
+  if (!reach.reachable) {
+    const localObjectUrl = await saveLocalTask();
+    const nowMs = Date.now();
+    await upsertLocalChatMessagesBatch(myUid, [
+      {
+        ownerUid: myUid,
+        createdAtMs: nowMs,
+        otherUid: recipientId,
+        otherName: recipientName,
+        message: {
+          id: messageId,
+          chatId,
+          senderId: myUid,
+          senderName: myName,
+          type: mediaType,
+          text: textLabel,
+          timestamp: formatShortTimePt(nowMs),
+          createdAtMs: nowMs,
+          mediaDelivered: false,
+          mediaSizeBytes: blob.size,
+          mediaMimeType: mimeType,
+          audioDuration: mediaType === 'audio' ? durationLabel : undefined,
+          videoDuration: mediaType === 'video' ? durationLabel : undefined,
+          deliveryStatus: 'sent',
+        },
+      },
+    ]);
+    return {
+      messageId,
+      chatId,
+      localObjectUrl,
+      usedStorageTransit: false,
+    };
+  }
 
   const uploadToSameOriginTransit = async (): Promise<string> => {
     const activeUser = authUser || auth.currentUser;
@@ -253,21 +308,6 @@ export async function sendMediaWithTransitBridge(
   }
 
   // Step 3: Create message document in Firestore with mediaDelivered: false
-  const stripQuoteHeader = (raw?: string): string => {
-    const trimmed = (raw || '').trim();
-    if (!trimmed.startsWith('» ')) return trimmed;
-    const nl = trimmed.indexOf('\n');
-    return nl === -1 ? trimmed : trimmed.slice(nl + 1).trim();
-  };
-
-  const textLabel = isPdfFile
-    ? caption?.trim() || fileName?.trim() || 'Documento.pdf'
-    : mediaType === 'image'
-      ? caption?.trim() || 'Foto'
-      : mediaType === 'video'
-        ? caption?.trim() || (durationLabel ? `Vídeo (${durationLabel})` : 'Vídeo')
-        : caption?.trim() || `Mensagem de voz (${durationLabel || '0:00'})`;
-
   const cleanCaptionForPush = stripQuoteHeader(caption);
   const pushPreviewText = isPdfFile
     ? `PDF: ${cleanCaptionForPush || fileName?.trim() || 'Documento.pdf'}`

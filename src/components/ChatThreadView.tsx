@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Ban,
+  Bell,
+  BellOff,
   Camera,
   Check,
   CheckCheck,
@@ -10,26 +12,35 @@ import {
   Clock,
   Copy,
   Download,
+  Eraser,
   Eye,
   FileText,
   Film,
   Forward,
   Image as ImageIcon,
+  Link2,
+  ListPlus,
   Loader2,
+  Lock,
+  LockOpen,
   Mic,
+  MoreVertical,
   Pause,
   Phone,
   Play,
   Printer,
   Radio,
   Receipt,
+  RefreshCw,
   Reply,
   Search,
   Send,
   Share2,
   Smile,
+  Star,
   Store,
   Trash2,
+  User as UserIcon,
   Video,
   WifiOff,
   X,
@@ -65,6 +76,7 @@ import {
 } from '../lib/presenceUtils';
 import { unlockCallAudio } from '../lib/webrtcService';
 import { BACK_PRIORITY, useSystemBackHandler } from '../lib/backNavigation';
+import type { ChatActivityKind } from '../lib/realtimeClient';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 import { PdfViewerCanvas, renderPdfToPrintHtml } from './PdfViewerCanvas';
 import { StarRatingBadge } from './StarRatingBadge';
@@ -150,6 +162,8 @@ interface ChatThreadViewProps {
   myAvatarBg?: string;
   peer: ActiveChatPeer;
   peerPresence?: PresenceSnapshot | null;
+  peerActivity?: ChatActivityKind | null;
+  onLocalActivityChange?: (activity: ChatActivityKind) => void;
   messages: ChatMessage[];
   forwardTargets?: ForwardTarget[];
   isOffline?: boolean;
@@ -169,6 +183,19 @@ interface ChatThreadViewProps {
   onInspectOrder: (orderId?: string) => void;
   onPreviewAvatar?: (target: AvatarPreviewTarget) => void;
   prefilledDraft?: { id: string; text: string } | null;
+  isPeerBlocked?: boolean;
+  isChatMuted?: boolean;
+  isChatFavorite?: boolean;
+  isChatLocked?: boolean;
+  hasShortcut?: boolean;
+  onShowContact?: () => void;
+  onAddShortcut?: () => void;
+  onToggleLockChat?: () => void;
+  onToggleFavoriteChat?: () => void;
+  onOpenAddToList?: () => void;
+  onToggleMuteChat?: () => void;
+  onClearChat?: () => void;
+  onToggleBlockPeer?: () => void;
 }
 
 const QUICK_EMOJIS = [
@@ -730,6 +757,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   myAvatarBg,
   peer,
   peerPresence,
+  peerActivity = null,
+  onLocalActivityChange,
   messages,
   forwardTargets = [],
   isOffline = false,
@@ -749,13 +778,34 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   onInspectOrder,
   onPreviewAvatar,
   prefilledDraft,
+  isPeerBlocked = false,
+  isChatMuted = false,
+  isChatFavorite = false,
+  isChatLocked = false,
+  hasShortcut = false,
+  onShowContact,
+  onAddShortcut,
+  onToggleLockChat,
+  onToggleFavoriteChat,
+  onOpenAddToList,
+  onToggleMuteChat,
+  onClearChat,
+  onToggleBlockPeer,
 }) => {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
+  const [isTypingActive, setIsTypingActive] = useState(false);
+  const [showVideoMenu, setShowVideoMenu] = useState(false);
+  const [liveVideoRecorderOpen, setLiveVideoRecorderOpen] = useState(false);
+  const [videoRecording, setVideoRecording] = useState(false);
+  const [videoRecordSeconds, setVideoRecordSeconds] = useState(0);
+  const [videoFacingMode, setVideoFacingMode] = useState<'user' | 'environment'>('environment');
+  const [nativeVideoCaptureActive, setNativeVideoCaptureActive] = useState(false);
   const [mediaError, setMediaError] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
   const appliedPrefillIdRef = useRef<string | null>(null);
   const [listenedAudioIds, setListenedAudioIds] = useState<Set<string>>(() =>
@@ -859,6 +909,18 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const recordStartMsRef = useRef<number>(0);
   const isStoppingRecordingRef = useRef<boolean>(false);
   const selectedMimeTypeRef = useRef<string>('audio/webm');
+  const typingTimeoutRef = useRef<number | null>(null);
+  const onLocalActivityChangeRef = useRef(onLocalActivityChange);
+  onLocalActivityChangeRef.current = onLocalActivityChange;
+  const liveVideoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const liveVideoStreamRef = useRef<MediaStream | null>(null);
+  const liveVideoRecorderRef = useRef<MediaRecorder | null>(null);
+  const liveVideoChunksRef = useRef<Blob[]>([]);
+  const liveVideoTimerRef = useRef<number | null>(null);
+  const liveVideoStartMsRef = useRef<number>(0);
+  const liveVideoCancelledRef = useRef<boolean>(false);
+  const liveVideoMimeRef = useRef<string>('video/webm');
+  const nativeVideoCameraRef = useRef<HTMLInputElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
@@ -893,6 +955,75 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       onNotify(text);
     }
   };
+
+  const clearTypingIndicator = useCallback(() => {
+    if (typingTimeoutRef.current !== null) {
+      window.clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+    setIsTypingActive(false);
+  }, []);
+
+  const markTypingIndicator = useCallback(() => {
+    setIsTypingActive(true);
+    if (typingTimeoutRef.current !== null) {
+      window.clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = window.setTimeout(() => {
+      typingTimeoutRef.current = null;
+      setIsTypingActive(false);
+    }, 3200);
+  }, []);
+
+  const localActivityState: ChatActivityKind = useMemo(() => {
+    if (isPeerBlocked) return 'idle';
+    if (recording) return 'recording_audio';
+    if (videoRecording || nativeVideoCaptureActive) return 'recording_video';
+    if (isTypingActive && draft.trim().length > 0) return 'typing';
+    return 'idle';
+  }, [isPeerBlocked, recording, videoRecording, nativeVideoCaptureActive, isTypingActive, draft]);
+
+  // Reset typing/video menu when switching conversations
+  useEffect(() => {
+    clearTypingIndicator();
+    setShowVideoMenu(false);
+    setNativeVideoCaptureActive(false);
+  }, [peer.uid, clearTypingIndicator]);
+
+  // Broadcast live typing / recording audio / recording video status to current peer
+  useEffect(() => {
+    const emit = onLocalActivityChangeRef.current;
+    if (!emit) return undefined;
+    emit(localActivityState);
+
+    if (localActivityState === 'idle') {
+      return () => {
+        onLocalActivityChangeRef.current?.('idle');
+      };
+    }
+
+    const keepaliveMs = localActivityState === 'typing' ? 2200 : 12000;
+    const intervalId = window.setInterval(() => {
+      onLocalActivityChangeRef.current?.(localActivityState);
+    }, keepaliveMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+      onLocalActivityChangeRef.current?.('idle');
+    };
+  }, [localActivityState, peer.uid]);
+
+  // Clear native video camera activity if user returns without picking a file
+  useEffect(() => {
+    if (!nativeVideoCaptureActive) return undefined;
+    const handleFocusBack = () => {
+      window.setTimeout(() => {
+        setNativeVideoCaptureActive(false);
+      }, 650);
+    };
+    window.addEventListener('focus', handleFocusBack);
+    return () => window.removeEventListener('focus', handleFocusBack);
+  }, [nativeVideoCaptureActive]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = messagesContainerRef.current;
@@ -1960,6 +2091,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       ? `» ${replyingTo.senderName}: ${replyingTo.snippet}\n${trimmed}`
       : trimmed;
 
+    clearTypingIndicator();
     setDraft('');
     setReplyingTo(null);
     setShowEmojiPicker(false);
@@ -2412,6 +2544,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const handleVideoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
+    setNativeVideoCaptureActive(false);
     if (!file) return;
     setMediaError('');
     setShowEmojiPicker(false);
@@ -2423,6 +2556,254 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     } finally {
       setSending(false);
     }
+  };
+
+  const stopLiveVideoTracks = useCallback(() => {
+    if (liveVideoTimerRef.current !== null) {
+      window.clearInterval(liveVideoTimerRef.current);
+      liveVideoTimerRef.current = null;
+    }
+    if (liveVideoStreamRef.current) {
+      liveVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      liveVideoStreamRef.current = null;
+    }
+    if (liveVideoPreviewRef.current) {
+      liveVideoPreviewRef.current.srcObject = null;
+    }
+  }, []);
+
+  const closeLiveVideoRecorder = useCallback(() => {
+    liveVideoCancelledRef.current = true;
+    const rec = liveVideoRecorderRef.current;
+    liveVideoRecorderRef.current = null;
+    if (rec && rec.state !== 'inactive') {
+      rec.onstop = null;
+      try {
+        rec.stop();
+      } catch {
+        // ignore already stopped
+      }
+    }
+    liveVideoChunksRef.current = [];
+    stopLiveVideoTracks();
+    setVideoRecording(false);
+    setVideoRecordSeconds(0);
+    setLiveVideoRecorderOpen(false);
+    unlockCallAudio();
+  }, [stopLiveVideoTracks]);
+
+  const openLiveVideoRecorder = async (requestedFacing: 'user' | 'environment' = videoFacingMode) => {
+    if (recording || sending) return;
+    setShowVideoMenu(false);
+    setShowEmojiPicker(false);
+    setMediaError('');
+    stopAllChatMediaExcept(null);
+    stopLiveVideoTracks();
+
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices ||
+      typeof navigator.mediaDevices.getUserMedia !== 'function' ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      setNativeVideoCaptureActive(true);
+      nativeVideoCameraRef.current?.click();
+      return;
+    }
+
+    try {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: requestedFacing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: true,
+        });
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+      }
+
+      liveVideoStreamRef.current = stream;
+      setVideoFacingMode(requestedFacing);
+      setVideoRecording(false);
+      setVideoRecordSeconds(0);
+      setLiveVideoRecorderOpen(true);
+      window.requestAnimationFrame(() => {
+        if (liveVideoPreviewRef.current && liveVideoStreamRef.current) {
+          liveVideoPreviewRef.current.srcObject = liveVideoStreamRef.current;
+          void liveVideoPreviewRef.current.play().catch(() => {});
+        }
+      });
+    } catch (err) {
+      const denied =
+        err instanceof DOMException &&
+        (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError');
+      if (denied) {
+        setMediaError(
+          'Câmera ou microfone não autorizados. Libere a permissão nas configurações do navegador.'
+        );
+      } else {
+        setNativeVideoCaptureActive(true);
+        nativeVideoCameraRef.current?.click();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (liveVideoRecorderOpen && liveVideoPreviewRef.current && liveVideoStreamRef.current) {
+      if (liveVideoPreviewRef.current.srcObject !== liveVideoStreamRef.current) {
+        liveVideoPreviewRef.current.srcObject = liveVideoStreamRef.current;
+        void liveVideoPreviewRef.current.play().catch(() => {});
+      }
+    }
+  }, [liveVideoRecorderOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current !== null) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+      stopLiveVideoTracks();
+    };
+  }, [stopLiveVideoTracks]);
+
+  const stopLiveVideoRecording = useCallback(
+    (discard = false) => {
+      if (liveVideoTimerRef.current !== null) {
+        window.clearInterval(liveVideoTimerRef.current);
+        liveVideoTimerRef.current = null;
+      }
+      liveVideoCancelledRef.current = discard;
+      const rec = liveVideoRecorderRef.current;
+      if (!rec || rec.state === 'inactive') {
+        liveVideoRecorderRef.current = null;
+        liveVideoChunksRef.current = [];
+        stopLiveVideoTracks();
+        setVideoRecording(false);
+        setVideoRecordSeconds(0);
+        if (discard) setLiveVideoRecorderOpen(false);
+        unlockCallAudio();
+        return;
+      }
+      try {
+        rec.stop();
+      } catch {
+        liveVideoRecorderRef.current = null;
+        liveVideoChunksRef.current = [];
+        stopLiveVideoTracks();
+        setVideoRecording(false);
+        setVideoRecordSeconds(0);
+        setLiveVideoRecorderOpen(false);
+        unlockCallAudio();
+      }
+    },
+    [stopLiveVideoTracks]
+  );
+
+  const startLiveVideoRecording = () => {
+    const stream = liveVideoStreamRef.current;
+    if (!stream || videoRecording) return;
+    liveVideoChunksRef.current = [];
+    liveVideoCancelledRef.current = false;
+
+    const candidates = isIOSDevice()
+      ? ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm']
+      : [
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=vp8,opus',
+          'video/webm',
+          'video/mp4',
+        ];
+    const mimeType =
+      typeof MediaRecorder.isTypeSupported === 'function'
+        ? candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? ''
+        : '';
+
+    let recorder: MediaRecorder;
+    try {
+      recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_500_000 })
+        : new MediaRecorder(stream, { videoBitsPerSecond: 1_500_000 });
+    } catch {
+      recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    }
+
+    liveVideoMimeRef.current = recorder.mimeType || mimeType || 'video/webm';
+
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        liveVideoChunksRef.current.push(ev.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      stopLiveVideoTracks();
+      liveVideoRecorderRef.current = null;
+      liveVideoChunksRef.current = [];
+      setVideoRecording(false);
+      setVideoRecordSeconds(0);
+      setLiveVideoRecorderOpen(false);
+      setMediaError('Erro ao gravar vídeo. Tente novamente.');
+    };
+
+    recorder.onstop = async () => {
+      const wasCancelled = liveVideoCancelledRef.current;
+      const chunks = liveVideoChunksRef.current;
+      liveVideoChunksRef.current = [];
+      liveVideoRecorderRef.current = null;
+      const mime = liveVideoMimeRef.current || chunks[0]?.type || 'video/webm';
+      const elapsedSec = Math.max(
+        1,
+        Math.round((Date.now() - liveVideoStartMsRef.current) / 1000)
+      );
+      stopLiveVideoTracks();
+      setVideoRecording(false);
+      setVideoRecordSeconds(0);
+      setLiveVideoRecorderOpen(false);
+      unlockCallAudio();
+
+      if (wasCancelled || chunks.length === 0) return;
+
+      const blob = new Blob(chunks, { type: mime });
+      if (blob.size === 0) {
+        setMediaError('Não foi possível capturar o vídeo. Tente gravar novamente.');
+        return;
+      }
+      const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+      const videoFile = new File([blob], `chatfi-video-${Date.now()}.${ext}`, {
+        type: mime,
+      });
+      await preparePendingVideo(videoFile);
+      const fallbackDur = `${Math.floor(elapsedSec / 60)}:${(elapsedSec % 60)
+        .toString()
+        .padStart(2, '0')}`;
+      setPendingVideo((prev) =>
+        prev && !prev.durationLabel ? { ...prev, durationLabel: fallbackDur } : prev
+      );
+    };
+
+    liveVideoRecorderRef.current = recorder;
+    liveVideoStartMsRef.current = Date.now();
+    recorder.start(500);
+    setVideoRecording(true);
+    setVideoRecordSeconds(0);
+    liveVideoTimerRef.current = window.setInterval(() => {
+      const elapsed = Math.max(
+        0,
+        Math.floor((Date.now() - liveVideoStartMsRef.current) / 1000)
+      );
+      setVideoRecordSeconds(elapsed);
+      if (elapsed >= 90) {
+        stopLiveVideoRecording(false);
+      }
+    }, 500);
   };
 
   const closePendingPhoto = () => {
@@ -2464,6 +2845,21 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     Boolean(deleteConfirmTarget),
     () => setDeleteConfirmTarget(null),
     BACK_PRIORITY.MODAL + 2
+  );
+  useSystemBackHandler(
+    showHeaderMenu,
+    () => setShowHeaderMenu(false),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    showVideoMenu,
+    () => setShowVideoMenu(false),
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    liveVideoRecorderOpen,
+    closeLiveVideoRecorder,
+    BACK_PRIORITY.MODAL
   );
   useSystemBackHandler(
     selectionMode,
@@ -2624,8 +3020,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <span className="hidden sm:inline">
                 {renderedMessages.length > 0 &&
                 selectedMsgIds.size === renderedMessages.length
-                  ? 'Limpar'
-                  : 'Todas'}
+                  ? 'Limpar seleção'
+                  : 'Selecionar tudo'}
               </span>
             </button>
             <button
@@ -2711,23 +3107,44 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   tone="dark"
                 />
               </div>
-              <p
-                className={`truncate text-xs ${
-                  peerPresenceDisplay.isOnline
-                    ? 'font-semibold text-emerald-200'
-                    : 'text-emerald-100/80'
-                }`}
-              >
-                {peerPresenceDisplay.isOnline
-                  ? peer.hasStorefront && peer.storefrontName
-                    ? `online · ${peer.storefrontName}`
-                    : 'online'
-                  : peerPresenceDisplay.isPresence
-                    ? peerPresenceDisplay.label
-                    : peer.hasStorefront
-                      ? peer.storefrontName || 'Vitrine comercial ativa'
-                      : peerPresenceDisplay.label}
-              </p>
+              {peerActivity === 'recording_audio' ? (
+                <p className="flex items-center gap-1.5 truncate text-xs font-semibold text-emerald-200">
+                  <Mic className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+                  <span>gravando áudio...</span>
+                </p>
+              ) : peerActivity === 'recording_video' ? (
+                <p className="flex items-center gap-1.5 truncate text-xs font-semibold text-emerald-200">
+                  <Video className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+                  <span>gravando vídeo...</span>
+                </p>
+              ) : peerActivity === 'typing' ? (
+                <p className="flex items-center gap-1 truncate text-xs font-semibold text-emerald-200">
+                  <span>digitando</span>
+                  <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-emerald-200 [animation-delay:0ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-emerald-200 [animation-delay:150ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-emerald-200 [animation-delay:300ms]" />
+                  </span>
+                </p>
+              ) : (
+                <p
+                  className={`truncate text-xs ${
+                    peerPresenceDisplay.isOnline
+                      ? 'font-semibold text-emerald-200'
+                      : 'text-emerald-100/80'
+                  }`}
+                >
+                  {peerPresenceDisplay.isOnline
+                    ? peer.hasStorefront && peer.storefrontName
+                      ? `online · ${peer.storefrontName}`
+                      : 'online'
+                    : peerPresenceDisplay.isPresence
+                      ? peerPresenceDisplay.label
+                      : peer.hasStorefront
+                        ? peer.storefrontName || 'Vitrine comercial ativa'
+                        : peerPresenceDisplay.label}
+                </p>
+              )}
             </div>
           </div>
 
@@ -2756,20 +3173,180 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             )}
             <button
               type="button"
+              disabled={isPeerBlocked}
               onClick={() => onStartCall('audio')}
-              title="Ligação de voz"
-              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+              title={isPeerBlocked ? 'Contato bloqueado' : 'Ligação de voz'}
+              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20 disabled:opacity-45"
             >
               <Phone className="h-4 w-4" />
             </button>
             <button
               type="button"
+              disabled={isPeerBlocked}
               onClick={() => onStartCall('video')}
-              title="Chamada de vídeo"
-              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+              title={isPeerBlocked ? 'Contato bloqueado' : 'Chamada de vídeo'}
+              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20 disabled:opacity-45"
             >
               <Video className="h-4 w-4" />
             </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMenu((v) => !v)}
+                aria-label="Mais opções da conversa"
+                title="Mais opções"
+                className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+              >
+                <MoreVertical className="h-4 w-4" />
+              </button>
+
+              {showHeaderMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowHeaderMenu(false)}
+                  />
+                  <div className="absolute right-0 top-11 z-50 w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1.5 text-slate-800 shadow-2xl">
+                    {onShowContact && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onShowContact();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <UserIcon className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                        <span>Mostrar contato</span>
+                      </button>
+                    )}
+                    {(onDeleteMessagesForMe || onDeleteMessagesForAll) &&
+                      renderedMessages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowHeaderMenu(false);
+                            enterSelectionMode();
+                          }}
+                          className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                        >
+                          <CheckSquare className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                          <span>Selecionar mensagens</span>
+                        </button>
+                      )}
+                    {onAddShortcut && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onAddShortcut();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <Link2 className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                        <span>
+                          {hasShortcut ? 'Gerenciar atalho' : 'Adicionar atalho para conversa'}
+                        </span>
+                      </button>
+                    )}
+                    {onToggleLockChat && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onToggleLockChat();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        {isChatLocked ? (
+                          <LockOpen className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                        ) : (
+                          <Lock className="h-4 w-4 shrink-0 text-slate-500" />
+                        )}
+                        <span>{isChatLocked ? 'Destrancar conversa' : 'Trancar conversa'}</span>
+                      </button>
+                    )}
+                    {onToggleFavoriteChat && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onToggleFavoriteChat();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <Star
+                          className={`h-4 w-4 shrink-0 ${
+                            isChatFavorite ? 'fill-amber-400 text-amber-500' : 'text-slate-500'
+                          }`}
+                        />
+                        <span>
+                          {isChatFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}
+                        </span>
+                      </button>
+                    )}
+                    {onOpenAddToList && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onOpenAddToList();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <ListPlus className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                        <span>Adicionar à lista</span>
+                      </button>
+                    )}
+                    {onToggleMuteChat && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onToggleMuteChat();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        {isChatMuted ? (
+                          <Bell className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                        ) : (
+                          <BellOff className="h-4 w-4 shrink-0 text-slate-500" />
+                        )}
+                        <span>{isChatMuted ? 'Reativar notificações' : 'Silenciar'}</span>
+                      </button>
+                    )}
+                    {onClearChat && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onClearChat();
+                        }}
+                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        <Eraser className="h-4 w-4 shrink-0 text-slate-500" />
+                        <span>Limpar conversa</span>
+                      </button>
+                    )}
+                    {onToggleBlockPeer && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderMenu(false);
+                          onToggleBlockPeer();
+                        }}
+                        className={`flex min-h-[44px] w-full items-center gap-3 border-t border-slate-100 px-4 py-2.5 text-left text-sm font-bold hover:bg-red-50 ${
+                          isPeerBlocked ? 'text-[#0E7A34]' : 'text-red-600'
+                        }`}
+                      >
+                        <Ban className="h-4 w-4 shrink-0" />
+                        <span>{isPeerBlocked ? 'Desbloquear' : 'Bloquear'}</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
       )}
@@ -3480,13 +4057,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                             {msg.deliveryStatus === 'sending' ? 'Enviando...' : 'Aguardando rede'}
                           </span>
                         </span>
-                      ) : msg.mediaDelivered === false ? (
-                        <span title="Enviado — aguardando aparelho do contato baixar">
+                      ) : msg.deliveryStatus === 'sent' || msg.mediaDelivered === false ? (
+                        <span
+                          title={
+                            msg.mediaDelivered === false
+                              ? 'Enviado — aguardando contato baixar'
+                              : 'Enviada — aguardando contato conectar à internet'
+                          }
+                        >
                           <Check className="h-3.5 w-3.5 text-emerald-100/80" />
-                        </span>
-                      ) : msg.mediaDelivered === true ? (
-                        <span title="Entregue e salvo no aparelho do contato">
-                          <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
                         </span>
                       ) : (
                         <CheckCheck className="h-3.5 w-3.5 text-sky-300" />
@@ -3565,6 +4144,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 type="button"
                 onClick={() => {
                   setDraft((prev) => prev + emoji);
+                  markTypingIndicator();
                   composerInputRef.current?.focus();
                 }}
                 className="flex h-9 items-center justify-center rounded-lg text-xl transition hover:bg-slate-100 active:scale-95"
@@ -3572,6 +4152,43 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 {emoji}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Quick Video Action Sheet (Record Live Video vs Pick Video from Gallery) */}
+      {showVideoMenu && !recording && !isPeerBlocked && (
+        <div className="shrink-0 border-t border-slate-200 bg-white px-3 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void openLiveVideoRecorder(videoFacingMode)}
+                className="flex min-h-[44px] items-center gap-2 rounded-xl bg-[#0E7A34] px-3.5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-[#0B5D27] active:scale-95"
+              >
+                <Video className="h-4 w-4 shrink-0" />
+                <span>Gravar vídeo agora</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowVideoMenu(false);
+                  videoInputRef.current?.click();
+                }}
+                className="flex min-h-[44px] items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-100 active:scale-95"
+              >
+                <Film className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                <span>Escolher vídeo da galeria</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVideoMenu(false)}
+              aria-label="Fechar opções de vídeo"
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
       )}
@@ -3602,6 +4219,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           onChange={handleVideoPicked}
           className="hidden"
         />
+        {/* Direct mobile video camera capture fallback */}
+        <input
+          ref={nativeVideoCameraRef}
+          type="file"
+          accept="video/*"
+          capture="environment"
+          onChange={handleVideoPicked}
+          className="hidden"
+        />
         {/* Direct mobile camera capture */}
         <input
           ref={cameraInputRef}
@@ -3612,7 +4238,25 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           className="hidden"
         />
 
-        {recording ? (
+        {isPeerBlocked ? (
+          <div className="flex w-full items-center justify-between gap-3 rounded-2xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs">
+            <div className="flex min-w-0 items-center gap-2 text-red-700">
+              <Ban className="h-4 w-4 shrink-0" />
+              <span className="truncate font-semibold">
+                Você bloqueou {peer.name}. Desbloqueie para enviar mensagens.
+              </span>
+            </div>
+            {onToggleBlockPeer && (
+              <button
+                type="button"
+                onClick={onToggleBlockPeer}
+                className="shrink-0 rounded-xl bg-white px-3 py-1.5 text-xs font-bold text-[#0E7A34] ring-1 ring-emerald-200 hover:bg-emerald-50"
+              >
+                Desbloquear
+              </button>
+            )}
+          </div>
+        ) : recording ? (
           <div className="chatfi-record-capsule flex w-full items-center justify-between gap-2.5 rounded-full py-1.5 pl-1.5 pr-1.5 sm:gap-3">
             {/* Discard recording button on the left (ergonomic thumb reach) */}
             <button
@@ -3690,8 +4334,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               ref={composerInputRef}
               type="text"
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onFocus={() => setShowEmojiPicker(false)}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                setDraft(nextVal);
+                if (nextVal.trim().length > 0) {
+                  markTypingIndicator();
+                } else {
+                  clearTypingIndicator();
+                }
+              }}
+              onFocus={() => {
+                setShowEmojiPicker(false);
+                setShowVideoMenu(false);
+              }}
+              onBlur={() => clearTypingIndicator()}
               placeholder="Mensagem"
               className="h-10 min-w-0 flex-1 rounded-full border border-slate-200/90 bg-[#F3F7F4] px-4 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-[#0E7A34] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15 sm:h-11"
             />
@@ -3720,11 +4376,18 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
             <button
               type="button"
-              onClick={() => videoInputRef.current?.click()}
+              onClick={() => {
+                setShowEmojiPicker(false);
+                setShowVideoMenu((v) => !v);
+              }}
               disabled={sending}
-              title="Enviar vídeo (até 25 MB)"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34] sm:h-10 sm:w-10"
-              aria-label="Enviar vídeo"
+              title="Gravar ou enviar vídeo (até 25 MB)"
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition sm:h-10 sm:w-10 ${
+                showVideoMenu
+                  ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                  : 'text-slate-600 hover:bg-emerald-50 hover:text-[#0E7A34]'
+              }`}
+              aria-label="Gravar ou enviar vídeo"
             >
               <Film className="h-5 w-5" />
             </button>
@@ -3898,6 +4561,103 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <Send className="h-5 w-5" />
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Live Video Recorder Modal */}
+      {liveVideoRecorderOpen && (
+        <div className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col bg-black text-white">
+          <div className="flex shrink-0 items-center justify-between px-4 pb-3 pt-safe">
+            <button
+              type="button"
+              onClick={closeLiveVideoRecorder}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              aria-label="Fechar câmera de vídeo"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <div className="flex flex-col items-center text-center">
+              {videoRecording ? (
+                <div className="flex items-center gap-2 rounded-full bg-red-600/90 px-3 py-1 text-xs font-bold shadow-sm">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
+                  <span className="font-mono tabular-nums">
+                    {Math.floor(videoRecordSeconds / 60)}:
+                    {(videoRecordSeconds % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm font-bold">Gravar vídeo</p>
+                  <p className="text-[11px] text-white/70">Para {peer.name}</p>
+                </>
+              )}
+            </div>
+            {!videoRecording ? (
+              <button
+                type="button"
+                onClick={() =>
+                  void openLiveVideoRecorder(
+                    videoFacingMode === 'environment' ? 'user' : 'environment'
+                  )
+                }
+                title="Alternar câmera"
+                aria-label="Alternar câmera frontal ou traseira"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+              >
+                <RefreshCw className="h-4.5 w-4.5" />
+              </button>
+            ) : (
+              <div className="h-10 w-10" />
+            )}
+          </div>
+
+          <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
+            <video
+              ref={liveVideoPreviewRef}
+              autoPlay
+              playsInline
+              muted
+              className={`max-h-full max-w-full rounded-2xl bg-black object-contain ${
+                videoFacingMode === 'user' ? '-scale-x-100' : ''
+              }`}
+            />
+          </div>
+
+          <div className="flex shrink-0 items-center justify-center gap-6 border-t border-white/10 bg-black/90 px-4 pt-4 pb-safe">
+            {videoRecording ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => stopLiveVideoRecording(true)}
+                  className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-red-600/80 active:scale-95"
+                  aria-label="Descartar vídeo"
+                  title="Descartar gravação"
+                >
+                  <Trash2 className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => stopLiveVideoRecording(false)}
+                  className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-red-600 shadow-lg transition hover:bg-red-700 active:scale-95"
+                  aria-label="Parar gravação e continuar"
+                  title="Parar e continuar"
+                >
+                  <span className="h-6 w-6 rounded-md bg-white" />
+                </button>
+                <div className="h-12 w-12" />
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={startLiveVideoRecording}
+                className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-white/15 p-1 shadow-lg transition hover:bg-white/25 active:scale-95"
+                aria-label="Iniciar gravação de vídeo"
+                title="Iniciar gravação de vídeo"
+              >
+                <span className="h-full w-full rounded-full bg-red-600" />
+              </button>
+            )}
+          </div>
         </div>
       )}
 

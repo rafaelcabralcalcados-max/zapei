@@ -45,12 +45,33 @@ export interface RelayedChatEnvelope {
   pushMessageType?: 'text' | 'audio' | 'image' | 'video';
 }
 
+export type ChatActivityKind = 'idle' | 'typing' | 'recording_audio' | 'recording_video';
+
+export interface PeerChatActivity {
+  peerUid: string;
+  chatId: string;
+  activity: Exclude<ChatActivityKind, 'idle'>;
+  updatedAt: number;
+  expiresAt: number;
+}
+
 type PresenceListener = (presenceMap: Map<string, LivePresenceSnapshot>) => void;
 type IncomingEnvelopeListener = (envelopes: RelayedChatEnvelope[]) => void;
+type ActivityListener = (activityMap: Map<string, PeerChatActivity>) => void;
+type HiddenPresenceListener = (hiddenUids: Set<string>) => void;
 
 const presenceMap = new Map<string, LivePresenceSnapshot>();
 const presenceListeners = new Set<PresenceListener>();
 const incomingListeners = new Set<IncomingEnvelopeListener>();
+const peerActivityMap = new Map<string, PeerChatActivity>();
+const activityListeners = new Set<ActivityListener>();
+const hiddenPresenceUids = new Set<string>();
+const hiddenPresenceListeners = new Set<HiddenPresenceListener>();
+const reachabilityCache = new Map<
+  string,
+  { reachable: boolean; hidePresence: boolean; fetchedAt: number }
+>();
+const outboundActivityByTarget = new Map<string, ChatActivityKind>();
 const subscribedPeerUids = new Set<string>();
 const pendingWsRequests = new Map<
   string,
@@ -69,6 +90,7 @@ let currentActiveChatPeerId: string | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
 let manualDisconnect = false;
+let activitySweepTimer: number | null = null;
 
 function notifyPresenceListeners(): void {
   const snapshot = new Map(presenceMap);
@@ -79,6 +101,68 @@ function notifyPresenceListeners(): void {
       // ignore listener errors
     }
   });
+}
+
+function notifyHiddenPresenceListeners(): void {
+  const snapshot = new Set(hiddenPresenceUids);
+  hiddenPresenceListeners.forEach((cb) => {
+    try {
+      cb(snapshot);
+    } catch {
+      // ignore listener errors
+    }
+  });
+}
+
+export function markPeerHiddenPresence(peerUid: string, hidden: boolean): void {
+  if (!peerUid) return;
+  const changed = hidden
+    ? !hiddenPresenceUids.has(peerUid) && Boolean(hiddenPresenceUids.add(peerUid))
+    : hiddenPresenceUids.delete(peerUid);
+  if (changed || hidden) {
+    if (hidden) hiddenPresenceUids.add(peerUid);
+    notifyHiddenPresenceListeners();
+  }
+}
+
+function notifyActivityListeners(): void {
+  const snapshot = new Map(peerActivityMap);
+  activityListeners.forEach((cb) => {
+    try {
+      cb(snapshot);
+    } catch {
+      // ignore listener errors
+    }
+  });
+}
+
+function ensureActivitySweepTimer(): void {
+  if (typeof window === 'undefined') return;
+  if (peerActivityMap.size === 0) {
+    if (activitySweepTimer !== null) {
+      window.clearInterval(activitySweepTimer);
+      activitySweepTimer = null;
+    }
+    return;
+  }
+  if (activitySweepTimer !== null) return;
+  activitySweepTimer = window.setInterval(() => {
+    const now = Date.now();
+    let changed = false;
+    peerActivityMap.forEach((entry, peerUid) => {
+      if (entry.expiresAt <= now) {
+        peerActivityMap.delete(peerUid);
+        changed = true;
+      }
+    });
+    if (changed) {
+      notifyActivityListeners();
+    }
+    if (peerActivityMap.size === 0 && activitySweepTimer !== null) {
+      window.clearInterval(activitySweepTimer);
+      activitySweepTimer = null;
+    }
+  }, 1500);
 }
 
 function sendRaw(payload: Record<string, unknown>): boolean {
@@ -234,6 +318,41 @@ async function openSocket(): Promise<void> {
             uids: Array.from(subscribedPeerUids).slice(0, 500),
           });
         }
+        outboundActivityByTarget.forEach((act, targetUid) => {
+          if (act !== 'idle') {
+            sendRaw({ type: 'chat:activity', targetUid, activity: act });
+          }
+        });
+        return;
+      }
+
+      if (type === 'chat:activity') {
+        const peerUid = typeof msg.peerUid === 'string' ? msg.peerUid.trim() : '';
+        const chatId = typeof msg.chatId === 'string' ? msg.chatId.trim() : '';
+        const activity = String(msg.activity || 'idle') as ChatActivityKind;
+        if (!peerUid) return;
+        if (activity === 'idle') {
+          if (peerActivityMap.delete(peerUid)) {
+            notifyActivityListeners();
+            ensureActivitySweepTimer();
+          }
+        } else if (
+          activity === 'typing' ||
+          activity === 'recording_audio' ||
+          activity === 'recording_video'
+        ) {
+          const now = Date.now();
+          const ttlMs = activity === 'typing' ? 6_500 : 125_000;
+          peerActivityMap.set(peerUid, {
+            peerUid,
+            chatId,
+            activity,
+            updatedAt: typeof msg.updatedAt === 'number' ? msg.updatedAt : now,
+            expiresAt: now + ttlMs,
+          });
+          notifyActivityListeners();
+          ensureActivitySweepTimer();
+        }
         return;
       }
 
@@ -245,9 +364,28 @@ async function openSocket(): Promise<void> {
           for (const entry of entries) {
             if (entry && entry.uid) {
               presenceMap.set(entry.uid, entry);
+              reachabilityCache.delete(entry.uid);
+              if (
+                entry.showOnlineStatus === false &&
+                entry.showLastSeen === false &&
+                !entry.isOnline &&
+                !entry.lastSeenAt
+              ) {
+                hiddenPresenceUids.add(entry.uid);
+                peerActivityMap.delete(entry.uid);
+              } else if (
+                entry.isOnline ||
+                entry.lastSeenAt > 0 ||
+                entry.showOnlineStatus ||
+                entry.showLastSeen
+              ) {
+                hiddenPresenceUids.delete(entry.uid);
+              }
             }
           }
           notifyPresenceListeners();
+          notifyHiddenPresenceListeners();
+          notifyActivityListeners();
         }
         return;
       }
@@ -272,7 +410,12 @@ async function openSocket(): Promise<void> {
       }
 
       if (type === 'chat:message' && msg.envelope) {
-        void handleIncomingEnvelopes([msg.envelope as RelayedChatEnvelope]);
+        const env = msg.envelope as RelayedChatEnvelope;
+        if (env.senderId && peerActivityMap.delete(env.senderId)) {
+          notifyActivityListeners();
+          ensureActivitySweepTimer();
+        }
+        void handleIncomingEnvelopes([env]);
         return;
       }
 
@@ -336,8 +479,15 @@ export function startRealtimeClient(user: User | null): void {
       ws = null;
     }
     presenceMap.clear();
+    peerActivityMap.clear();
+    hiddenPresenceUids.clear();
+    reachabilityCache.clear();
+    outboundActivityByTarget.clear();
+    ensureActivitySweepTimer();
     subscribedPeerUids.clear();
     notifyPresenceListeners();
+    notifyHiddenPresenceListeners();
+    notifyActivityListeners();
     return;
   }
 
@@ -408,6 +558,101 @@ export function subscribeIncomingRelayMessages(
   return () => {
     incomingListeners.delete(listener);
   };
+}
+
+export function subscribePeerChatActivityMap(listener: ActivityListener): () => void {
+  activityListeners.add(listener);
+  listener(new Map(peerActivityMap));
+  return () => {
+    activityListeners.delete(listener);
+  };
+}
+
+export function sendChatActivity(
+  targetUid: string,
+  activity: ChatActivityKind,
+  authUserFallback?: User | null
+): void {
+  const cleanTarget = (targetUid || '').trim();
+  if (!cleanTarget) return;
+
+  if (activity === 'idle') {
+    outboundActivityByTarget.delete(cleanTarget);
+  } else {
+    outboundActivityByTarget.set(cleanTarget, activity);
+  }
+
+  if (wsAuthenticated && sendRaw({ type: 'chat:activity', targetUid: cleanTarget, activity })) {
+    return;
+  }
+
+  const activeUser = authUserFallback || currentAuthUser || auth.currentUser;
+  if (!activeUser) return;
+  void activeUser
+    .getIdToken()
+    .then((token) =>
+      fetch('/api/chat/activity', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ targetUid: cleanTarget, activity }),
+      })
+    )
+    .catch(() => {});
+}
+
+export function subscribeHiddenPresenceUids(
+  listener: HiddenPresenceListener
+): () => void {
+  hiddenPresenceListeners.add(listener);
+  listener(new Set(hiddenPresenceUids));
+  return () => {
+    hiddenPresenceListeners.delete(listener);
+  };
+}
+
+export async function checkPeerReachability(
+  peerUid: string,
+  authUserFallback?: User | null,
+  forceFresh = false
+): Promise<{ reachable: boolean; hidePresence: boolean }> {
+  const cleanPeer = (peerUid || '').trim();
+  if (!cleanPeer) return { reachable: true, hidePresence: false };
+
+  const cached = reachabilityCache.get(cleanPeer);
+  if (!forceFresh && cached && Date.now() - cached.fetchedAt < 5000) {
+    return { reachable: cached.reachable, hidePresence: cached.hidePresence };
+  }
+
+  const activeUser = authUserFallback || currentAuthUser || auth.currentUser;
+  if (!activeUser) return { reachable: true, hidePresence: false };
+
+  try {
+    const token = await activeUser.getIdToken();
+    const res = await fetch(
+      `/api/chats/peer-reachability?peerUid=${encodeURIComponent(cleanPeer)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return { reachable: true, hidePresence: false };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      reachable?: boolean;
+      hidePresence?: boolean;
+    };
+    const reachable = data.reachable !== false;
+    const hidePresence = Boolean(data.hidePresence);
+    reachabilityCache.set(cleanPeer, {
+      reachable,
+      hidePresence,
+      fetchedAt: Date.now(),
+    });
+    markPeerHiddenPresence(cleanPeer, hidePresence);
+    return { reachable, hidePresence };
+  } catch {
+    return { reachable: true, hidePresence: false };
+  }
 }
 
 export interface SendRelayChatParams {

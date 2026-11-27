@@ -138,7 +138,7 @@ function emitMessages(ownerUid: string, chatId: string): void {
   if (!listeners || listeners.size === 0) return;
   const sorted = Array.from(getMessagesMap(ownerUid, chatId).values())
     .sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id))
-    .map(({ storageKey: _sk, ownerUid: _ou, createdAtMs: _cm, ...msg }) => msg);
+    .map(({ storageKey: _sk, ownerUid: _ou, ...msg }) => msg);
   listeners.forEach((cb) => {
     try {
       cb(sorted);
@@ -220,7 +220,7 @@ export async function loadLocalChatMessages(
   }
   return Array.from(map.values())
     .sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id))
-    .map(({ storageKey: _sk, ownerUid: _ou, createdAtMs: _cm, ...msg }) => msg);
+    .map(({ storageKey: _sk, ownerUid: _ou, ...msg }) => msg);
 }
 
 export function subscribeLocalChatThreads(

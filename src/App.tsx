@@ -1,19 +1,39 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
+  Ban,
+  Bell,
+  BellOff,
   Briefcase,
+  Check,
+  CheckSquare,
   Clock,
+  Eraser,
   Factory,
   FileText,
+  Link2,
+  ListPlus,
   Loader2,
+  Lock,
+  LockOpen,
   MessageSquare,
   Mic,
   Moon,
+  MoreVertical,
   Phone,
+  Pin,
+  PinOff,
   Search,
   Settings,
+  Star,
   Store,
   Sun,
+  Trash2,
+  User as UserIcon,
   Users,
+  Video,
   WifiOff,
   X,
 } from 'lucide-react';
@@ -128,7 +148,36 @@ import {
   subscribeOutbox,
   type ZapeiMessagePacket,
 } from './lib/messageTransport';
-import { deleteLocalMediaItems, getLocalMedia } from './lib/localMediaCache';
+import {
+  checkPeerReachability,
+  sendChatActivity,
+  setPresenceSubscribedPeers,
+  startRealtimeClient,
+  subscribeHiddenPresenceUids,
+  subscribePeerChatActivityMap,
+  updateActiveChatWs,
+  updateLivePresenceState,
+  type PeerChatActivity,
+} from './lib/realtimeClient';
+import {
+  subscribeLocalChatMessages,
+  subscribeLocalChatThreads,
+} from './lib/localChatStore';
+import {
+  deleteLocalMediaItems,
+  getLocalMedia,
+  getLocalMediaByChat,
+} from './lib/localMediaCache';
+import {
+  DEFAULT_CHAT_PREFS,
+  fetchServerChatPrefs,
+  hashChatLockPin,
+  loadLocalChatPrefs,
+  pickNewerChatPrefs,
+  saveLocalChatPrefs,
+  saveServerChatPrefs,
+  verifyChatLockPin,
+} from './lib/chatPreferences';
 import {
   IMAGE_JPEG_QUALITY,
   MAX_IMAGE_WIDTH,
@@ -209,6 +258,7 @@ import type {
   SubOrder,
   SupportTicket,
   TargetCommercialRole,
+  UserChatPreferences,
   UserProfile,
 } from './types/zapei';
 import { ActiveCallModal, type ActiveCallUIState } from './components/ActiveCallModal';
@@ -218,6 +268,14 @@ import {
 } from './components/AvatarLightboxModal';
 import { CallsView } from './components/CallsView';
 import { ChatFiLogo } from './components/ChatFiLogo';
+import {
+  AddToListModal,
+  ChatActionConfirmModal,
+  ChatLockPinModal,
+  ChatShortcutModal,
+  ContactInfoModal,
+  type ContactDetailsTarget,
+} from './components/ChatActionsModals';
 import {
   ChatThreadView,
   type ActiveChatPeer,
@@ -330,12 +388,52 @@ export default function App() {
   // Active Chat Thread & Messages
   const [selectedPeer, setSelectedPeer] = useState<ActiveChatPeer | null>(null);
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+  const [localThreads, setLocalThreads] = useState<ChatThreadSummary[]>([]);
+  const [localActiveMessages, setLocalActiveMessages] = useState<ChatMessage[]>([]);
   const [deletedForMeIds, setDeletedForMeIds] = useState<Set<string>>(() => new Set());
   const [deletedForAllMap, setDeletedForAllMap] = useState<Map<string, number>>(() => new Map());
+  const [peerActivityMap, setPeerActivityMap] = useState<Map<string, PeerChatActivity>>(
+    () => new Map()
+  );
+  const [hiddenPresenceUids, setHiddenPresenceUids] = useState<Set<string>>(() => new Set());
+
+  // WhatsApp-style Chat Organization, Selection Mode & Privacy State
+  const [chatPrefs, setChatPrefs] = useState<UserChatPreferences>(() => ({
+    ...DEFAULT_CHAT_PREFS,
+  }));
+  const [chatListFilter, setChatListFilter] = useState<string>('all');
+  const [lockedFolderUnlocked, setLockedFolderUnlocked] = useState(false);
+  const [selectedChatIds, setSelectedChatIds] = useState<Set<string>>(() => new Set());
+  const [showChatListMenu, setShowChatListMenu] = useState(false);
+  const [contactModalTarget, setContactModalTarget] = useState<ContactDetailsTarget | null>(null);
+  const [shortcutModalTarget, setShortcutModalTarget] = useState<{
+    chatId: string;
+    peerUid: string;
+    peerName: string;
+  } | null>(null);
+  const [lockPinModal, setLockPinModal] = useState<{
+    mode: 'create_and_lock' | 'verify_unlock' | 'verify_to_remove';
+    chatIds: string[];
+    targetLabel?: string;
+    onAfterUnlock?: () => void;
+  } | null>(null);
+  const [addToListTarget, setAddToListTarget] = useState<{
+    chatIds: string[];
+    title: string;
+  } | null>(null);
+  const [chatConfirmModal, setChatConfirmModal] = useState<{
+    kind: 'clear' | 'delete_chat' | 'block' | 'unblock';
+    chatIds: string[];
+    peerUids: string[];
+    targetName?: string;
+  } | null>(null);
+  const chatRowLongPressTimerRef = useRef<number | null>(null);
+  const chatRowSuppressClickRef = useRef<boolean>(false);
 
   // Real WebRTC Call State
   const [activeCall, setActiveCall] = useState<ActiveCallUIState | null>(null);
   const webrtcHandleRef = useRef<RealWebRTCSessionHandle | null>(null);
+  const stealthCallTimersRef = useRef<number[]>([]);
   const ignoredCallIdsRef = useRef<Set<string>>(new Set());
   const seenCallIdsRef = useRef<Set<string>>(new Set());
   const hasLoadedInitialCallsRef = useRef(false);
@@ -521,8 +619,13 @@ export default function App() {
         setChatPrefilledDraft(null);
         setSelectedPeer(null);
         setActiveMessages([]);
+        setLocalThreads([]);
+        setLocalActiveMessages([]);
+        setHiddenPresenceUids(new Set());
         setActiveStorefrontOwner(null);
         expiringOrderAttemptRef.current.clear();
+        stealthCallTimersRef.current.forEach((tid) => window.clearTimeout(tid));
+        stealthCallTimersRef.current = [];
         webrtcHandleRef.current?.cleanup();
         webrtcHandleRef.current = null;
         setActiveCall(null);
@@ -852,6 +955,7 @@ export default function App() {
       subscribeUserContacts(uid, setContacts),
       subscribePublicDirectory(uid, setDirectoryUsers),
       subscribeUserChats(uid, setChats),
+      subscribeLocalChatThreads(uid, setLocalThreads),
       subscribeUserCalls(uid, setCalls),
       subscribeProducts(uid, setProducts),
       subscribeConnections(uid, setConnections),
@@ -932,7 +1036,31 @@ export default function App() {
     syncServerDeletions();
     const deletionPollId = window.setInterval(syncServerDeletions, 8000);
 
+    // Load per-user chat organization preferences (local cache + server sync)
+    const localPrefs = loadLocalChatPrefs(uid);
+    setChatPrefs(localPrefs);
+    const curAuth = authUserRef.current;
+    if (curAuth) {
+      void fetchServerChatPrefs(curAuth).then((srvPrefs) => {
+        if (!srvPrefs) return;
+        const winner = pickNewerChatPrefs(loadLocalChatPrefs(uid), srvPrefs);
+        setChatPrefs(winner);
+        saveLocalChatPrefs(uid, winner);
+        if ((winner.updatedAtMs || 0) > (srvPrefs.updatedAtMs || 0)) {
+          void saveServerChatPrefs(curAuth, winner);
+        }
+      });
+    }
+
+    const onVisibilityRelock = () => {
+      if (document.visibilityState === 'hidden') {
+        setLockedFolderUnlocked(false);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityRelock);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisibilityRelock);
       window.clearInterval(deletionPollId);
       unsubs.forEach((u) => u());
     };
@@ -1120,6 +1248,7 @@ export default function App() {
   useEffect(() => {
     if (!authUser || !selectedPeer) {
       setActiveMessages([]);
+      setLocalActiveMessages([]);
       seenActiveMsgIdsRef.current.clear();
       activeChatHydratedRef.current = false;
       activeChatOpenedAtRef.current = 0;
@@ -1129,7 +1258,16 @@ export default function App() {
     seenActiveMsgIdsRef.current.clear();
     activeChatHydratedRef.current = false;
     activeChatOpenedAtRef.current = Date.now();
-    return subscribeChatMessages(chatId, authUser.uid, setActiveMessages);
+    const unsubFirestore = subscribeChatMessages(chatId, authUser.uid, setActiveMessages);
+    const unsubLocal = subscribeLocalChatMessages(
+      authUser.uid,
+      chatId,
+      setLocalActiveMessages
+    );
+    return () => {
+      unsubFirestore();
+      unsubLocal();
+    };
   }, [authUser, selectedPeer?.uid]);
 
   // 4a. Inform server & Service Worker when the user is actively viewing a specific conversation
@@ -1186,6 +1324,51 @@ export default function App() {
     };
   }, [authUser, activeOpenPeerId]);
 
+  // 4a-ii. Connect lightweight WebSocket client for zero-DB-cost typing / recording / presence masking
+  useEffect(() => {
+    const activeAuth =
+      authUser && deviceAuthState === 'authorized' && isOnline ? authUser : null;
+    startRealtimeClient(activeAuth);
+    const unsubActivity = subscribePeerChatActivityMap(setPeerActivityMap);
+    const unsubHidden = subscribeHiddenPresenceUids(setHiddenPresenceUids);
+    return () => {
+      unsubActivity();
+      unsubHidden();
+    };
+  }, [authUser, deviceAuthState, isOnline]);
+
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized') return;
+    const uidSet = new Set<string>();
+    for (const c of chats) if (c.otherUid) uidSet.add(c.otherUid);
+    for (const c of localThreads) if (c.otherUid) uidSet.add(c.otherUid);
+    for (const ct of contacts) if (ct.matchedUid) uidSet.add(ct.matchedUid);
+    for (const d of directoryUsers) if (d.uid) uidSet.add(d.uid);
+    if (selectedPeer?.uid) uidSet.add(selectedPeer.uid);
+    if (uidSet.size > 0) {
+      setPresenceSubscribedPeers(Array.from(uidSet));
+    }
+  }, [authUser, deviceAuthState, chats, localThreads, contacts, directoryUsers, selectedPeer?.uid]);
+
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized') return;
+    const isVisible =
+      typeof document === 'undefined' || document.visibilityState === 'visible';
+    updateLivePresenceState({
+      isOnline: isVisible && isOnline,
+      showOnlineStatus: showOnlineSetting,
+      showLastSeen: showLastSeenSetting,
+    });
+  }, [authUser, deviceAuthState, isOnline, showOnlineSetting, showLastSeenSetting]);
+
+  useEffect(() => {
+    if (!authUser || deviceAuthState !== 'authorized') {
+      updateActiveChatWs(null);
+      return;
+    }
+    updateActiveChatWs(activeOpenPeerId);
+  }, [authUser, deviceAuthState, activeOpenPeerId]);
+
   // 4b. WhatsApp-style incoming text/audio/photo message chime & floating banner across ALL chats
   useEffect(() => {
     if (!profile) {
@@ -1222,7 +1405,8 @@ export default function App() {
         isRecentMessage &&
         c.lastSenderId &&
         c.lastSenderId !== profile.uid &&
-        c.lastMessage
+        c.lastMessage &&
+        !chatPrefs.blockedUids.includes(c.otherUid)
       ) {
         if (!newestIncoming || c.updatedAtMs >= newestIncoming.updatedAtMs) {
           newestIncoming = c;
@@ -1231,40 +1415,55 @@ export default function App() {
     }
 
     if (newestIncoming) {
-      const chimeKey = `${newestIncoming.otherUid}|${newestIncoming.lastMessage}`;
-      const alreadyChimed =
-        lastIncomingChimeKeyRef.current.key === chimeKey &&
-        nowMs - lastIncomingChimeKeyRef.current.at < 2000;
-
-      if (!alreadyChimed) {
-        lastIncomingChimeKeyRef.current = { key: chimeKey, at: nowMs };
-        const lowerPreview = (newestIncoming.lastMessage || '').toLowerCase();
-        const isIncomingAudio =
-          lowerPreview.startsWith('mensagem de voz') ||
-          lowerPreview.startsWith('áudio') ||
-          lowerPreview.startsWith('audio') ||
-          newestIncoming.lastMessage.startsWith('🎤');
-        playMessageNotificationSound(isIncomingAudio ? 'audio' : 'text');
-      }
+      const isBlockedSender = chatPrefs.blockedUids.includes(newestIncoming.otherUid);
+      const isMutedThread = chatPrefs.mutedChatIds.includes(newestIncoming.id);
+      const isLockedThread = chatPrefs.lockedChatIds.includes(newestIncoming.id);
 
       const viewingSameChat =
         activeTab === 'chats' && selectedPeer?.uid === newestIncoming.otherUid;
-      if (!viewingSameChat) {
-        const contactMatch = contacts.find((ct) => ct.matchedUid === newestIncoming.otherUid);
-        const dirMatch = directoryUsers.find((u) => u.uid === newestIncoming.otherUid);
-        const senderName =
-          contactMatch?.name || dirMatch?.displayName || newestIncoming.otherName || 'Nova mensagem';
-        showIncomingMsgBanner({
-          senderId: newestIncoming.otherUid,
-          senderName,
-          initials: getInitials(senderName),
-          avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0E7A34',
-          avatarUrl: dirMatch?.avatarUrl,
-          preview: newestIncoming.lastMessage,
-        });
+      if (!viewingSameChat && !isBlockedSender) {
+        updateChatPrefs((prev) =>
+          prev.unreadChatIds.includes(newestIncoming!.id)
+            ? prev
+            : { ...prev, unreadChatIds: [...prev.unreadChatIds, newestIncoming!.id] }
+        );
+      }
+
+      if (!isBlockedSender && !isMutedThread) {
+        const chimeKey = `${newestIncoming.otherUid}|${newestIncoming.lastMessage}`;
+        const alreadyChimed =
+          lastIncomingChimeKeyRef.current.key === chimeKey &&
+          nowMs - lastIncomingChimeKeyRef.current.at < 2000;
+
+        if (!alreadyChimed) {
+          lastIncomingChimeKeyRef.current = { key: chimeKey, at: nowMs };
+          const lowerPreview = (newestIncoming.lastMessage || '').toLowerCase();
+          const isIncomingAudio =
+            lowerPreview.startsWith('mensagem de voz') ||
+            lowerPreview.startsWith('áudio') ||
+            lowerPreview.startsWith('audio') ||
+            newestIncoming.lastMessage.startsWith('🎤');
+          playMessageNotificationSound(isIncomingAudio ? 'audio' : 'text');
+        }
+
+        if (!viewingSameChat) {
+          const contactMatch = contacts.find((ct) => ct.matchedUid === newestIncoming.otherUid);
+          const dirMatch = directoryUsers.find((u) => u.uid === newestIncoming.otherUid);
+          const senderName = isLockedThread
+            ? 'Conversa trancada'
+            : contactMatch?.name || dirMatch?.displayName || newestIncoming.otherName || 'Nova mensagem';
+          showIncomingMsgBanner({
+            senderId: newestIncoming.otherUid,
+            senderName,
+            initials: isLockedThread ? '🔒' : getInitials(senderName),
+            avatarBg: contactMatch?.avatarBg || dirMatch?.avatarColor || '#0E7A34',
+            avatarUrl: isLockedThread ? undefined : dirMatch?.avatarUrl,
+            preview: isLockedThread ? 'Nova mensagem recebida' : newestIncoming.lastMessage,
+          });
+        }
       }
     }
-  }, [chats, profile, activeTab, selectedPeer?.uid, contacts, directoryUsers, showIncomingMsgBanner]);
+  }, [chats, profile, activeTab, selectedPeer?.uid, contacts, directoryUsers, showIncomingMsgBanner, chatPrefs.blockedUids, chatPrefs.mutedChatIds, chatPrefs.lockedChatIds]);
 
   // 4c. Chime ONLY when a genuinely new message arrives from another user inside the open chat
   useEffect(() => {
@@ -1284,7 +1483,11 @@ export default function App() {
     for (const m of activeMessages) {
       if (!seenActiveMsgIdsRef.current.has(m.id)) {
         seenActiveMsgIdsRef.current.add(m.id);
-        if (!inOpenSettlingWindow && m.senderId !== profile.uid) {
+        if (
+          !inOpenSettlingWindow &&
+          m.senderId !== profile.uid &&
+          !chatPrefs.blockedUids.includes(m.senderId)
+        ) {
           newPeerKind = m.type === 'audio' ? 'audio' : 'text';
           newPeerChimeKey = `${m.senderId}|${m.text || ''}`;
         }
@@ -1299,7 +1502,7 @@ export default function App() {
         playMessageNotificationSound(newPeerKind);
       }
     }
-  }, [activeMessages, profile, selectedPeer]);
+  }, [activeMessages, profile, selectedPeer, chatPrefs.blockedUids]);
 
   // 5. Listen for real incoming WebRTC calls from Firestore
   useEffect(() => {
@@ -1326,7 +1529,8 @@ export default function App() {
         c.calleeId !== profile.uid ||
         c.status !== 'ringing' ||
         !c.offerSdp ||
-        ignoredCallIdsRef.current.has(c.id)
+        ignoredCallIdsRef.current.has(c.id) ||
+        chatPrefs.blockedUids.includes(c.callerId)
       ) {
         return false;
       }
@@ -1389,7 +1593,7 @@ export default function App() {
           .catch(() => {});
       }
     }
-  }, [calls, profile, activeCall, directoryUsers]);
+  }, [calls, profile, activeCall, directoryUsers, chatPrefs.blockedUids]);
 
   // Helper: persist full profile updates cleanly
   const persistProfileUpdate = useCallback(
@@ -1442,6 +1646,8 @@ export default function App() {
       callType: 'audio' | 'video'
     ) => {
       if (!profile) return;
+      stealthCallTimersRef.current.forEach((tid) => window.clearTimeout(tid));
+      stealthCallTimersRef.current = [];
       webrtcHandleRef.current?.cleanup();
       webrtcHandleRef.current = null;
       const livePhoto =
@@ -1460,6 +1666,27 @@ export default function App() {
         localStream: null,
         remoteStream: null,
       });
+
+      const reach = await checkPeerReachability(peer.uid, authUser);
+      if (!reach.reachable) {
+        // Stealth block: behave as if recipient is unreachable/offline without notifying them
+        const tRing = window.setTimeout(() => {
+          setActiveCall((prev) =>
+            prev && prev.callId === 'pending' && prev.peerId === peer.uid
+              ? { ...prev, status: 'ringing' }
+              : prev
+          );
+        }, 900);
+        const tEnd = window.setTimeout(() => {
+          stealthCallTimersRef.current = [];
+          setActiveCall((prev) =>
+            prev && prev.callId === 'pending' && prev.peerId === peer.uid ? null : prev
+          );
+          showToast('Chamada não atendida.');
+        }, 18_000);
+        stealthCallTimersRef.current = [tRing, tEnd];
+        return;
+      }
 
       try {
         const handle = await startRealOutgoingCall({
@@ -1629,6 +1856,8 @@ export default function App() {
 
   const handleEndCall = useCallback(
     async (durationLabel: string) => {
+      stealthCallTimersRef.current.forEach((tid) => window.clearTimeout(tid));
+      stealthCallTimersRef.current = [];
       if (!activeCall) return;
       const callId = activeCall.callId;
       const terminalStatus =
@@ -1672,9 +1901,31 @@ export default function App() {
     }
   }, [showToast]);
 
+  // --- CHAT PREFERENCES & CONVERSATION ACTIONS ---
+
+  const updateChatPrefs = useCallback(
+    (updater: (prev: UserChatPreferences) => UserChatPreferences) => {
+      setChatPrefs((prev) => {
+        const next: UserChatPreferences = {
+          ...updater(prev),
+          updatedAtMs: Date.now(),
+        };
+        if (authUid) {
+          saveLocalChatPrefs(authUid, next);
+        }
+        const curAuth = authUserRef.current;
+        if (curAuth) {
+          void saveServerChatPrefs(curAuth, next);
+        }
+        return next;
+      });
+    },
+    [authUid]
+  );
+
   // --- CHAT & STOREFRONT NAVIGATION HANDLERS ---
 
-  const openChatWithPeer = useCallback(
+  const openChatWithPeerDirect = useCallback(
     async (peer: ActiveChatPeer) => {
       const dirEntry = directoryUsers.find((u) => u.uid === peer.uid);
       const contactEntry = contacts.find((c) => c.matchedUid === peer.uid);
@@ -1682,6 +1933,15 @@ export default function App() {
       const resolvedPhone =
         peer.phone || contactEntry?.phone || dirEntry?.virtualLine;
       const resolvedVirtualLine = peer.virtualLine || dirEntry?.virtualLine;
+      if (profile?.uid) {
+        const cId = getDeterministicChatId(profile.uid, peer.uid);
+        if (chatPrefs.unreadChatIds.includes(cId)) {
+          updateChatPrefs((prev) => ({
+            ...prev,
+            unreadChatIds: prev.unreadChatIds.filter((id) => id !== cId),
+          }));
+        }
+      }
       setSelectedPeer({
         ...peer,
         avatarUrl: livePhoto,
@@ -1693,6 +1953,7 @@ export default function App() {
       });
       setActiveTab('chats');
       if (peer.uid === OFFICIAL_SUPPORT_UID) return;
+      void checkPeerReachability(peer.uid, authUserRef.current);
       // Refresh live storefront info for this peer
       const live = await fetchPublicUserStorefront(peer.uid);
       if (live) {
@@ -1720,7 +1981,286 @@ export default function App() {
         );
       }
     },
-    [directoryUsers, contacts]
+    [directoryUsers, contacts, profile?.uid, chatPrefs.unreadChatIds, updateChatPrefs]
+  );
+
+  const openChatWithPeer = useCallback(
+    async (peer: ActiveChatPeer) => {
+      if (profile?.uid) {
+        const cId = getDeterministicChatId(profile.uid, peer.uid);
+        if (chatPrefs.lockedChatIds.includes(cId) && !lockedFolderUnlocked) {
+          setLockPinModal({
+            mode: 'verify_unlock',
+            chatIds: [cId],
+            targetLabel: peer.name,
+            onAfterUnlock: () => {
+              setLockedFolderUnlocked(true);
+              void openChatWithPeerDirect(peer);
+            },
+          });
+          return;
+        }
+      }
+      await openChatWithPeerDirect(peer);
+    },
+    [profile?.uid, chatPrefs.lockedChatIds, lockedFolderUnlocked, openChatWithPeerDirect]
+  );
+
+  const effectiveDirectoryUsers = useMemo(() => {
+    const blockedSet = new Set(chatPrefs.blockedUids);
+    return directoryUsers.map((u) => {
+      if (!hiddenPresenceUids.has(u.uid) && !blockedSet.has(u.uid)) return u;
+      return {
+        ...u,
+        isOnline: false,
+        lastSeenAt: 0,
+        showOnlineStatus: false,
+        showLastSeen: false,
+      };
+    });
+  }, [directoryUsers, hiddenPresenceUids, chatPrefs.blockedUids]);
+
+  const directoryByUid = useMemo(() => {
+    const map = new Map<string, PublicDirectoryUser>();
+    for (const u of effectiveDirectoryUsers) {
+      map.set(u.uid, u);
+    }
+    return map;
+  }, [effectiveDirectoryUsers]);
+
+  const openContactDetailsForUid = useCallback(
+    (peerUid: string, fallbackName?: string) => {
+      if (!profile) return;
+      const contactMatch = contacts.find((c) => c.matchedUid === peerUid);
+      const dir = directoryByUid.get(peerUid);
+      const displayName = contactMatch?.name || dir?.displayName || fallbackName || 'Contato';
+      const presence = getContactPresenceDisplay(dir, {
+        fallback: contactMatch?.storefrontName || dir?.storefrontName || '',
+      });
+      setContactModalTarget({
+        uid: peerUid,
+        chatId: getDeterministicChatId(profile.uid, peerUid),
+        name: displayName,
+        initials: getInitials(displayName),
+        avatarBg: contactMatch?.avatarBg || dir?.avatarColor || '#0E7A34',
+        avatarUrl: dir?.avatarUrl,
+        phone: contactMatch?.phone,
+        virtualLine: dir?.virtualLine,
+        statusMessage: dir?.statusMessage,
+        presenceLabel: presence.label,
+        isOnline: presence.isOnline,
+        role:
+          contactMatch?.role ||
+          (dir?.commercialBanned ? 'normal' : dir?.role) ||
+          'normal',
+        hasStorefront: Boolean(
+          (contactMatch?.hasStorefront || dir?.hasStorefront) && !dir?.commercialBanned
+        ),
+        storefrontName: contactMatch?.storefrontName || dir?.storefrontName,
+        deliveryPolicyLabel: contactMatch?.deliveryPolicyLabel || dir?.deliveryPolicyLabel,
+        ratingAverage: dir?.ratingAverage,
+        ratingCount: dir?.ratingCount,
+        isSavedContact: Boolean(contactMatch),
+      });
+    },
+    [profile, contacts, directoryByUid]
+  );
+
+  const toggleChatSelection = useCallback((chatId: string) => {
+    setSelectedChatIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(chatId)) next.delete(chatId);
+      else next.add(chatId);
+      return next;
+    });
+  }, []);
+
+  const exitChatSelection = useCallback(() => {
+    setSelectedChatIds(new Set());
+    setShowChatListMenu(false);
+  }, []);
+
+  const toggleIdsInPrefList = useCallback(
+    (key: 'pinnedChatIds' | 'archivedChatIds' | 'mutedChatIds' | 'favoriteChatIds' | 'unreadChatIds', ids: string[], labels: { added: string; removed: string }) => {
+      if (ids.length === 0) return;
+      const current = chatPrefs[key];
+      const allPresent = ids.every((id) => current.includes(id));
+      updateChatPrefs((prev) => {
+        const set = new Set(prev[key]);
+        if (allPresent) {
+          for (const id of ids) set.delete(id);
+        } else {
+          for (const id of ids) set.add(id);
+        }
+        return { ...prev, [key]: Array.from(set) };
+      });
+      showToast(allPresent ? labels.removed : labels.added);
+      exitChatSelection();
+    },
+    [chatPrefs, updateChatPrefs, showToast, exitChatSelection]
+  );
+
+  const handleRequestToggleLockChats = useCallback(
+    (ids: string[], label?: string) => {
+      if (ids.length === 0) return;
+      setShowChatListMenu(false);
+      const allLocked = ids.every((id) => chatPrefs.lockedChatIds.includes(id));
+      if (allLocked) {
+        if (chatPrefs.lockPinHash && !lockedFolderUnlocked) {
+          setLockPinModal({
+            mode: 'verify_to_remove',
+            chatIds: ids,
+            targetLabel: label,
+          });
+        } else {
+          updateChatPrefs((prev) => ({
+            ...prev,
+            lockedChatIds: prev.lockedChatIds.filter((id) => !ids.includes(id)),
+          }));
+          showToast(ids.length === 1 ? 'Conversa destrancada.' : `${ids.length} conversas destrancadas.`);
+          exitChatSelection();
+        }
+        return;
+      }
+
+      if (!chatPrefs.lockPinHash) {
+        setLockPinModal({
+          mode: 'create_and_lock',
+          chatIds: ids,
+          targetLabel: label,
+        });
+        return;
+      }
+
+      updateChatPrefs((prev) => ({
+        ...prev,
+        lockedChatIds: Array.from(new Set([...prev.lockedChatIds, ...ids])),
+        archivedChatIds: prev.archivedChatIds.filter((id) => !ids.includes(id)),
+      }));
+      showToast(ids.length === 1 ? 'Conversa trancada com senha.' : `${ids.length} conversas trancadas.`);
+      if (selectedPeer && profile && ids.includes(getDeterministicChatId(profile.uid, selectedPeer.uid))) {
+        setSelectedPeer(null);
+      }
+      exitChatSelection();
+    },
+    [chatPrefs.lockedChatIds, chatPrefs.lockPinHash, lockedFolderUnlocked, updateChatPrefs, showToast, exitChatSelection, selectedPeer, profile]
+  );
+
+  const handleExecuteClearOrDeleteChats = useCallback(
+    async (
+      kind: 'clear' | 'delete_chat',
+      chatIds: string[],
+      deleteLocalMedia: boolean
+    ) => {
+      if (!profile || chatIds.length === 0) return;
+      const nowMs = Date.now();
+      const activeChatId = selectedPeer
+        ? getDeterministicChatId(profile.uid, selectedPeer.uid)
+        : null;
+
+      for (const chatId of chatIds) {
+        const matchingOutbox = outboxPackets
+          .filter((p) => p.chatId === chatId)
+          .map((p) => p.id);
+        if (matchingOutbox.length > 0) {
+          await removeOutboxPackets(matchingOutbox).catch(() => {});
+        }
+        if (deleteLocalMedia) {
+          const mediaItems = await getLocalMediaByChat(chatId).catch(() => []);
+          if (mediaItems.length > 0) {
+            await deleteLocalMediaItems(mediaItems.map((m) => m.messageId)).catch(() => {});
+          }
+        }
+      }
+
+      // Compute cutoff strictly above existing loaded messages if clearing active chat
+      const maxActiveMsgMs =
+        activeChatId && chatIds.includes(activeChatId)
+          ? activeMessages.reduce((mx, m) => Math.max(mx, m.createdAtMs || 0), 0)
+          : 0;
+      const cutoffBase = Math.max(nowMs, maxActiveMsgMs + 1);
+
+      updateChatPrefs((prev) => {
+        const nextCleared = { ...prev.clearedAtByChatId };
+        const nextHidden = { ...prev.hiddenChatIds };
+        const nextUnread = new Set(prev.unreadChatIds);
+        const nextPinned = new Set(prev.pinnedChatIds);
+        const nextArchived = new Set(prev.archivedChatIds);
+
+        for (const cId of chatIds) {
+          const thread = chats.find((c) => c.id === cId);
+          const cutoff = Math.max(cutoffBase, (thread?.updatedAtMs || 0) + 1);
+          nextCleared[cId] = cutoff;
+          nextUnread.delete(cId);
+          if (kind === 'delete_chat') {
+            nextHidden[cId] = cutoff;
+            nextPinned.delete(cId);
+            nextArchived.delete(cId);
+          }
+        }
+
+        return {
+          ...prev,
+          clearedAtByChatId: nextCleared,
+          hiddenChatIds: nextHidden,
+          unreadChatIds: Array.from(nextUnread),
+          pinnedChatIds: Array.from(nextPinned),
+          archivedChatIds: Array.from(nextArchived),
+        };
+      });
+
+      if (kind === 'delete_chat' && activeChatId && chatIds.includes(activeChatId)) {
+        setSelectedPeer(null);
+      }
+      exitChatSelection();
+      showToast(
+        kind === 'clear'
+          ? chatIds.length === 1
+            ? 'Conversa limpa neste aparelho.'
+            : `${chatIds.length} conversas limpas.`
+          : chatIds.length === 1
+            ? 'Conversa apagada da lista.'
+            : `${chatIds.length} conversas apagadas.`
+      );
+    },
+    [profile, selectedPeer, outboxPackets, activeMessages, chats, updateChatPrefs, exitChatSelection, showToast]
+  );
+
+  const handleExecuteBlockToggle = useCallback(
+    (peerUids: string[], mode: 'block' | 'unblock') => {
+      if (peerUids.length === 0) return;
+      const nowMs = Date.now();
+      updateChatPrefs((prev) => {
+        const set = new Set(prev.blockedUids);
+        const nextBlockedAt = { ...(prev.blockedAtByUid || {}) };
+        for (const uid of peerUids) {
+          if (mode === 'block') {
+            set.add(uid);
+            nextBlockedAt[uid] = nowMs;
+            sendChatActivity(uid, 'idle', authUserRef.current);
+          } else {
+            set.delete(uid);
+            delete nextBlockedAt[uid];
+          }
+        }
+        return {
+          ...prev,
+          blockedUids: Array.from(set),
+          blockedAtByUid: nextBlockedAt,
+        };
+      });
+      exitChatSelection();
+      showToast(
+        mode === 'block'
+          ? peerUids.length === 1
+            ? 'Contato bloqueado.'
+            : `${peerUids.length} contatos bloqueados.`
+          : peerUids.length === 1
+            ? 'Contato desbloqueado.'
+            : `${peerUids.length} contatos desbloqueados.`
+      );
+    },
+    [updateChatPrefs, exitChatSelection, showToast]
   );
 
   const openHelpCenter = useCallback((ctx?: HelpCenterContext) => {
@@ -2146,6 +2686,48 @@ export default function App() {
     () => {
       void handleDismissSharedPayloads();
     },
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    showChatListMenu,
+    () => setShowChatListMenu(false),
+    BACK_PRIORITY.DRAWER + 1
+  );
+  useSystemBackHandler(
+    activeTab === 'chats' && !selectedPeer && selectedChatIds.size > 0,
+    exitChatSelection,
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
+    activeTab === 'chats' &&
+      !selectedPeer &&
+      (chatListFilter === 'archived' || chatListFilter === 'locked'),
+    () => setChatListFilter('all'),
+    BACK_PRIORITY.SEARCH
+  );
+  useSystemBackHandler(
+    Boolean(contactModalTarget),
+    () => setContactModalTarget(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(shortcutModalTarget),
+    () => setShortcutModalTarget(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(lockPinModal),
+    () => setLockPinModal(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(addToListTarget),
+    () => setAddToListTarget(null),
+    BACK_PRIORITY.MODAL
+  );
+  useSystemBackHandler(
+    Boolean(chatConfirmModal),
+    () => setChatConfirmModal(null),
     BACK_PRIORITY.MODAL
   );
   useSystemBackHandler(
@@ -2996,14 +3578,17 @@ export default function App() {
       }
 
       const resellerLabel = profile.storefrontName || profile.name;
-      void sendRealChatMessage({
-        myUid: profile.uid,
-        myName: resellerLabel,
-        otherUid: match.uid,
-        otherName: match.displayName,
-        type: 'text',
-        text: `Olá ${match.displayName}! Solicitei autorização para atuar como seu revendedor no ChatFi (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para aceitar ou recusar minha solicitação.`,
-      }).catch(() => {});
+      void checkPeerReachability(match.uid, authUserRef.current).then((reach) => {
+        if (!reach.reachable) return;
+        void sendRealChatMessage({
+          myUid: profile.uid,
+          myName: resellerLabel,
+          otherUid: match.uid,
+          otherName: match.displayName,
+          type: 'text',
+          text: `Olá ${match.displayName}! Solicitei autorização para atuar como seu revendedor no ChatFi (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para aceitar ou recusar minha solicitação.`,
+        }).catch(() => {});
+      });
 
       return {
         ok: true,
@@ -3025,17 +3610,20 @@ export default function App() {
       const resellerLabel =
         connection.resellerStorefrontName || connection.resellerName || 'Revendedor';
 
-      void sendRealChatMessage({
-        myUid: profile.uid,
-        myName: factoryLabel,
-        otherUid: connection.resellerId,
-        otherName: resellerLabel,
-        type: 'text',
-        text:
-          decision === 'approved'
-            ? `Parabéns! A fábrica "${factoryLabel}" aceitou sua solicitação de revendedor. Nossos produtos já estão liberados no seu Painel de Revendedor para você configurar suas margens e divulgar na sua vitrine.`
-            : `A fábrica "${factoryLabel}" não aprovou (ou revogou) sua autorização como revendedor no momento. Os produtos desta fábrica foram removidos da sua vitrine.`,
-      }).catch(() => {});
+      void checkPeerReachability(connection.resellerId, authUserRef.current).then((reach) => {
+        if (!reach.reachable) return;
+        void sendRealChatMessage({
+          myUid: profile.uid,
+          myName: factoryLabel,
+          otherUid: connection.resellerId,
+          otherName: resellerLabel,
+          type: 'text',
+          text:
+            decision === 'approved'
+              ? `Parabéns! A fábrica "${factoryLabel}" aceitou sua solicitação de revendedor. Nossos produtos já estão liberados no seu Painel de Revendedor para você configurar suas margens e divulgar na sua vitrine.`
+              : `A fábrica "${factoryLabel}" não aprovou (ou revogou) sua autorização como revendedor no momento. Os produtos desta fábrica foram removidos da sua vitrine.`,
+        }).catch(() => {});
+      });
 
       showToast(
         decision === 'approved'
@@ -3047,14 +3635,6 @@ export default function App() {
   );
 
   // Derived lists & WhatsApp-style unified search
-  const directoryByUid = useMemo(() => {
-    const map = new Map<string, PublicDirectoryUser>();
-    for (const u of directoryUsers) {
-      map.set(u.uid, u);
-    }
-    return map;
-  }, [directoryUsers]);
-
   const zapeiContacts = useMemo(
     () => contacts.filter((c) => c.onZapei && c.matchedUid),
     [contacts]
@@ -3143,68 +3723,134 @@ export default function App() {
     return map;
   }, [myOutboxPackets]);
 
-  // Merge Firestore cached/live chats with locally queued offline messages
+  // Merge Firestore cached/live chats with local device chats (e.g. stealth-blocked sent msgs)
+  // and locally queued offline messages, applying cleared/hidden/blocked conversation rules.
   const mergedChats = useMemo(() => {
-    if (!profile || myOutboxPackets.length === 0) return chats;
     const map = new Map<string, ChatThreadSummary>();
     for (const c of chats) {
       map.set(c.id, c);
     }
-    for (const pkt of myOutboxPackets) {
-      if (deletedForMeIds.has(pkt.id)) continue;
-      const existing = map.get(pkt.chatId);
-      if (existing) {
-        if (pkt.timestamp >= existing.updatedAtMs) {
+    for (const lt of localThreads) {
+      const existing = map.get(lt.id);
+      if (!existing || lt.updatedAtMs > existing.updatedAtMs) {
+        map.set(lt.id, lt);
+      }
+    }
+    if (profile && myOutboxPackets.length > 0) {
+      for (const pkt of myOutboxPackets) {
+        if (deletedForMeIds.has(pkt.id)) continue;
+        const existing = map.get(pkt.chatId);
+        if (existing) {
+          if (pkt.timestamp >= existing.updatedAtMs) {
+            map.set(pkt.chatId, {
+              ...existing,
+              lastMessage: pkt.text,
+              lastSenderId: pkt.senderId,
+              updatedAtLabel: formatPacketTimeLabel(pkt.timestamp),
+              updatedAtMs: pkt.timestamp,
+            });
+          }
+        } else {
+          const [userA, userB] = [pkt.senderId, pkt.recipientId].sort();
+          const userAName = userA === pkt.senderId ? pkt.senderName : pkt.recipientName;
+          const userBName = userB === pkt.senderId ? pkt.senderName : pkt.recipientName;
           map.set(pkt.chatId, {
-            ...existing,
+            id: pkt.chatId,
+            userA,
+            userB,
+            userAName,
+            userBName,
+            otherUid: pkt.recipientId,
+            otherName: pkt.recipientName,
             lastMessage: pkt.text,
             lastSenderId: pkt.senderId,
             updatedAtLabel: formatPacketTimeLabel(pkt.timestamp),
             updatedAtMs: pkt.timestamp,
           });
         }
-      } else {
-        const [userA, userB] = [pkt.senderId, pkt.recipientId].sort();
-        const userAName = userA === pkt.senderId ? pkt.senderName : pkt.recipientName;
-        const userBName = userB === pkt.senderId ? pkt.senderName : pkt.recipientName;
-        map.set(pkt.chatId, {
-          id: pkt.chatId,
-          userA,
-          userB,
-          userAName,
-          userBName,
-          otherUid: pkt.recipientId,
-          otherName: pkt.recipientName,
-          lastMessage: pkt.text,
-          lastSenderId: pkt.senderId,
-          updatedAtLabel: formatPacketTimeLabel(pkt.timestamp),
-          updatedAtMs: pkt.timestamp,
-        });
       }
     }
-    return Array.from(map.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-  }, [chats, myOutboxPackets, profile, deletedForMeIds]);
 
-  // Merge Firestore active chat messages with any pending offline outbox messages,
-  // applying "Apagar para mim" exclusions and "Apagar para todos" tombstones.
+    const pinnedSet = new Set(chatPrefs.pinnedChatIds);
+    const blockedSet = new Set(chatPrefs.blockedUids);
+    return Array.from(map.values())
+      .filter((c) => {
+        const hiddenAt = chatPrefs.hiddenChatIds[c.id];
+        if (hiddenAt && c.updatedAtMs <= hiddenAt) return false;
+        return true;
+      })
+      .map((c) => {
+        if (blockedSet.has(c.otherUid) && c.lastSenderId === c.otherUid) {
+          const blockedAt = chatPrefs.blockedAtByUid?.[c.otherUid] || 0;
+          if (c.updatedAtMs >= blockedAt) {
+            return {
+              ...c,
+              lastMessage: 'Contato bloqueado',
+              updatedAtMs: blockedAt > 0 ? Math.min(c.updatedAtMs, blockedAt) : c.updatedAtMs,
+            };
+          }
+        }
+        const clearedAt = chatPrefs.clearedAtByChatId[c.id];
+        if (clearedAt && c.updatedAtMs <= clearedAt) {
+          return { ...c, lastMessage: 'Conversa limpa' };
+        }
+        return c;
+      })
+      .sort((a, b) => {
+        const aPinned = pinnedSet.has(a.id) ? 1 : 0;
+        const bPinned = pinnedSet.has(b.id) ? 1 : 0;
+        if (aPinned !== bPinned) return bPinned - aPinned;
+        return b.updatedAtMs - a.updatedAtMs;
+      });
+  }, [
+    chats,
+    localThreads,
+    myOutboxPackets,
+    profile,
+    deletedForMeIds,
+    chatPrefs.pinnedChatIds,
+    chatPrefs.hiddenChatIds,
+    chatPrefs.clearedAtByChatId,
+    chatPrefs.blockedUids,
+    chatPrefs.blockedAtByUid,
+  ]);
+
+  // Merge Firestore active chat messages with local IndexedDB messages + pending offline outbox,
+  // applying "Limpar conversa" cutoffs, blocked sender cutoffs, "Apagar para mim" and "Apagar para todos".
   const mergedActiveMessages = useMemo(() => {
     if (!profile || !selectedPeer) return [];
     const activeChatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
     const pendingForChat = pendingOutboxByChatId.get(activeChatId);
+    const clearedCutoff = chatPrefs.clearedAtByChatId[activeChatId] || 0;
+    const blockedSet = new Set(chatPrefs.blockedUids);
 
-    let combined = activeMessages;
+    const byId = new Map<string, ChatMessage>();
+    for (const m of localActiveMessages) {
+      byId.set(m.id, m);
+    }
+    for (const m of activeMessages) {
+      // Firestore message overrides optimistic local copy if present
+      byId.set(m.id, m);
+    }
     if (pendingForChat && pendingForChat.length > 0) {
-      const existingIds = new Set(activeMessages.map((m) => m.id));
-      const extras = pendingForChat
-        .filter((pkt) => !existingIds.has(pkt.id))
-        .map(packetToChatMessage);
-      if (extras.length > 0) {
-        combined = [...activeMessages, ...extras];
+      for (const pkt of pendingForChat) {
+        if (!byId.has(pkt.id)) {
+          byId.set(pkt.id, packetToChatMessage(pkt));
+        }
       }
     }
 
-    return combined
-      .filter((m) => !deletedForMeIds.has(m.id))
+    return Array.from(byId.values())
+      .filter((m) => {
+        if (deletedForMeIds.has(m.id)) return false;
+        if (clearedCutoff > 0 && (m.createdAtMs || 0) <= clearedCutoff) return false;
+        if (blockedSet.has(m.senderId)) {
+          const blockedAt = chatPrefs.blockedAtByUid?.[m.senderId] || 0;
+          if ((m.createdAtMs || 0) >= blockedAt) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0) || a.id.localeCompare(b.id))
       .map((m) => {
         const srvDeletedAt = deletedForAllMap.get(`${activeChatId}__${m.id}`);
         if (!m.deletedForAll && srvDeletedAt === undefined) return m;
@@ -3221,30 +3867,115 @@ export default function App() {
       });
   }, [
     activeMessages,
+    localActiveMessages,
     pendingOutboxByChatId,
     profile,
     selectedPeer,
     deletedForMeIds,
     deletedForAllMap,
+    chatPrefs.clearedAtByChatId,
+    chatPrefs.blockedUids,
+    chatPrefs.blockedAtByUid,
   ]);
 
+  const archivedCount = useMemo(
+    () =>
+      mergedChats.filter(
+        (c) =>
+          chatPrefs.archivedChatIds.includes(c.id) &&
+          !chatPrefs.lockedChatIds.includes(c.id)
+      ).length,
+    [mergedChats, chatPrefs.archivedChatIds, chatPrefs.lockedChatIds]
+  );
+
+  const lockedCount = useMemo(
+    () => mergedChats.filter((c) => chatPrefs.lockedChatIds.includes(c.id)).length,
+    [mergedChats, chatPrefs.lockedChatIds]
+  );
+
+  const unreadBadgeCount = useMemo(
+    () =>
+      mergedChats.filter(
+        (c) =>
+          chatPrefs.unreadChatIds.includes(c.id) &&
+          !chatPrefs.archivedChatIds.includes(c.id) &&
+          !chatPrefs.lockedChatIds.includes(c.id)
+      ).length,
+    [mergedChats, chatPrefs.unreadChatIds, chatPrefs.archivedChatIds, chatPrefs.lockedChatIds]
+  );
+
+  const shortcutThreads = useMemo(
+    () =>
+      mergedChats.filter((c) => chatPrefs.shortcutChatIds.includes(c.id)).slice(0, 12),
+    [mergedChats, chatPrefs.shortcutChatIds]
+  );
+
   const filteredChats = useMemo(() => {
-    if (!normalizedChatQuery) return mergedChats;
+    const archivedSet = new Set(chatPrefs.archivedChatIds);
+    const lockedSet = new Set(chatPrefs.lockedChatIds);
+    const unreadSet = new Set(chatPrefs.unreadChatIds);
+    const favSet = new Set(chatPrefs.favoriteChatIds);
+    const blockedSet = new Set(chatPrefs.blockedUids);
+
     return mergedChats.filter((c) => {
-      const matchedContact = contacts.find((ct) => ct.matchedUid === c.otherUid);
-      const dir = directoryByUid.get(c.otherUid);
-      const displayName = matchedContact?.name || dir?.displayName || c.otherName;
-      return (
-        normalizeSearchText(displayName).includes(normalizedChatQuery) ||
-        normalizeSearchText(c.otherName).includes(normalizedChatQuery) ||
-        normalizeSearchText(c.lastMessage).includes(normalizedChatQuery) ||
-        (matchedContact?.phone.toLowerCase().includes(normalizedChatQuery) ?? false) ||
-        (dir?.virtualLine
-          ? normalizeSearchText(dir.virtualLine).includes(normalizedChatQuery)
-          : false)
-      );
+      const isLocked = lockedSet.has(c.id);
+      const isArchived = archivedSet.has(c.id);
+
+      if (normalizedChatQuery) {
+        if (isLocked && !lockedFolderUnlocked) return false;
+        const matchedContact = contacts.find((ct) => ct.matchedUid === c.otherUid);
+        const dir = directoryByUid.get(c.otherUid);
+        const displayName = matchedContact?.name || dir?.displayName || c.otherName;
+        return (
+          normalizeSearchText(displayName).includes(normalizedChatQuery) ||
+          normalizeSearchText(c.otherName).includes(normalizedChatQuery) ||
+          normalizeSearchText(c.lastMessage).includes(normalizedChatQuery) ||
+          (matchedContact?.phone.toLowerCase().includes(normalizedChatQuery) ?? false) ||
+          (dir?.virtualLine
+            ? normalizeSearchText(dir.virtualLine).includes(normalizedChatQuery)
+            : false)
+        );
+      }
+
+      if (chatListFilter === 'locked') {
+        return lockedFolderUnlocked && isLocked;
+      }
+      if (isLocked) return false;
+      if (chatListFilter === 'archived') {
+        return isArchived;
+      }
+      if (isArchived) return false;
+
+      if (chatListFilter === 'unread') {
+        return unreadSet.has(c.id);
+      }
+      if (chatListFilter === 'favorites') {
+        return favSet.has(c.id);
+      }
+      if (chatListFilter === 'blocked') {
+        return blockedSet.has(c.otherUid);
+      }
+      if (chatListFilter.startsWith('list:')) {
+        const listId = chatListFilter.slice(5);
+        const targetList = chatPrefs.customLists.find((l) => l.id === listId);
+        return targetList ? targetList.chatIds.includes(c.id) : false;
+      }
+      return true;
     });
-  }, [mergedChats, contacts, directoryByUid, normalizedChatQuery]);
+  }, [
+    mergedChats,
+    contacts,
+    directoryByUid,
+    normalizedChatQuery,
+    chatListFilter,
+    lockedFolderUnlocked,
+    chatPrefs.archivedChatIds,
+    chatPrefs.lockedChatIds,
+    chatPrefs.unreadChatIds,
+    chatPrefs.favoriteChatIds,
+    chatPrefs.blockedUids,
+    chatPrefs.customLists,
+  ]);
 
   // WhatsApp-style contacts matching search (saved contacts + exact Phone/CFI lookup only — zero global strangers)
   const matchingZapeiPeople = useMemo(() => {
@@ -3792,47 +4523,478 @@ export default function App() {
                   selectedPeer ? 'hidden md:flex' : 'flex'
                 }`}
               >
-                <div className="border-b border-slate-100 px-4 pt-4 pb-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h1 className="text-lg font-extrabold tracking-tight text-slate-900">
-                      Conversas
-                    </h1>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('contacts')}
-                      className="rounded-full bg-gradient-to-r from-[#16A34A] to-[#0E7A34] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm shadow-emerald-900/15 transition hover:brightness-105 active:scale-95"
-                    >
-                      + Nova conversa
-                    </button>
+                {/* Top Header of Conversas: WhatsApp-style Multi-Selection Bar OR Default Header */}
+                {selectedChatIds.size > 0 ? (
+                  (() => {
+                    const selIds = Array.from(selectedChatIds);
+                    const selThreads = mergedChats.filter((c) => selectedChatIds.has(c.id));
+                    const singleThread = selThreads.length === 1 ? selThreads[0] : null;
+                    const singleMatched = singleThread
+                      ? contacts.find((ct) => ct.matchedUid === singleThread.otherUid)
+                      : undefined;
+                    const singleDir = singleThread
+                      ? directoryByUid.get(singleThread.otherUid)
+                      : undefined;
+                    const singleName = singleThread
+                      ? singleMatched?.name || singleDir?.displayName || singleThread.otherName
+                      : '';
+                    const allPinned = selIds.every((id) => chatPrefs.pinnedChatIds.includes(id));
+                    const allMuted = selIds.every((id) => chatPrefs.mutedChatIds.includes(id));
+                    const allArchived = selIds.every((id) => chatPrefs.archivedChatIds.includes(id));
+                    const allFav = selIds.every((id) => chatPrefs.favoriteChatIds.includes(id));
+                    const allLocked = selIds.every((id) => chatPrefs.lockedChatIds.includes(id));
+                    const allUnread = selIds.every((id) => chatPrefs.unreadChatIds.includes(id));
+                    const selPeerUids = Array.from(new Set(selThreads.map((t) => t.otherUid)));
+                    const allBlocked =
+                      selPeerUids.length > 0 &&
+                      selPeerUids.every((u) => chatPrefs.blockedUids.includes(u));
+
+                    return (
+                      <div className="relative border-b border-slate-100 bg-white px-2.5 py-3">
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={exitChatSelection}
+                              aria-label="Sair da seleção"
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                            >
+                              <ArrowLeft className="h-5 w-5" />
+                            </button>
+                            <span className="text-base font-extrabold text-slate-900 tabular-nums">
+                              {selectedChatIds.size}
+                            </span>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                toggleIdsInPrefList('pinnedChatIds', selIds, {
+                                  added:
+                                    selIds.length === 1
+                                      ? 'Conversa fixada no topo.'
+                                      : `${selIds.length} conversas fixadas.`,
+                                  removed: 'Conversa desafixada.',
+                                })
+                              }
+                              title={allPinned ? 'Desafixar conversa' : 'Fixar conversa'}
+                              aria-label={allPinned ? 'Desafixar conversa' : 'Fixar conversa'}
+                              className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                            >
+                              {allPinned ? (
+                                <PinOff className="h-4.5 w-4.5 text-[#0E7A34]" />
+                              ) : (
+                                <Pin className="h-4.5 w-4.5" />
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowChatListMenu(false);
+                                setChatConfirmModal({
+                                  kind: 'delete_chat',
+                                  chatIds: selIds,
+                                  peerUids: selPeerUids,
+                                  targetName: singleName,
+                                });
+                              }}
+                              title="Apagar conversa"
+                              aria-label="Apagar conversa"
+                              className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 hover:bg-red-50 hover:text-red-600"
+                            >
+                              <Trash2 className="h-4.5 w-4.5" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                toggleIdsInPrefList('mutedChatIds', selIds, {
+                                  added: 'Notificações silenciadas.',
+                                  removed: 'Notificações reativadas.',
+                                })
+                              }
+                              title={allMuted ? 'Reativar notificações' : 'Silenciar'}
+                              aria-label={allMuted ? 'Reativar notificações' : 'Silenciar'}
+                              className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                            >
+                              {allMuted ? (
+                                <Bell className="h-4.5 w-4.5 text-[#0E7A34]" />
+                              ) : (
+                                <BellOff className="h-4.5 w-4.5" />
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                toggleIdsInPrefList('archivedChatIds', selIds, {
+                                  added:
+                                    selIds.length === 1
+                                      ? 'Conversa arquivada.'
+                                      : `${selIds.length} conversas arquivadas.`,
+                                  removed: 'Conversa desarquivada.',
+                                })
+                              }
+                              title={allArchived ? 'Desarquivar conversa' : 'Arquivar conversa'}
+                              aria-label={allArchived ? 'Desarquivar conversa' : 'Arquivar conversa'}
+                              className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                            >
+                              {allArchived ? (
+                                <ArchiveRestore className="h-4.5 w-4.5 text-[#0E7A34]" />
+                              ) : (
+                                <Archive className="h-4.5 w-4.5" />
+                              )}
+                            </button>
+
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setShowChatListMenu((v) => !v)}
+                                title="Mais opções"
+                                aria-label="Mais opções da seleção"
+                                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                              >
+                                <MoreVertical className="h-4.5 w-4.5" />
+                              </button>
+
+                              {showChatListMenu && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-40"
+                                    onClick={() => setShowChatListMenu(false)}
+                                  />
+                                  <div className="absolute right-0 top-11 z-50 w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1.5 shadow-2xl">
+                                    {singleThread && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowChatListMenu(false);
+                                          setShortcutModalTarget({
+                                            chatId: singleThread.id,
+                                            peerUid: singleThread.otherUid,
+                                            peerName: singleName,
+                                          });
+                                        }}
+                                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                      >
+                                        <Link2 className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                                        <span>Adicionar atalho para conversa</span>
+                                      </button>
+                                    )}
+
+                                    {singleThread && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowChatListMenu(false);
+                                          openContactDetailsForUid(
+                                            singleThread.otherUid,
+                                            singleName
+                                          );
+                                        }}
+                                        className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                      >
+                                        <UserIcon className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                                        <span>Mostrar contato</span>
+                                      </button>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        toggleIdsInPrefList('unreadChatIds', selIds, {
+                                          added: 'Marcada como não lida.',
+                                          removed: 'Marcada como lida.',
+                                        })
+                                      }
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
+                                      <span>
+                                        {allUnread ? 'Marcar como lida' : 'Marcar como não lido'}
+                                      </span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowChatListMenu(false);
+                                        setSelectedChatIds(
+                                          new Set(filteredChats.map((c) => c.id))
+                                        );
+                                      }}
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <CheckSquare className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                                      <span>Selecionar tudo</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleRequestToggleLockChats(
+                                          selIds,
+                                          singleName || `${selIds.length} conversas`
+                                        )
+                                      }
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      {allLocked ? (
+                                        <LockOpen className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                                      ) : (
+                                        <Lock className="h-4 w-4 shrink-0 text-slate-500" />
+                                      )}
+                                      <span>
+                                        {allLocked ? 'Destrancar conversa' : 'Trancar conversa'}
+                                      </span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        toggleIdsInPrefList('favoriteChatIds', selIds, {
+                                          added: 'Adicionada aos favoritos.',
+                                          removed: 'Removida dos favoritos.',
+                                        })
+                                      }
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <Star
+                                        className={`h-4 w-4 shrink-0 ${
+                                          allFav
+                                            ? 'fill-amber-400 text-amber-500'
+                                            : 'text-slate-500'
+                                        }`}
+                                      />
+                                      <span>
+                                        {allFav
+                                          ? 'Remover dos favoritos'
+                                          : 'Adicionar aos favoritos'}
+                                      </span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowChatListMenu(false);
+                                        setAddToListTarget({
+                                          chatIds: selIds,
+                                          title:
+                                            singleName ||
+                                            `${selIds.length} conversas selecionadas`,
+                                        });
+                                      }}
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <ListPlus className="h-4 w-4 shrink-0 text-[#0E7A34]" />
+                                      <span>Adicionar à lista</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowChatListMenu(false);
+                                        setChatConfirmModal({
+                                          kind: 'clear',
+                                          chatIds: selIds,
+                                          peerUids: selPeerUids,
+                                          targetName: singleName,
+                                        });
+                                      }}
+                                      className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                                    >
+                                      <Eraser className="h-4 w-4 shrink-0 text-slate-500" />
+                                      <span>Limpar conversa</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowChatListMenu(false);
+                                        setChatConfirmModal({
+                                          kind: allBlocked ? 'unblock' : 'block',
+                                          chatIds: selIds,
+                                          peerUids: selPeerUids,
+                                          targetName: singleName,
+                                        });
+                                      }}
+                                      className={`flex min-h-[44px] w-full items-center gap-3 border-t border-slate-100 px-4 py-2.5 text-left text-sm font-bold hover:bg-red-50 ${
+                                        allBlocked ? 'text-[#0E7A34]' : 'text-red-600'
+                                      }`}
+                                    >
+                                      <Ban className="h-4 w-4 shrink-0" />
+                                      <span>{allBlocked ? 'Desbloquear' : 'Bloquear'}</span>
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="border-b border-slate-100 px-4 pt-4 pb-3">
+                    <div className="flex items-center justify-between gap-2">
+                      {chatListFilter === 'archived' || chatListFilter === 'locked' ? (
+                        <div className="flex min-w-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setChatListFilter('all')}
+                            aria-label="Voltar para todas as conversas"
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100"
+                          >
+                            <ArrowLeft className="h-5 w-5" />
+                          </button>
+                          <h1 className="truncate text-lg font-extrabold tracking-tight text-slate-900">
+                            {chatListFilter === 'archived'
+                              ? 'Arquivadas'
+                              : 'Conversas trancadas'}
+                          </h1>
+                        </div>
+                      ) : (
+                        <h1 className="text-lg font-extrabold tracking-tight text-slate-900">
+                          Conversas
+                        </h1>
+                      )}
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {chatListFilter === 'locked' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLockedFolderUnlocked(false);
+                              setChatListFilter('all');
+                              showToast('Pasta de conversas trancadas bloqueada.');
+                            }}
+                            title="Trancar pasta novamente"
+                            className="flex h-9 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                          >
+                            <Lock className="h-3.5 w-3.5" />
+                            <span>Trancar</span>
+                          </button>
+                        )}
+                        {filteredChats.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedChatIds(new Set([filteredChats[0].id]))}
+                            title="Selecionar conversas"
+                            aria-label="Selecionar conversas"
+                            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-600 transition hover:bg-emerald-50 hover:text-[#0E7A34]"
+                          >
+                            <CheckSquare className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('contacts')}
+                          className="rounded-full bg-gradient-to-r from-[#16A34A] to-[#0E7A34] px-3.5 py-1.5 text-xs font-bold text-white shadow-sm shadow-emerald-900/15 transition hover:brightness-105 active:scale-95"
+                        >
+                          + Nova conversa
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="relative mt-3">
+                      <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        inputMode="search"
+                        name="chatfi_chat_search"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        value={chatSearch}
+                        onChange={(e) => setChatSearch(e.target.value)}
+                        placeholder="Buscar conversa, contato, telefone ou CFI..."
+                        className="h-10 w-full rounded-full border border-slate-200/90 bg-[#F4F8F5] pl-10 pr-9 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-[#0E7A34] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
+                      />
+                      {chatPhoneLookupBusy ? (
+                        <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0E7A34]" />
+                      ) : chatSearch ? (
+                        <button
+                          type="button"
+                          onClick={() => setChatSearch('')}
+                          aria-label="Limpar busca"
+                          className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {/* Interactive Conversation Filter Tabs (Todas, Não lidas, Favoritos, Listas...) */}
+                    {chatListFilter !== 'archived' && chatListFilter !== 'locked' && (
+                      <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setChatListFilter('all')}
+                          className={`whitespace-nowrap shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                            chatListFilter === 'all'
+                              ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                          }`}
+                        >
+                          Todas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setChatListFilter('unread')}
+                          className={`whitespace-nowrap shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                            chatListFilter === 'unread'
+                              ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                          }`}
+                        >
+                          Não lidas{unreadBadgeCount > 0 ? ` ${unreadBadgeCount}` : ''}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setChatListFilter('favorites')}
+                          className={`whitespace-nowrap shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                            chatListFilter === 'favorites'
+                              ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                          }`}
+                        >
+                          Favoritos
+                        </button>
+                        {chatPrefs.customLists.map((lst) => {
+                          const key = `list:${lst.id}`;
+                          return (
+                            <button
+                              key={lst.id}
+                              type="button"
+                              onClick={() => setChatListFilter(key)}
+                              className={`whitespace-nowrap shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                                chatListFilter === key
+                                  ? 'bg-emerald-50 text-[#0E7A34] ring-1 ring-[#0E7A34]/30'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                              }`}
+                            >
+                              {lst.name}
+                            </button>
+                          );
+                        })}
+                        {chatPrefs.blockedUids.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setChatListFilter('blocked')}
+                            className={`whitespace-nowrap shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                              chatListFilter === 'blocked'
+                                ? 'bg-red-50 text-red-600 ring-1 ring-red-300'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70'
+                            }`}
+                          >
+                            Bloqueados ({chatPrefs.blockedUids.length})
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="relative mt-3">
-                    <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      inputMode="search"
-                      name="chatfi_chat_search"
-                      autoComplete="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      value={chatSearch}
-                      onChange={(e) => setChatSearch(e.target.value)}
-                      placeholder="Buscar conversa, contato, telefone ou CFI..."
-                      className="h-10 w-full rounded-full border border-slate-200/90 bg-[#F4F8F5] pl-10 pr-9 text-sm text-slate-900 placeholder:text-slate-400 transition focus:border-[#0E7A34] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
-                    />
-                    {chatPhoneLookupBusy ? (
-                      <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#0E7A34]" />
-                    ) : chatSearch ? (
-                      <button
-                        type="button"
-                        onClick={() => setChatSearch('')}
-                        aria-label="Limpar busca"
-                        className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/70 hover:text-slate-700"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
+                )}
 
                 <div className="flex-1 min-h-0 overflow-y-auto pb-safe-nav md:pb-2">
                   {/* Discreet Offline Mode & Sync Banner at top of Conversas */}
@@ -3865,6 +5027,125 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Quick-Access Shortcuts Strip */}
+                  {!normalizedChatQuery &&
+                    chatListFilter === 'all' &&
+                    shortcutThreads.length > 0 && (
+                      <div className="border-b border-slate-100 px-3 py-2">
+                        <p className="mb-1.5 px-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Atalhos rápidos
+                        </p>
+                        <div className="flex items-center gap-2.5 overflow-x-auto pb-1">
+                          {shortcutThreads.map((st) => {
+                            const matched = contacts.find((c) => c.matchedUid === st.otherUid);
+                            const dir = directoryByUid.get(st.otherUid);
+                            const name = matched?.name || dir?.displayName || st.otherName;
+                            const firstName = name.split(' ')[0] || name;
+                            const avatarBg = matched?.avatarBg || dir?.avatarColor || '#0E7A34';
+                            return (
+                              <button
+                                key={st.id}
+                                type="button"
+                                onClick={() =>
+                                  void openChatWithPeer({
+                                    uid: st.otherUid,
+                                    name,
+                                    initials: getInitials(name),
+                                    avatarBg,
+                                    avatarUrl: dir?.avatarUrl,
+                                    phone: matched?.phone,
+                                    role: matched?.role || dir?.role || 'normal',
+                                    hasStorefront: Boolean(
+                                      matched?.hasStorefront || dir?.hasStorefront
+                                    ),
+                                    storefrontName:
+                                      matched?.storefrontName || dir?.storefrontName,
+                                    deliveryPolicyLabel:
+                                      matched?.deliveryPolicyLabel || dir?.deliveryPolicyLabel,
+                                  })
+                                }
+                                className="flex w-14 shrink-0 flex-col items-center gap-1 text-center"
+                              >
+                                {dir?.avatarUrl ? (
+                                  <img
+                                    src={dir.avatarUrl}
+                                    alt={name}
+                                    className="h-11 w-11 rounded-full object-cover ring-2 ring-[#0E7A34]/30"
+                                  />
+                                ) : (
+                                  <div
+                                    className="flex h-11 w-11 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-[#0E7A34]/25"
+                                    style={{ backgroundColor: avatarBg }}
+                                  >
+                                    {getInitials(name)}
+                                  </div>
+                                )}
+                                <span className="w-full truncate text-[11px] font-semibold text-slate-700">
+                                  {firstName}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                  {/* Locked & Archived Folders at top of Conversas (WhatsApp Style) */}
+                  {!normalizedChatQuery &&
+                    chatListFilter === 'all' &&
+                    (lockedCount > 0 || archivedCount > 0) && (
+                      <div className="divide-y divide-slate-100 border-b border-slate-100">
+                        {lockedCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (lockedFolderUnlocked || !chatPrefs.lockPinHash) {
+                                setLockedFolderUnlocked(true);
+                                setChatListFilter('locked');
+                              } else {
+                                setLockPinModal({
+                                  mode: 'verify_unlock',
+                                  chatIds: chatPrefs.lockedChatIds,
+                                  onAfterUnlock: () => {
+                                    setLockedFolderUnlocked(true);
+                                    setChatListFilter('locked');
+                                  },
+                                });
+                              }
+                            }}
+                            className="flex min-h-[48px] w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-[#F3F8F5]"
+                          >
+                            <span className="flex items-center gap-3 text-sm font-bold text-slate-800">
+                              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-50 text-[#0E7A34]">
+                                <Lock className="h-4 w-4" />
+                              </span>
+                              <span>Conversas trancadas</span>
+                            </span>
+                            <span className="text-xs font-bold text-[#0E7A34] tabular-nums">
+                              {lockedCount}
+                            </span>
+                          </button>
+                        )}
+                        {archivedCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setChatListFilter('archived')}
+                            className="flex min-h-[48px] w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-[#F3F8F5]"
+                          >
+                            <span className="flex items-center gap-3 text-sm font-bold text-slate-800">
+                              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                                <Archive className="h-4 w-4" />
+                              </span>
+                              <span>Arquivadas</span>
+                            </span>
+                            <span className="text-xs font-bold text-slate-500 tabular-nums">
+                              {archivedCount}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                   {/* Matching / Existing Conversations */}
                   {filteredChats.length > 0 && (
                     <div className="divide-y divide-slate-100">
@@ -3883,7 +5164,18 @@ export default function App() {
                         const photoUrl = dir?.avatarUrl;
                         const avatarBg =
                           matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34';
-                        const isSelected = selectedPeer?.uid === thread.otherUid;
+                        const isOpenSelected = selectedPeer?.uid === thread.otherUid;
+                        const isRowChecked = selectedChatIds.has(thread.id);
+                        const isChatSelectionActive = selectedChatIds.size > 0;
+                        const isPinned = chatPrefs.pinnedChatIds.includes(thread.id);
+                        const isMuted = chatPrefs.mutedChatIds.includes(thread.id);
+                        const isFav = chatPrefs.favoriteChatIds.includes(thread.id);
+                        const isUnread = chatPrefs.unreadChatIds.includes(thread.id);
+                        const isBlocked = chatPrefs.blockedUids.includes(thread.otherUid);
+                        const rowActivity =
+                          !isBlocked && !hiddenPresenceUids.has(thread.otherUid)
+                            ? peerActivityMap.get(thread.otherUid)?.activity ?? null
+                            : null;
                         const rawLastText = thread.lastMessage || 'Conversa iniciada';
                         const lastText = rawLastText.startsWith('» ') && rawLastText.includes('\n')
                           ? rawLastText.slice(rawLastText.indexOf('\n') + 1).trim() || rawLastText
@@ -3891,18 +5183,70 @@ export default function App() {
                         const isVoicePreview = /^(mensagem de voz|áudio|audio)\b/i.test(lastText.trim());
                         const isPdfPreview = /\.pdf\b|^pdf\b/i.test(lastText.trim());
 
+                        const openRowPeer = () => {
+                          void openChatWithPeer({
+                            uid: thread.otherUid,
+                            name: displayName,
+                            initials: getInitials(displayName),
+                            avatarBg,
+                            avatarUrl: photoUrl,
+                            phone: matchedContact?.phone,
+                            role: matchedContact?.role || dir?.role || 'normal',
+                            hasStorefront: Boolean(
+                              matchedContact?.hasStorefront || dir?.hasStorefront
+                            ),
+                            storefrontName:
+                              matchedContact?.storefrontName || dir?.storefrontName,
+                            deliveryPolicyLabel:
+                              matchedContact?.deliveryPolicyLabel ||
+                              dir?.deliveryPolicyLabel,
+                          });
+                        };
+
                         return (
                           <div
                             key={thread.id}
-                            className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
-                              isSelected
-                                ? 'bg-emerald-50/90'
-                                : 'hover:bg-[#F3F8F5]'
+                            onTouchStart={() => {
+                              chatRowSuppressClickRef.current = false;
+                              if (chatRowLongPressTimerRef.current !== null) {
+                                window.clearTimeout(chatRowLongPressTimerRef.current);
+                              }
+                              chatRowLongPressTimerRef.current = window.setTimeout(() => {
+                                chatRowSuppressClickRef.current = true;
+                                toggleChatSelection(thread.id);
+                              }, 440);
+                            }}
+                            onTouchMove={() => {
+                              if (chatRowLongPressTimerRef.current !== null) {
+                                window.clearTimeout(chatRowLongPressTimerRef.current);
+                                chatRowLongPressTimerRef.current = null;
+                              }
+                            }}
+                            onTouchEnd={() => {
+                              if (chatRowLongPressTimerRef.current !== null) {
+                                window.clearTimeout(chatRowLongPressTimerRef.current);
+                                chatRowLongPressTimerRef.current = null;
+                              }
+                            }}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              toggleChatSelection(thread.id);
+                            }}
+                            className={`group flex w-full items-center gap-3 px-4 py-3 text-left transition ${
+                              isRowChecked
+                                ? 'bg-emerald-50/95 ring-1 ring-inset ring-[#0E7A34]/20'
+                                : isOpenSelected
+                                  ? 'bg-emerald-50/90'
+                                  : 'hover:bg-[#F3F8F5]'
                             }`}
                           >
                             <button
                               type="button"
-                              onClick={() =>
+                              onClick={() => {
+                                if (isChatSelectionActive) {
+                                  toggleChatSelection(thread.id);
+                                  return;
+                                }
                                 setAvatarPreview({
                                   name: displayName,
                                   initials: getInitials(displayName),
@@ -3912,10 +5256,18 @@ export default function App() {
                                   virtualLine: dir?.virtualLine,
                                   subtitle:
                                     matchedContact?.storefrontName || dir?.storefrontName,
-                                })
+                                });
+                              }}
+                              title={
+                                isChatSelectionActive
+                                  ? 'Marcar ou desmarcar conversa'
+                                  : `Ver foto de ${displayName}`
                               }
-                              title={`Ver foto de ${displayName}`}
-                              aria-label={`Ampliar foto de ${displayName}`}
+                              aria-label={
+                                isChatSelectionActive
+                                  ? `Selecionar ${displayName}`
+                                  : `Ampliar foto de ${displayName}`
+                              }
                               className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-90 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/40"
                             >
                               {photoUrl ? (
@@ -3932,65 +5284,123 @@ export default function App() {
                                   {getInitials(displayName)}
                                 </div>
                               )}
-                              {isUserEffectivelyOnline(dir) && (
+                              {isRowChecked ? (
                                 <span
-                                  className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-[#16A34A] ring-2 ring-white"
-                                  aria-label="Online"
-                                />
+                                  className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#16A34A] text-white ring-2 ring-white"
+                                  aria-label="Selecionada"
+                                >
+                                  <Check className="h-3 w-3 stroke-[3]" />
+                                </span>
+                              ) : (
+                                isUserEffectivelyOnline(dir) && (
+                                  <span
+                                    className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-[#16A34A] ring-2 ring-white"
+                                    aria-label="Online"
+                                  />
+                                )
                               )}
                             </button>
                             <button
                               type="button"
-                              onClick={() =>
-                                void openChatWithPeer({
-                                  uid: thread.otherUid,
-                                  name: displayName,
-                                  initials: getInitials(displayName),
-                                  avatarBg,
-                                  avatarUrl: photoUrl,
-                                  phone: matchedContact?.phone,
-                                  role: matchedContact?.role || dir?.role || 'normal',
-                                  hasStorefront: Boolean(
-                                    matchedContact?.hasStorefront || dir?.hasStorefront
-                                  ),
-                                  storefrontName:
-                                    matchedContact?.storefrontName || dir?.storefrontName,
-                                  deliveryPolicyLabel:
-                                    matchedContact?.deliveryPolicyLabel ||
-                                    dir?.deliveryPolicyLabel,
-                                })
-                              }
+                              onClick={() => {
+                                if (chatRowSuppressClickRef.current) {
+                                  chatRowSuppressClickRef.current = false;
+                                  return;
+                                }
+                                if (isChatSelectionActive) {
+                                  toggleChatSelection(thread.id);
+                                  return;
+                                }
+                                openRowPeer();
+                              }}
                               className="min-w-0 flex-1 text-left"
                             >
                               <div className="flex items-center justify-between gap-2">
-                                <span className="truncate text-sm font-bold text-slate-900">
-                                  {displayName}
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate text-sm font-bold text-slate-900">
+                                    {displayName}
+                                  </span>
+                                  {isFav && (
+                                    <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500" />
+                                  )}
+                                  {isBlocked && (
+                                    <Ban className="h-3 w-3 shrink-0 text-red-500" />
+                                  )}
                                 </span>
-                                <span className="shrink-0 font-mono text-[11px] text-slate-400 tabular-nums">
+                                <span
+                                  className={`shrink-0 font-mono text-[11px] tabular-nums ${
+                                    isUnread ? 'font-bold text-[#0E7A34]' : 'text-slate-400'
+                                  }`}
+                                >
                                   {thread.updatedAtLabel}
                                 </span>
                               </div>
                               <div className="mt-0.5 flex items-center justify-between gap-2">
-                                <p className="flex min-w-0 items-center gap-1.5 truncate text-xs text-slate-500">
-                                  {(pendingOutboxByChatId.get(thread.id)?.length || 0) > 0 && (
-                                    <Clock
-                                      className="h-3.5 w-3.5 shrink-0 text-amber-600"
-                                      aria-label="Aguardando rede"
+                                {rowActivity === 'recording_audio' ? (
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-[#0E7A34]">
+                                    <Mic className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+                                    <span className="truncate">Gravando áudio...</span>
+                                  </p>
+                                ) : rowActivity === 'recording_video' ? (
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-[#0E7A34]">
+                                    <Video className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+                                    <span className="truncate">Gravando vídeo...</span>
+                                  </p>
+                                ) : rowActivity === 'typing' ? (
+                                  <p className="flex min-w-0 items-center gap-1 truncate text-xs font-semibold text-[#0E7A34]">
+                                    <span className="truncate">Digitando...</span>
+                                  </p>
+                                ) : (
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-xs text-slate-500">
+                                    {(pendingOutboxByChatId.get(thread.id)?.length || 0) > 0 && (
+                                      <Clock
+                                        className="h-3.5 w-3.5 shrink-0 text-amber-600"
+                                        aria-label="Aguardando rede"
+                                      />
+                                    )}
+                                    {isVoicePreview && (
+                                      <Mic className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
+                                    )}
+                                    {isPdfPreview && (
+                                      <FileText className="h-3.5 w-3.5 shrink-0 text-rose-600" />
+                                    )}
+                                    <span className="truncate">{lastText}</span>
+                                  </p>
+                                )}
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  {isMuted && (
+                                    <BellOff className="h-3.5 w-3.5 text-slate-400" />
+                                  )}
+                                  {isPinned && (
+                                    <Pin className="h-3.5 w-3.5 text-slate-400" />
+                                  )}
+                                  {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
+                                    <Store className="h-4 w-4 text-[#0E7A34]" />
+                                  )}
+                                  {isUnread && (
+                                    <span
+                                      className="h-2.5 w-2.5 rounded-full bg-[#16A34A]"
+                                      aria-label="Não lida"
                                     />
                                   )}
-                                  {isVoicePreview && (
-                                    <Mic className="h-3.5 w-3.5 shrink-0 text-[#0E7A34]" />
-                                  )}
-                                  {isPdfPreview && (
-                                    <FileText className="h-3.5 w-3.5 shrink-0 text-rose-600" />
-                                  )}
-                                  <span className="truncate">{lastText}</span>
-                                </p>
-                                {(matchedContact?.hasStorefront || dir?.hasStorefront) && (
-                                  <Store className="h-4 w-4 shrink-0 text-[#0E7A34]" />
-                                )}
+                                </div>
                               </div>
                             </button>
+                            {!isChatSelectionActive && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedChatIds(new Set([thread.id]));
+                                  setShowChatListMenu(true);
+                                }}
+                                aria-label={`Opções da conversa com ${displayName}`}
+                                title="Opções da conversa"
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-200/60 hover:text-slate-700 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
+                              >
+                                <MoreVertical className="h-4 w-4" />
+                              </button>
+                            )}
                           </div>
                         );
                       })}
@@ -4119,6 +5529,19 @@ export default function App() {
                     myAvatarBg={profile.avatarBg || '#0E7A34'}
                     peer={selectedPeer}
                     peerPresence={directoryByUid.get(selectedPeer.uid) ?? null}
+                    peerActivity={
+                      selectedPeer &&
+                      !chatPrefs.blockedUids.includes(selectedPeer.uid) &&
+                      !hiddenPresenceUids.has(selectedPeer.uid)
+                        ? peerActivityMap.get(selectedPeer.uid)?.activity ?? null
+                        : null
+                    }
+                    onLocalActivityChange={(activity) => {
+                      if (!selectedPeer || chatPrefs.blockedUids.includes(selectedPeer.uid)) {
+                        return;
+                      }
+                      sendChatActivity(selectedPeer.uid, activity, authUser);
+                    }}
                     onPreviewAvatar={setAvatarPreview}
                     messages={mergedActiveMessages}
                     forwardTargets={forwardTargets}
@@ -4427,6 +5850,78 @@ export default function App() {
                         void openStorefrontByUid(selectedPeer.uid, 'orders');
                       }
                     }}
+                    isPeerBlocked={chatPrefs.blockedUids.includes(selectedPeer.uid)}
+                    isChatMuted={chatPrefs.mutedChatIds.includes(
+                      getDeterministicChatId(profile.uid, selectedPeer.uid)
+                    )}
+                    isChatFavorite={chatPrefs.favoriteChatIds.includes(
+                      getDeterministicChatId(profile.uid, selectedPeer.uid)
+                    )}
+                    isChatLocked={chatPrefs.lockedChatIds.includes(
+                      getDeterministicChatId(profile.uid, selectedPeer.uid)
+                    )}
+                    hasShortcut={chatPrefs.shortcutChatIds.includes(
+                      getDeterministicChatId(profile.uid, selectedPeer.uid)
+                    )}
+                    onShowContact={() =>
+                      openContactDetailsForUid(selectedPeer.uid, selectedPeer.name)
+                    }
+                    onAddShortcut={() =>
+                      setShortcutModalTarget({
+                        chatId: getDeterministicChatId(profile.uid, selectedPeer.uid),
+                        peerUid: selectedPeer.uid,
+                        peerName: selectedPeer.name,
+                      })
+                    }
+                    onToggleLockChat={() =>
+                      handleRequestToggleLockChats(
+                        [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        selectedPeer.name
+                      )
+                    }
+                    onToggleFavoriteChat={() =>
+                      toggleIdsInPrefList(
+                        'favoriteChatIds',
+                        [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        {
+                          added: 'Adicionada aos favoritos.',
+                          removed: 'Removida dos favoritos.',
+                        }
+                      )
+                    }
+                    onOpenAddToList={() =>
+                      setAddToListTarget({
+                        chatIds: [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        title: selectedPeer.name,
+                      })
+                    }
+                    onToggleMuteChat={() =>
+                      toggleIdsInPrefList(
+                        'mutedChatIds',
+                        [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        {
+                          added: 'Notificações silenciadas.',
+                          removed: 'Notificações reativadas.',
+                        }
+                      )
+                    }
+                    onClearChat={() =>
+                      setChatConfirmModal({
+                        kind: 'clear',
+                        chatIds: [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        peerUids: [selectedPeer.uid],
+                        targetName: selectedPeer.name,
+                      })
+                    }
+                    onToggleBlockPeer={() => {
+                      const blocked = chatPrefs.blockedUids.includes(selectedPeer.uid);
+                      setChatConfirmModal({
+                        kind: blocked ? 'unblock' : 'block',
+                        chatIds: [getDeterministicChatId(profile.uid, selectedPeer.uid)],
+                        peerUids: [selectedPeer.uid],
+                        targetName: selectedPeer.name,
+                      });
+                    }}
                   />
                 ) : (
                   <div className="chatfi-chat-wallpaper flex flex-1 flex-col items-center justify-center p-8 text-center">
@@ -4450,7 +5945,7 @@ export default function App() {
               myUid={profile.uid}
               calls={calls.filter((c) => !dismissedCallIds.has(c.id))}
               zapeiContacts={zapeiContacts}
-              directoryUsers={directoryUsers}
+              directoryUsers={effectiveDirectoryUsers}
               onPreviewAvatar={setAvatarPreview}
               onDeleteCall={async (callId) => {
                 setDismissedCallIds((prev) => {
@@ -4469,7 +5964,7 @@ export default function App() {
             <ContactsView
               currentUserUid={profile.uid}
               contacts={contacts}
-              directoryUsers={directoryUsers}
+              directoryUsers={effectiveDirectoryUsers}
               products={products}
               connections={connections}
               onPreviewAvatar={setAvatarPreview}
@@ -4695,14 +6190,17 @@ export default function App() {
                   const targetConn = connections.find((c) => c.id === connectionId);
                   if (targetConn) {
                     const resellerLabel = profile.storefrontName || profile.name;
-                    void sendRealChatMessage({
-                      myUid: profile.uid,
-                      myName: resellerLabel,
-                      otherUid: targetConn.factoryId,
-                      otherName: targetConn.factoryName,
-                      type: 'text',
-                      text: `Olá ${targetConn.factoryName}! Enviei novamente uma solicitação para atuar como seu revendedor (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para analisar.`,
-                    }).catch(() => {});
+                    void checkPeerReachability(targetConn.factoryId, authUser).then((reach) => {
+                      if (!reach.reachable) return;
+                      void sendRealChatMessage({
+                        myUid: profile.uid,
+                        myName: resellerLabel,
+                        otherUid: targetConn.factoryId,
+                        otherName: targetConn.factoryName,
+                        type: 'text',
+                        text: `Olá ${targetConn.factoryName}! Enviei novamente uma solicitação para atuar como seu revendedor (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para analisar.`,
+                      }).catch(() => {});
+                    });
                   }
                 }
               }}
@@ -4728,16 +6226,19 @@ export default function App() {
                   hour: '2-digit',
                   minute: '2-digit',
                 });
-                await sendRealChatMessage({
-                  myUid: profile.uid,
-                  myName: profile.storefrontName || profile.name,
-                  otherUid: pay.counterpartyId,
-                  otherName: pay.counterpartyName,
-                  type: 'billing_reminder',
-                  orderId: pay.orderId,
-                  orderCode: pay.orderCode,
-                  text: `Olá ${pay.counterpartyName}! Passando para lembrar do pagamento referente ao pedido ${pay.orderCode} no valor de ${formatBRL(pay.amount)} (vencimento ${pay.dueDate}, forma: ${pay.method}).`,
-                });
+                const reach = await checkPeerReachability(pay.counterpartyId, authUser);
+                if (reach.reachable) {
+                  await sendRealChatMessage({
+                    myUid: profile.uid,
+                    myName: profile.storefrontName || profile.name,
+                    otherUid: pay.counterpartyId,
+                    otherName: pay.counterpartyName,
+                    type: 'billing_reminder',
+                    orderId: pay.orderId,
+                    orderCode: pay.orderCode,
+                    text: `Olá ${pay.counterpartyName}! Passando para lembrar do pagamento referente ao pedido ${pay.orderCode} no valor de ${formatBRL(pay.amount)} (vencimento ${pay.dueDate}, forma: ${pay.method}).`,
+                  });
+                }
                 await updateRealPayment(pay.id, { lastReminderSent: nowLabel });
               }}
               onGenerateAsaasCharge={handleGenerateAsaasChargeForOrder}
@@ -4945,30 +6446,33 @@ export default function App() {
 
             // Send real interactive order card directly to the storefront owner's chat
             if (ownerUid !== profile.uid) {
-              const totalBoxes = subOrders.reduce(
-                (acc, s) =>
-                  acc + s.items.reduce((sum, i) => sum + i.boxesRequested, 0),
-                0
-              );
-              await sendRealChatMessage({
-                myUid: profile.uid,
-                myName: profile.name,
-                otherUid: ownerUid,
-                otherName: storefrontName,
-                type: 'order_card',
-                text: `Novo pedido ${orderCode} enviado (${totalBoxes} caixas · ${
-                  paymentMethod === 'credit_card' ? `Cartão ${installments}x` : 'Pix'
-                })`,
-                orderId,
-                orderCode,
-                orderSummary: `${totalBoxes} caixa(s) · ${
-                  paymentMethod === 'credit_card'
-                    ? `Cartão ${installments}x de ${formatBRL(splitBreakdown.installmentValue)}`
-                    : `Pix ${formatBRL(splitBreakdown.buyerChargedTotal)}`
-                }`,
-                orderTotal: splitBreakdown.buyerChargedTotal,
-                orderStatusLabel: 'Aguardando conferência de estoque',
-              });
+              const reach = await checkPeerReachability(ownerUid, authUser);
+              if (reach.reachable) {
+                const totalBoxes = subOrders.reduce(
+                  (acc, s) =>
+                    acc + s.items.reduce((sum, i) => sum + i.boxesRequested, 0),
+                  0
+                );
+                await sendRealChatMessage({
+                  myUid: profile.uid,
+                  myName: profile.name,
+                  otherUid: ownerUid,
+                  otherName: storefrontName,
+                  type: 'order_card',
+                  text: `Novo pedido ${orderCode} enviado (${totalBoxes} caixas · ${
+                    paymentMethod === 'credit_card' ? `Cartão ${installments}x` : 'Pix'
+                  })`,
+                  orderId,
+                  orderCode,
+                  orderSummary: `${totalBoxes} caixa(s) · ${
+                    paymentMethod === 'credit_card'
+                      ? `Cartão ${installments}x de ${formatBRL(splitBreakdown.installmentValue)}`
+                      : `Pix ${formatBRL(splitBreakdown.buyerChargedTotal)}`
+                  }`,
+                  orderTotal: splitBreakdown.buyerChargedTotal,
+                  orderStatusLabel: 'Aguardando conferência de estoque',
+                });
+              }
             }
 
             try {
@@ -5116,6 +6620,302 @@ export default function App() {
         <AvatarLightboxModal
           target={avatarPreview}
           onClose={() => setAvatarPreview(null)}
+        />
+      )}
+
+      {/* Dados do contato ("Mostrar contato") */}
+      {contactModalTarget && (
+        <ContactInfoModal
+          target={contactModalTarget}
+          isFavorite={chatPrefs.favoriteChatIds.includes(contactModalTarget.chatId)}
+          isMuted={chatPrefs.mutedChatIds.includes(contactModalTarget.chatId)}
+          isLocked={chatPrefs.lockedChatIds.includes(contactModalTarget.chatId)}
+          isBlocked={chatPrefs.blockedUids.includes(contactModalTarget.uid)}
+          hasShortcut={chatPrefs.shortcutChatIds.includes(contactModalTarget.chatId)}
+          onClose={() => setContactModalTarget(null)}
+          onPreviewAvatar={setAvatarPreview}
+          onOpenChat={() => {
+            const t = contactModalTarget;
+            setContactModalTarget(null);
+            void openChatWithPeer({
+              uid: t.uid,
+              name: t.name,
+              initials: t.initials,
+              avatarBg: t.avatarBg,
+              avatarUrl: t.avatarUrl,
+              phone: t.phone,
+              virtualLine: t.virtualLine,
+              role: t.role,
+              hasStorefront: t.hasStorefront,
+              storefrontName: t.storefrontName,
+              deliveryPolicyLabel: t.deliveryPolicyLabel,
+              ratingAverage: t.ratingAverage,
+              ratingCount: t.ratingCount,
+            });
+          }}
+          onStartCall={(type) => {
+            const t = contactModalTarget;
+            setContactModalTarget(null);
+            void handleStartCall(
+              {
+                uid: t.uid,
+                name: t.name,
+                initials: t.initials,
+                avatarBg: t.avatarBg,
+                avatarUrl: t.avatarUrl,
+              },
+              type
+            );
+          }}
+          onOpenStorefront={
+            contactModalTarget.hasStorefront
+              ? () => {
+                  const uid = contactModalTarget.uid;
+                  setContactModalTarget(null);
+                  void openStorefrontByUid(uid);
+                }
+              : undefined
+          }
+          onSaveToContacts={
+            !contactModalTarget.isSavedContact &&
+            (contactModalTarget.phone || contactModalTarget.virtualLine)
+              ? async () => {
+                  const phoneOrLine =
+                    contactModalTarget.phone || contactModalTarget.virtualLine || '';
+                  await saveRealContactToPhonebook({
+                    ownerId: profile.uid,
+                    name: contactModalTarget.name,
+                    phone: phoneOrLine,
+                  });
+                  setContactModalTarget((prev) =>
+                    prev ? { ...prev, isSavedContact: true } : null
+                  );
+                  showToast('Contato salvo na sua agenda!');
+                }
+              : undefined
+          }
+          onToggleFavorite={() =>
+            toggleIdsInPrefList('favoriteChatIds', [contactModalTarget.chatId], {
+              added: 'Adicionada aos favoritos.',
+              removed: 'Removida dos favoritos.',
+            })
+          }
+          onToggleMute={() =>
+            toggleIdsInPrefList('mutedChatIds', [contactModalTarget.chatId], {
+              added: 'Notificações silenciadas.',
+              removed: 'Notificações reativadas.',
+            })
+          }
+          onToggleLock={() => {
+            const cId = contactModalTarget.chatId;
+            const name = contactModalTarget.name;
+            setContactModalTarget(null);
+            handleRequestToggleLockChats([cId], name);
+          }}
+          onOpenAddToList={() => {
+            const cId = contactModalTarget.chatId;
+            const name = contactModalTarget.name;
+            setContactModalTarget(null);
+            setAddToListTarget({ chatIds: [cId], title: name });
+          }}
+          onOpenShortcut={() => {
+            const t = contactModalTarget;
+            setContactModalTarget(null);
+            setShortcutModalTarget({
+              chatId: t.chatId,
+              peerUid: t.uid,
+              peerName: t.name,
+            });
+          }}
+          onClearChat={() => {
+            const t = contactModalTarget;
+            setContactModalTarget(null);
+            setChatConfirmModal({
+              kind: 'clear',
+              chatIds: [t.chatId],
+              peerUids: [t.uid],
+              targetName: t.name,
+            });
+          }}
+          onToggleBlock={() => {
+            const t = contactModalTarget;
+            const blocked = chatPrefs.blockedUids.includes(t.uid);
+            setContactModalTarget(null);
+            setChatConfirmModal({
+              kind: blocked ? 'unblock' : 'block',
+              chatIds: [t.chatId],
+              peerUids: [t.uid],
+              targetName: t.name,
+            });
+          }}
+        />
+      )}
+
+      {/* Adicionar atalho para conversa */}
+      {shortcutModalTarget && (
+        <ChatShortcutModal
+          peerName={shortcutModalTarget.peerName}
+          peerUid={shortcutModalTarget.peerUid}
+          hasShortcut={chatPrefs.shortcutChatIds.includes(shortcutModalTarget.chatId)}
+          onToggleInAppShortcut={() => {
+            const cId = shortcutModalTarget.chatId;
+            const exists = chatPrefs.shortcutChatIds.includes(cId);
+            updateChatPrefs((prev) => ({
+              ...prev,
+              shortcutChatIds: exists
+                ? prev.shortcutChatIds.filter((id) => id !== cId)
+                : [cId, ...prev.shortcutChatIds.filter((id) => id !== cId)],
+            }));
+            exitChatSelection();
+            showToast(
+              exists
+                ? 'Atalho removido dos atalhos rápidos.'
+                : 'Atalho adicionado ao topo das conversas!'
+            );
+          }}
+          onNotify={showToast}
+          onClose={() => setShortcutModalTarget(null)}
+        />
+      )}
+
+      {/* Senha para Trancar / Destrancar conversas */}
+      {lockPinModal && (
+        <ChatLockPinModal
+          mode={lockPinModal.mode}
+          targetLabel={lockPinModal.targetLabel}
+          onSubmitPin={async (pin) => {
+            if (lockPinModal.mode === 'create_and_lock') {
+              const hash = await hashChatLockPin(pin);
+              updateChatPrefs((prev) => ({
+                ...prev,
+                lockPinHash: hash,
+                lockedChatIds: Array.from(
+                  new Set([...prev.lockedChatIds, ...lockPinModal.chatIds])
+                ),
+                archivedChatIds: prev.archivedChatIds.filter(
+                  (id) => !lockPinModal.chatIds.includes(id)
+                ),
+              }));
+              if (
+                selectedPeer &&
+                lockPinModal.chatIds.includes(
+                  getDeterministicChatId(profile.uid, selectedPeer.uid)
+                )
+              ) {
+                setSelectedPeer(null);
+              }
+              setLockPinModal(null);
+              exitChatSelection();
+              showToast('Senha criada e conversa trancada!');
+              return { ok: true };
+            }
+
+            const valid = await verifyChatLockPin(pin, chatPrefs.lockPinHash || '');
+            if (!valid) {
+              return { ok: false, error: 'Senha incorreta. Tente novamente.' };
+            }
+
+            if (lockPinModal.mode === 'verify_to_remove') {
+              updateChatPrefs((prev) => ({
+                ...prev,
+                lockedChatIds: prev.lockedChatIds.filter(
+                  (id) => !lockPinModal.chatIds.includes(id)
+                ),
+              }));
+              setLockPinModal(null);
+              exitChatSelection();
+              showToast('Conversa destrancada.');
+              return { ok: true };
+            }
+
+            const cb = lockPinModal.onAfterUnlock;
+            setLockPinModal(null);
+            cb?.();
+            return { ok: true };
+          }}
+          onClose={() => setLockPinModal(null)}
+        />
+      )}
+
+      {/* Adicionar à lista */}
+      {addToListTarget && (
+        <AddToListModal
+          targetChatIds={addToListTarget.chatIds}
+          targetTitle={addToListTarget.title}
+          lists={chatPrefs.customLists}
+          onToggleChatInList={(listId, chatIds) => {
+            updateChatPrefs((prev) => ({
+              ...prev,
+              customLists: prev.customLists.map((l) => {
+                if (l.id !== listId) return l;
+                const allIn = chatIds.every((id) => l.chatIds.includes(id));
+                const nextSet = new Set(l.chatIds);
+                if (allIn) {
+                  for (const id of chatIds) nextSet.delete(id);
+                } else {
+                  for (const id of chatIds) nextSet.add(id);
+                }
+                return { ...l, chatIds: Array.from(nextSet) };
+              }),
+            }));
+          }}
+          onCreateListAndAdd={(name, chatIds) => {
+            const newId = `lst_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            updateChatPrefs((prev) => ({
+              ...prev,
+              customLists: [
+                ...prev.customLists,
+                {
+                  id: newId,
+                  name,
+                  chatIds: Array.from(new Set(chatIds)),
+                  createdAtMs: Date.now(),
+                },
+              ],
+            }));
+            showToast(`Lista "${name}" criada!`);
+          }}
+          onDeleteList={(listId) => {
+            updateChatPrefs((prev) => ({
+              ...prev,
+              customLists: prev.customLists.filter((l) => l.id !== listId),
+            }));
+            if (chatListFilter === `list:${listId}`) {
+              setChatListFilter('all');
+            }
+            showToast('Lista removida.');
+          }}
+          onClose={() => {
+            setAddToListTarget(null);
+            exitChatSelection();
+          }}
+        />
+      )}
+
+      {/* Confirmação de Limpar conversa / Apagar conversa / Bloquear */}
+      {chatConfirmModal && (
+        <ChatActionConfirmModal
+          kind={chatConfirmModal.kind}
+          count={
+            chatConfirmModal.kind === 'block' || chatConfirmModal.kind === 'unblock'
+              ? chatConfirmModal.peerUids.length
+              : chatConfirmModal.chatIds.length
+          }
+          targetName={chatConfirmModal.targetName}
+          onConfirm={async (opts) => {
+            const modal = chatConfirmModal;
+            setChatConfirmModal(null);
+            if (modal.kind === 'clear' || modal.kind === 'delete_chat') {
+              await handleExecuteClearOrDeleteChats(
+                modal.kind,
+                modal.chatIds,
+                opts?.deleteLocalMedia !== false
+              );
+            } else {
+              handleExecuteBlockToggle(modal.peerUids, modal.kind);
+            }
+          }}
+          onClose={() => setChatConfirmModal(null)}
         />
       )}
 

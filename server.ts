@@ -763,6 +763,59 @@ async function startServer(): Promise<void> {
     }
   };
 
+  // Per-user Chat Organization Preferences (pin, archive, mute, favorites, lists, lock PIN, clear, block, shortcuts)
+  const chatPrefsStorePath = path.join(os.tmpdir(), 'chatfi-chat-prefs.json');
+  interface ChatCustomListServer {
+    id: string;
+    name: string;
+    chatIds: string[];
+    createdAtMs: number;
+  }
+  interface ServerUserChatPreferences {
+    pinnedChatIds: string[];
+    archivedChatIds: string[];
+    mutedChatIds: string[];
+    favoriteChatIds: string[];
+    unreadChatIds: string[];
+    lockedChatIds: string[];
+    lockPinHash?: string;
+    clearedAtByChatId: Record<string, number>;
+    hiddenChatIds: Record<string, number>;
+    blockedUids: string[];
+    blockedAtByUid: Record<string, number>;
+    customLists: ChatCustomListServer[];
+    shortcutChatIds: string[];
+    updatedAtMs: number;
+  }
+  const loadChatPrefsStore = (): Record<string, ServerUserChatPreferences> => {
+    try {
+      if (fs.existsSync(chatPrefsStorePath)) {
+        const raw = JSON.parse(fs.readFileSync(chatPrefsStorePath, 'utf-8')) as unknown;
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          return raw as Record<string, ServerUserChatPreferences>;
+        }
+      }
+    } catch {
+      // ignore corrupted store
+    }
+    return {};
+  };
+  const chatPrefsStore = loadChatPrefsStore();
+  const saveChatPrefsStore = (): void => {
+    try {
+      fs.writeFileSync(chatPrefsStorePath, JSON.stringify(chatPrefsStore), { mode: 0o600 });
+    } catch {
+      // ignore disk write error
+    }
+  };
+  const isBlockedByPeer = (recipientUid: string, senderUid: string): boolean => {
+    if (!recipientUid || !senderUid) return false;
+    const prefs = chatPrefsStore[recipientUid];
+    return Array.isArray(prefs?.blockedUids) && prefs.blockedUids.includes(senderUid);
+  };
+  const shouldHidePresenceBetween = (viewerUid: string, targetUid: string): boolean =>
+    isBlockedByPeer(targetUid, viewerUid) || isBlockedByPeer(viewerUid, targetUid);
+
   // 4. High-priority incoming call (repeated ring cadence) / cancellation Web Push
   app.post('/api/push/notify-call', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
     const actorUid = req.verifiedUid!;
@@ -804,6 +857,12 @@ async function startServer(): Promise<void> {
 
     if (!calleeId || calleeId === actorUid) {
       res.status(400).json({ error: 'Parâmetros de chamada inválidos.' });
+      return;
+    }
+
+    // Stealth block: if callee blocked caller, silently drop call ring push without revealing block
+    if (isBlockedByPeer(calleeId, actorUid)) {
+      res.json({ ok: true, sent: 0, removed: 0 });
       return;
     }
 
@@ -900,6 +959,12 @@ async function startServer(): Promise<void> {
 
       if (!recipientId || recipientId === senderId) {
         res.status(400).json({ error: 'Destinatário inválido.' });
+        return;
+      }
+
+      // Stealth block: never send push notification if recipient blocked sender
+      if (isBlockedByPeer(recipientId, senderId)) {
+        res.json({ ok: true, sent: 0, removed: 0 });
         return;
       }
 
@@ -1051,7 +1116,16 @@ async function startServer(): Promise<void> {
     }, 350);
   };
 
-  const toPublicPresence = (uid: string) => {
+  const toPublicPresence = (uid: string, viewerUid?: string) => {
+    if (viewerUid && shouldHidePresenceBetween(viewerUid, uid)) {
+      return {
+        uid,
+        isOnline: false,
+        lastSeenAt: 0,
+        showOnlineStatus: false,
+        showLastSeen: false,
+      };
+    }
     const rec = presenceByUid.get(uid);
     if (!rec) {
       return {
@@ -1086,8 +1160,9 @@ async function startServer(): Promise<void> {
   const broadcastPresenceDelta = (uid: string) => {
     const subs = subscribersByTargetUid.get(uid);
     if (!subs || subs.size === 0) return;
-    const entry = toPublicPresence(uid);
     subs.forEach((sock) => {
+      const viewerUid = socketMeta.get(sock)?.uid;
+      const entry = toPublicPresence(uid, viewerUid);
       sendWsJson(sock, { type: 'presence:update', entries: [entry] });
     });
   };
@@ -1112,6 +1187,68 @@ async function startServer(): Promise<void> {
     };
     presenceByUid.set(uid, next);
     broadcastPresenceDelta(uid);
+  };
+
+  type ServerChatActivityKind = 'idle' | 'typing' | 'recording_audio' | 'recording_video';
+  interface ServerChatActivityRecord {
+    actorUid: string;
+    targetUid: string;
+    chatId: string;
+    activity: Exclude<ServerChatActivityKind, 'idle'>;
+    updatedAt: number;
+    expiresAt: number;
+  }
+  const chatActivityByKey = new Map<string, ServerChatActivityRecord>();
+
+  const setChatActivityInMemory = (
+    actorUid: string,
+    targetUid: string,
+    activity: ServerChatActivityKind
+  ) => {
+    if (!actorUid || !targetUid || actorUid === targetUid || !VALID_UID_REGEX.test(targetUid)) {
+      return;
+    }
+    const [uA, uB] = [actorUid, targetUid].sort();
+    const chatId = `${uA}__${uB}`;
+    const key = `${actorUid}->${targetUid}`;
+    const now = Date.now();
+
+    if (activity === 'idle' || shouldHidePresenceBetween(actorUid, targetUid)) {
+      const existed = chatActivityByKey.delete(key);
+      if (existed) {
+        const targetSockets = socketsByUid.get(targetUid);
+        targetSockets?.forEach((sock) => {
+          sendWsJson(sock, {
+            type: 'chat:activity',
+            peerUid: actorUid,
+            chatId,
+            activity: 'idle',
+            updatedAt: now,
+          });
+        });
+      }
+      return;
+    }
+
+    const ttlMs = activity === 'typing' ? 6_000 : 120_000;
+    chatActivityByKey.set(key, {
+      actorUid,
+      targetUid,
+      chatId,
+      activity,
+      updatedAt: now,
+      expiresAt: now + ttlMs,
+    });
+    const targetSockets = socketsByUid.get(targetUid);
+    targetSockets?.forEach((sock) => {
+      sendWsJson(sock, {
+        type: 'chat:activity',
+        peerUid: actorUid,
+        chatId,
+        activity,
+        updatedAt: now,
+      });
+    });
   };
 
   const sanitizeRelayEnvelope = (
@@ -1234,8 +1371,11 @@ async function startServer(): Promise<void> {
     callerIdToken?: string,
     originSocket?: WebSocket
   ): Promise<void> => {
+    const blockedByRecipient =
+      env.recipientId !== env.senderId && isBlockedByPeer(env.recipientId, env.senderId);
+
     // 1) Store in recipient temporary pending queue until recipient device ACKs saving to IndexedDB
-    if (env.recipientId !== env.senderId) {
+    if (env.recipientId !== env.senderId && !blockedByRecipient) {
       const q = pendingRelayByRecipient.get(env.recipientId) || [];
       if (!q.some((item) => item.id === env.id)) {
         q.push(env);
@@ -1249,11 +1389,13 @@ async function startServer(): Promise<void> {
     }
 
     // 2) Push immediately over WebSocket to all online sockets of recipient
-    const recipientSockets = socketsByUid.get(env.recipientId);
-    if (recipientSockets && recipientSockets.size > 0) {
-      recipientSockets.forEach((sock) => {
-        sendWsJson(sock, { type: 'chat:message', envelope: env });
-      });
+    if (!blockedByRecipient) {
+      const recipientSockets = socketsByUid.get(env.recipientId);
+      if (recipientSockets && recipientSockets.size > 0) {
+        recipientSockets.forEach((sock) => {
+          sendWsJson(sock, { type: 'chat:message', envelope: env });
+        });
+      }
     }
 
     // 3) Sync sender's other open tabs/devices so multi-tab chats stay identical
@@ -1267,7 +1409,7 @@ async function startServer(): Promise<void> {
     }
 
     // 4) Trigger Web Push only if recipient is not actively viewing this exact chat on screen
-    if (env.recipientId !== env.senderId) {
+    if (env.recipientId !== env.senderId && !blockedByRecipient) {
       const activeChat = activeChatByUid.get(env.recipientId);
       const isViewingThisChat =
         activeChat &&
@@ -3077,6 +3219,191 @@ async function startServer(): Promise<void> {
     }
   );
 
+  // 7e. Per-user Chat Organization Preferences (sanitizers + endpoints; store loaded above)
+  const sanitizeServerIdArray = (raw: unknown, maxLen = 1000): string[] => {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== 'string') continue;
+      const t = item.trim();
+      if (!t || t.length > 260 || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+      if (out.length >= maxLen) break;
+    }
+    return out;
+  };
+  const sanitizeServerTimestampMap = (raw: unknown): Record<string, number> => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out: Record<string, number> = {};
+    let count = 0;
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const key = k.trim();
+      const num = Number(v);
+      if (!key || key.length > 260 || !Number.isFinite(num) || num <= 0) continue;
+      out[key] = Math.round(num);
+      count += 1;
+      if (count >= 1000) break;
+    }
+    return out;
+  };
+  const sanitizeServerChatPrefs = (raw: unknown): ServerUserChatPreferences => {
+    const obj = (raw && typeof raw === 'object' ? raw : {}) as Partial<ServerUserChatPreferences>;
+    const rawLists = Array.isArray(obj.customLists) ? obj.customLists : [];
+    const seenListIds = new Set<string>();
+    const customLists: ChatCustomListServer[] = [];
+    for (const item of rawLists) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as Partial<ChatCustomListServer>;
+      const id = typeof entry.id === 'string' ? entry.id.trim().slice(0, 80) : '';
+      const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 48) : '';
+      if (!id || !name || seenListIds.has(id)) continue;
+      seenListIds.add(id);
+      customLists.push({
+        id,
+        name,
+        chatIds: sanitizeServerIdArray(entry.chatIds, 500),
+        createdAtMs:
+          typeof entry.createdAtMs === 'number' && Number.isFinite(entry.createdAtMs)
+            ? Math.round(entry.createdAtMs)
+            : Date.now(),
+      });
+      if (customLists.length >= 30) break;
+    }
+    const lockPinHash =
+      typeof obj.lockPinHash === 'string' && obj.lockPinHash.trim().length >= 16
+        ? obj.lockPinHash.trim().slice(0, 128)
+        : undefined;
+    const blockedUids = sanitizeServerIdArray(obj.blockedUids);
+    const rawBlockedAt = sanitizeServerTimestampMap(obj.blockedAtByUid);
+    const blockedAtByUid: Record<string, number> = {};
+    for (const uid of blockedUids) {
+      if (rawBlockedAt[uid]) {
+        blockedAtByUid[uid] = rawBlockedAt[uid];
+      }
+    }
+    return {
+      pinnedChatIds: sanitizeServerIdArray(obj.pinnedChatIds),
+      archivedChatIds: sanitizeServerIdArray(obj.archivedChatIds),
+      mutedChatIds: sanitizeServerIdArray(obj.mutedChatIds),
+      favoriteChatIds: sanitizeServerIdArray(obj.favoriteChatIds),
+      unreadChatIds: sanitizeServerIdArray(obj.unreadChatIds),
+      lockedChatIds: sanitizeServerIdArray(obj.lockedChatIds),
+      ...(lockPinHash ? { lockPinHash } : {}),
+      clearedAtByChatId: sanitizeServerTimestampMap(obj.clearedAtByChatId),
+      hiddenChatIds: sanitizeServerTimestampMap(obj.hiddenChatIds),
+      blockedUids,
+      blockedAtByUid,
+      customLists,
+      shortcutChatIds: sanitizeServerIdArray(obj.shortcutChatIds, 100),
+      updatedAtMs:
+        typeof obj.updatedAtMs === 'number' && Number.isFinite(obj.updatedAtMs)
+          ? Math.round(obj.updatedAtMs)
+          : Date.now(),
+    };
+  };
+
+  app.get(
+    '/api/chats/preferences',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const existing = chatPrefsStore[actorUid] || sanitizeServerChatPrefs({});
+      res.json({ ok: true, prefs: existing });
+    }
+  );
+
+  app.put(
+    '/api/chats/preferences',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const prevBlocked = new Set(chatPrefsStore[actorUid]?.blockedUids || []);
+      const body = (req.body || {}) as { prefs?: unknown };
+      const sanitized = sanitizeServerChatPrefs(body.prefs);
+      const now = Date.now();
+      for (const uid of sanitized.blockedUids) {
+        if (!sanitized.blockedAtByUid[uid]) {
+          sanitized.blockedAtByUid[uid] =
+            chatPrefsStore[actorUid]?.blockedAtByUid?.[uid] || now;
+        }
+      }
+      chatPrefsStore[actorUid] = sanitized;
+      saveChatPrefsStore();
+
+      // Push live presence & clear activity for any newly blocked or unblocked peers
+      const nextBlocked = new Set(sanitized.blockedUids);
+      const changedPeers = new Set<string>();
+      prevBlocked.forEach((uid) => {
+        if (!nextBlocked.has(uid)) changedPeers.add(uid);
+      });
+      nextBlocked.forEach((uid) => {
+        if (!prevBlocked.has(uid)) changedPeers.add(uid);
+      });
+      changedPeers.forEach((peerUid) => {
+        setChatActivityInMemory(actorUid, peerUid, 'idle');
+        setChatActivityInMemory(peerUid, actorUid, 'idle');
+        const peerSocks = socketsByUid.get(peerUid);
+        peerSocks?.forEach((sock) => {
+          sendWsJson(sock, {
+            type: 'presence:update',
+            entries: [toPublicPresence(actorUid, peerUid)],
+          });
+        });
+      });
+
+      res.json({ ok: true, prefs: sanitized });
+    }
+  );
+
+  // Stealth peer reachability check: returns { reachable, hidePresence } without ever exposing block state
+  app.get(
+    '/api/chats/peer-reachability',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const peerUid =
+        typeof req.query.peerUid === 'string' ? req.query.peerUid.trim().slice(0, 128) : '';
+      if (!peerUid || !VALID_UID_REGEX.test(peerUid)) {
+        res.status(400).json({ ok: false, error: 'Destinatário inválido.' });
+        return;
+      }
+      const blockedByRecipient = isBlockedByPeer(peerUid, actorUid);
+      const hidePresence = shouldHidePresenceBetween(actorUid, peerUid);
+      res.json({
+        ok: true,
+        reachable: !blockedByRecipient,
+        hidePresence,
+      });
+    }
+  );
+
+  // Ephemeral typing / recording audio / recording video HTTP fallback (0 Firestore writes)
+  app.post(
+    '/api/chat/activity',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const body = (req.body || {}) as { targetUid?: unknown; activity?: unknown };
+      const targetUid =
+        typeof body.targetUid === 'string' ? body.targetUid.trim().slice(0, 128) : '';
+      const rawActivity = String(body.activity || '').trim();
+      const allowed = new Set<ServerChatActivityKind>([
+        'idle',
+        'typing',
+        'recording_audio',
+        'recording_video',
+      ]);
+      if (!targetUid || !VALID_UID_REGEX.test(targetUid) || !allowed.has(rawActivity as ServerChatActivityKind)) {
+        res.status(400).json({ ok: false, error: 'Parâmetros inválidos.' });
+        return;
+      }
+      setChatActivityInMemory(actorUid, targetUid, rawActivity as ServerChatActivityKind);
+      res.json({ ok: true });
+    }
+  );
+
   // Background 60s sweeper: expires unpaid Asaas charges older than 2 hours
   const sweepExpiredAsaasReservations = async (): Promise<void> => {
     const now = Date.now();
@@ -3148,6 +3475,11 @@ async function startServer(): Promise<void> {
         updateUserPresenceInMemory(meta.uid, {
           isOnline: false,
           lastSeenAt: Date.now(),
+        });
+        chatActivityByKey.forEach((rec) => {
+          if (rec.actorUid === meta.uid) {
+            setChatActivityInMemory(rec.actorUid, rec.targetUid, 'idle');
+          }
         });
       }
     }
@@ -3224,6 +3556,24 @@ async function startServer(): Promise<void> {
 
           sendWsJson(socket, { type: 'auth:ok', uid });
 
+          // Deliver any currently active typing/recording statuses targeting this user
+          const nowActMs = Date.now();
+          chatActivityByKey.forEach((rec, key) => {
+            if (rec.expiresAt <= nowActMs) {
+              chatActivityByKey.delete(key);
+              return;
+            }
+            if (rec.targetUid === uid) {
+              sendWsJson(socket, {
+                type: 'chat:activity',
+                peerUid: rec.actorUid,
+                chatId: rec.chatId,
+                activity: rec.activity,
+                updatedAt: rec.updatedAt,
+              });
+            }
+          });
+
           // Push any pending offline messages queued while recipient was away
           const pending = pendingRelayByRecipient.get(uid);
           if (pending && pending.length > 0) {
@@ -3267,7 +3617,7 @@ async function startServer(): Promise<void> {
             }
             subs.add(socket);
           }
-          entries.push(toPublicPresence(targetUid));
+          entries.push(toPublicPresence(targetUid, meta.uid));
         }
         sendWsJson(socket, { type: 'presence:snapshot', entries });
         return;
@@ -3298,12 +3648,28 @@ async function startServer(): Promise<void> {
         return;
       }
 
+      if (type === 'chat:activity') {
+        const targetUid =
+          typeof msg.targetUid === 'string' ? msg.targetUid.trim().slice(0, 128) : '';
+        const rawActivity = String(msg.activity || '').trim();
+        if (
+          rawActivity === 'idle' ||
+          rawActivity === 'typing' ||
+          rawActivity === 'recording_audio' ||
+          rawActivity === 'recording_video'
+        ) {
+          setChatActivityInMemory(meta.uid, targetUid, rawActivity);
+        }
+        return;
+      }
+
       if (type === 'chat:send' && typeof msg.envelope === 'object' && msg.envelope !== null) {
         const env = sanitizeRelayEnvelope(
           meta.uid,
           msg.envelope as Record<string, unknown>
         );
         if (!env) return;
+        setChatActivityInMemory(meta.uid, env.recipientId, 'idle');
         await relayAndDeliverChatMessage(env, undefined, socket);
         sendWsJson(socket, {
           type: 'chat:sent',
@@ -3373,6 +3739,17 @@ async function startServer(): Promise<void> {
       }
     });
   }, 25_000);
+
+  // Expire stale typing/recording statuses promptly
+  setInterval(() => {
+    if (chatActivityByKey.size === 0) return;
+    const now = Date.now();
+    chatActivityByKey.forEach((rec) => {
+      if (rec.expiresAt <= now) {
+        setChatActivityInMemory(rec.actorUid, rec.targetUid, 'idle');
+      }
+    });
+  }, 4_000);
 
   httpServer.on('upgrade', (request, socket, head) => {
     try {

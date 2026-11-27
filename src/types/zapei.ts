@@ -118,6 +118,30 @@ export interface ChatMessage {
   deletedAtMs?: number;
 }
 
+export interface ChatCustomList {
+  id: string;
+  name: string;
+  chatIds: string[];
+  createdAtMs: number;
+}
+
+export interface UserChatPreferences {
+  pinnedChatIds: string[];
+  archivedChatIds: string[];
+  mutedChatIds: string[];
+  favoriteChatIds: string[];
+  unreadChatIds: string[];
+  lockedChatIds: string[];
+  lockPinHash?: string;
+  clearedAtByChatId: Record<string, number>;
+  hiddenChatIds: Record<string, number>;
+  blockedUids: string[];
+  blockedAtByUid?: Record<string, number>;
+  customLists: ChatCustomList[];
+  shortcutChatIds: string[];
+  updatedAtMs?: number;
+}
+
 export interface CallSessionRecord {
   id: string;
   callerId: string;

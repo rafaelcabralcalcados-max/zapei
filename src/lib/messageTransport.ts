@@ -1,7 +1,9 @@
 import type { User } from 'firebase/auth';
 import type { ChatMessage } from '../types/zapei';
 import { getDeterministicChatId, sendRealChatMessage } from './firebase';
+import { upsertLocalChatMessagesBatch } from './localChatStore';
 import { triggerRemoteMessagePush } from './pushService';
+import { checkPeerReachability } from './realtimeClient';
 
 /**
  * ZAPEI MODULAR MESSAGE TRANSPORT LAYER (Phase 1: Smart Offline Outbox + Mesh Bridge Ready)
@@ -237,6 +239,25 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
   channelName: 'cloud_firebase',
   isAvailable: () => typeof navigator === 'undefined' || navigator.onLine,
   sendPacket: async (packet, authUser) => {
+    const reach = await checkPeerReachability(packet.recipientId, authUser);
+    if (!reach.reachable) {
+      // Stealth block: behave as if recipient has no internet.
+      // Save only on sender's device with single check ('sent'), never touch Firestore or Push.
+      await upsertLocalChatMessagesBatch(packet.senderId, [
+        {
+          ownerUid: packet.senderId,
+          createdAtMs: packet.timestamp,
+          otherUid: packet.recipientId,
+          otherName: packet.recipientName,
+          message: {
+            ...packetToChatMessage(packet),
+            deliveryStatus: 'sent',
+          },
+        },
+      ]);
+      return { ok: true, viaMesh: false, hops: 0 };
+    }
+
     await sendRealChatMessage({
       myUid: packet.senderId,
       myName: packet.senderName,
