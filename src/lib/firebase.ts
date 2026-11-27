@@ -62,13 +62,17 @@ import type {
   FavoriteGrade,
   LogisticsType,
   MinimumDeliveryPolicy,
+  BuyerReleaseOption,
   MixedOrder,
+  OrderAgreementHistoryEntry,
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
   Product,
   ProductCategory,
   ProductUnitType,
+  ResellerReleasePreference,
+  ResellerShareReleaseStatus,
   SubOrder,
   SubOrderLineItem,
   SubscriptionStatus,
@@ -92,6 +96,12 @@ import {
   type LocalDeviceInfo,
 } from './cpfAndDeviceUtils';
 import { DEFAULT_FAVORITE_GRADES, getInitials } from './gradeParser';
+import {
+  appendAgreementHistory,
+  createAgreementHistoryEntry,
+  getBuyerReleaseOptionMeta,
+  getResellerReleaseOptionMeta,
+} from './orderAgreement';
 import { formatPhoneDisplay, hashPhoneNumber } from './phoneUtils';
 
 export const firebaseConfig = {
@@ -359,6 +369,9 @@ export async function registerOrUpdateUserProfile(params: {
   showOnlineStatus?: boolean;
   showLastSeen?: boolean;
   primaryDevice?: LocalDeviceInfo;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  defaultCarrierDeadlineDays?: number;
 }): Promise<{ isNewProfile: boolean }> {
   const userRef = doc(db, 'users', params.uid);
   const existingUser = await getDoc(userRef);
@@ -481,6 +494,38 @@ export async function registerOrUpdateUserProfile(params: {
     lastSeenAt: resolvedShowLastSeen ? nowMs : 0,
     updatedAt: serverTimestamp(),
   };
+  const resolvedReleasePref =
+    params.resellerReleasePreference !== undefined
+      ? params.resellerReleasePreference
+      : existingPubData?.resellerReleasePreference === 'after_account_release' ||
+          existingPubData?.resellerReleasePreference === 'upon_carrier_receipt' ||
+          existingPubData?.resellerReleasePreference === 'after_delivery_confirmation'
+        ? (existingPubData.resellerReleasePreference as ResellerReleasePreference)
+        : undefined;
+  const resolvedReleaseNote =
+    params.resellerReleaseNote !== undefined
+      ? params.resellerReleaseNote.trim().slice(0, 240)
+      : existingPubData?.resellerReleaseNote
+        ? String(existingPubData.resellerReleaseNote).slice(0, 240)
+        : '';
+  const resolvedCarrierDays =
+    params.defaultCarrierDeadlineDays !== undefined
+      ? Math.min(180, Math.max(1, Math.round(params.defaultCarrierDeadlineDays)))
+      : typeof existingPubData?.defaultCarrierDeadlineDays === 'number' &&
+          existingPubData.defaultCarrierDeadlineDays >= 1
+        ? Math.min(180, Math.max(1, Math.round(existingPubData.defaultCarrierDeadlineDays)))
+        : undefined;
+
+  if (resolvedReleasePref) {
+    publicData.resellerReleasePreference = resolvedReleasePref;
+  }
+  if (params.resellerReleaseNote !== undefined || resolvedReleaseNote) {
+    publicData.resellerReleaseNote = resolvedReleaseNote;
+  }
+  if (typeof resolvedCarrierDays === 'number' && resolvedCarrierDays >= 1) {
+    publicData.defaultCarrierDeadlineDays = resolvedCarrierDays;
+  }
+
   if (resolvedCpfVerified) {
     publicData.cpfVerified = true;
   }
@@ -771,6 +816,20 @@ function buildUserProfileFromDocs(
     commercialBanAtMs: publicData.commercialBanAtMs
       ? Number(publicData.commercialBanAtMs)
       : undefined,
+    resellerReleasePreference:
+      publicData.resellerReleasePreference === 'after_account_release' ||
+      publicData.resellerReleasePreference === 'upon_carrier_receipt' ||
+      publicData.resellerReleasePreference === 'after_delivery_confirmation'
+        ? (publicData.resellerReleasePreference as ResellerReleasePreference)
+        : undefined,
+    resellerReleaseNote: publicData.resellerReleaseNote
+      ? String(publicData.resellerReleaseNote)
+      : '',
+    defaultCarrierDeadlineDays:
+      typeof publicData.defaultCarrierDeadlineDays === 'number' &&
+      publicData.defaultCarrierDeadlineDays >= 1
+        ? Math.round(publicData.defaultCarrierDeadlineDays)
+        : undefined,
   };
 }
 
@@ -2579,6 +2638,39 @@ export function subscribeOrdersAndSubOrders(
       cancelledAtMs: typeof d.cancelledAtMs === 'number' ? d.cancelledAtMs : undefined,
       cancelReason: d.cancelReason ? String(d.cancelReason) : undefined,
       cancelledByUid: d.cancelledByUid ? String(d.cancelledByUid) : undefined,
+      resellerReleasePreference:
+        d.resellerReleasePreference === 'after_account_release' ||
+        d.resellerReleasePreference === 'upon_carrier_receipt' ||
+        d.resellerReleasePreference === 'after_delivery_confirmation'
+          ? (d.resellerReleasePreference as ResellerReleasePreference)
+          : undefined,
+      resellerReleaseNote: d.resellerReleaseNote ? String(d.resellerReleaseNote) : undefined,
+      buyerReleaseOption:
+        d.buyerReleaseOption === 'upon_carrier_receipt' ||
+        d.buyerReleaseOption === 'upon_product_in_hand'
+          ? (d.buyerReleaseOption as BuyerReleaseOption)
+          : undefined,
+      mutualAwarenessConfirmed:
+        typeof d.mutualAwarenessConfirmed === 'boolean'
+          ? d.mutualAwarenessConfirmed
+          : undefined,
+      resellerShareReleaseStatus:
+        d.resellerShareReleaseStatus === 'awaiting_payment' ||
+        d.resellerShareReleaseStatus === 'held' ||
+        d.resellerShareReleaseStatus === 'released_on_receipt' ||
+        d.resellerShareReleaseStatus === 'released_on_delivery'
+          ? (d.resellerShareReleaseStatus as ResellerShareReleaseStatus)
+          : undefined,
+      resellerShareReleasedAtMs:
+        typeof d.resellerShareReleasedAtMs === 'number'
+          ? d.resellerShareReleasedAtMs
+          : undefined,
+      resellerShareReleasedByUid: d.resellerShareReleasedByUid
+        ? String(d.resellerShareReleasedByUid)
+        : undefined,
+      orderAgreementHistory: Array.isArray(d.orderAgreementHistory)
+        ? (d.orderAgreementHistory as OrderAgreementHistoryEntry[])
+        : undefined,
     };
   };
 
@@ -2604,6 +2696,14 @@ export function subscribeOrdersAndSubOrders(
       receiptNote: d.receiptNote ? String(d.receiptNote) : undefined,
       receiptUrl: d.receiptUrl ? String(d.receiptUrl) : undefined,
       receiptAttached: Boolean(d.receiptAttached),
+      carrierDeadlineDays:
+        typeof d.carrierDeadlineDays === 'number' ? d.carrierDeadlineDays : undefined,
+      carrierDeadlineAtMs:
+        typeof d.carrierDeadlineAtMs === 'number' ? d.carrierDeadlineAtMs : undefined,
+      carrierDeadlineExtensions:
+        typeof d.carrierDeadlineExtensions === 'number' ? d.carrierDeadlineExtensions : undefined,
+      carrierLastExtendedAtMs:
+        typeof d.carrierLastExtendedAtMs === 'number' ? d.carrierLastExtendedAtMs : undefined,
       updatedAt: formatTimestampShort(d.updatedAt as Timestamp | undefined) || 'Agora',
     };
   };
@@ -2640,6 +2740,10 @@ export async function createRealMixedOrder(params: {
   minimumFeeApplied?: boolean;
   splitFactoryNet?: number;
   splitResellerNet?: number;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  buyerReleaseOption?: BuyerReleaseOption;
+  mutualAwarenessConfirmed?: boolean;
 }): Promise<void> {
   const factoryIds = Array.from(new Set(params.subOrders.map((s) => s.factoryId)));
 
@@ -2660,6 +2764,17 @@ export async function createRealMixedOrder(params: {
   }
 
   try {
+    const initialHistory: OrderAgreementHistoryEntry[] = [
+      createAgreementHistoryEntry({
+        actorUid: params.buyerId,
+        actorRole: 'buyer',
+        actorName: params.buyerName,
+        eventType: 'order_created_terms',
+        timestampMs: nowMs,
+        summary: `Ciência mútua registrada: Revendedor (${getResellerReleaseOptionMeta(params.resellerReleasePreference).shortLabel}) · Cliente (${getBuyerReleaseOptionMeta(params.buyerReleaseOption).shortLabel})`,
+      }),
+    ];
+
     const orderDoc: Record<string, unknown> = {
       orderCode: params.orderCode,
       buyerId: params.buyerId,
@@ -2678,9 +2793,21 @@ export async function createRealMixedOrder(params: {
       stockReserved: true,
       stockRestored: false,
       reservationExpiresAtMs,
+      resellerShareReleaseStatus: 'awaiting_payment',
+      mutualAwarenessConfirmed: Boolean(params.mutualAwarenessConfirmed ?? true),
+      orderAgreementHistory: initialHistory,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
+    if (params.resellerReleasePreference) {
+      orderDoc.resellerReleasePreference = params.resellerReleasePreference;
+    }
+    if (params.resellerReleaseNote && params.resellerReleaseNote.trim()) {
+      orderDoc.resellerReleaseNote = params.resellerReleaseNote.trim().slice(0, 240);
+    }
+    if (params.buyerReleaseOption) {
+      orderDoc.buyerReleaseOption = params.buyerReleaseOption;
+    }
     if (params.paymentMethod) orderDoc.paymentMethod = params.paymentMethod;
     if (typeof params.installments === 'number') orderDoc.installments = params.installments;
     if (typeof params.buyerChargedTotal === 'number') {
@@ -2860,6 +2987,14 @@ export async function updateRealOrder(
     asaasChargeStatus: string;
     asaasInvoiceUrl: string;
     asaasPixPayload: string;
+    resellerReleasePreference: ResellerReleasePreference;
+    resellerReleaseNote: string;
+    buyerReleaseOption: BuyerReleaseOption;
+    mutualAwarenessConfirmed: boolean;
+    resellerShareReleaseStatus: ResellerShareReleaseStatus;
+    resellerShareReleasedAtMs: number;
+    resellerShareReleasedByUid: string;
+    orderAgreementHistory: OrderAgreementHistoryEntry[];
   }>
 ): Promise<void> {
   try {
@@ -2885,6 +3020,10 @@ export async function updateRealSubOrder(
     receiptNote: string;
     receiptUrl: string;
     receiptAttached: boolean;
+    carrierDeadlineDays: number;
+    carrierDeadlineAtMs: number;
+    carrierDeadlineExtensions: number;
+    carrierLastExtendedAtMs: number;
   }>
 ): Promise<void> {
   try {
@@ -3005,6 +3144,9 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
   ratingAverage: number;
   ratingCount: number;
   commercialBanned: boolean;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  defaultCarrierDeadlineDays?: number;
 } | null> {
   try {
     const snap = await getDoc(doc(db, 'users', uid));
@@ -3034,6 +3176,17 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
       ratingAverage: Number(d.ratingAverage ?? 0) || 0,
       ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
       commercialBanned,
+      resellerReleasePreference:
+        d.resellerReleasePreference === 'after_account_release' ||
+        d.resellerReleasePreference === 'upon_carrier_receipt' ||
+        d.resellerReleasePreference === 'after_delivery_confirmation'
+          ? (d.resellerReleasePreference as ResellerReleasePreference)
+          : undefined,
+      resellerReleaseNote: d.resellerReleaseNote ? String(d.resellerReleaseNote) : undefined,
+      defaultCarrierDeadlineDays:
+        typeof d.defaultCarrierDeadlineDays === 'number' && d.defaultCarrierDeadlineDays >= 1
+          ? Math.round(d.defaultCarrierDeadlineDays)
+          : undefined,
     };
   } catch {
     return null;
@@ -4378,6 +4531,7 @@ export async function verifyAndBindCpfForCommercialRole(params: {
 export async function markOrderCompletedByParticipant(params: {
   orderId: string;
   subOrderId?: string;
+  actorName?: string;
 }): Promise<void> {
   if (params.subOrderId) {
     try {
@@ -4391,10 +4545,51 @@ export async function markOrderCompletedByParticipant(params: {
   }
   if (params.orderId) {
     try {
-      await updateDoc(doc(db, 'orders', params.orderId), {
+      const orderRef = doc(db, 'orders', params.orderId);
+      const orderSnap = await getDoc(orderRef).catch(() => null);
+      const existingData = orderSnap?.exists()
+        ? (orderSnap.data() as Record<string, unknown>)
+        : null;
+      const existingHistory = Array.isArray(existingData?.orderAgreementHistory)
+        ? (existingData.orderAgreementHistory as OrderAgreementHistoryEntry[])
+        : [];
+      const currentRelease = existingData?.resellerShareReleaseStatus as
+        | ResellerShareReleaseStatus
+        | undefined;
+      const nowMs = Date.now();
+      const actorUid = auth.currentUser?.uid || String(existingData?.buyerId || '');
+      const actorName = params.actorName || String(existingData?.buyerName || 'Cliente');
+
+      const updatePayload: Record<string, unknown> = {
         status: 'completed',
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      const alreadyReleased =
+        currentRelease === 'released_on_receipt' || currentRelease === 'released_on_delivery';
+      if (!alreadyReleased) {
+        updatePayload.resellerShareReleaseStatus = 'released_on_delivery';
+        updatePayload.resellerShareReleasedAtMs = nowMs;
+        if (actorUid) {
+          updatePayload.resellerShareReleasedByUid = actorUid;
+        }
+      }
+
+      updatePayload.orderAgreementHistory = appendAgreementHistory(
+        existingHistory,
+        createAgreementHistoryEntry({
+          actorUid: actorUid || 'buyer',
+          actorRole: 'buyer',
+          actorName,
+          eventType: 'delivery_confirmed',
+          timestampMs: nowMs,
+          summary: alreadyReleased
+            ? 'Cliente confirmou recebimento do produto em mãos (parcela do revendedor já liberada anteriormente).'
+            : 'Cliente confirmou recebimento do produto em mãos e liberou a parcela do revendedor.',
+        })
+      );
+
+      await updateDoc(orderRef, updatePayload);
     } catch (error) {
       const code = getErrorCodeString(error);
       if (code !== 'permission-denied') {

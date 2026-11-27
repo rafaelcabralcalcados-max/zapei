@@ -233,7 +233,14 @@ import {
   formatPhoneDisplay,
   normalizePhoneDigits,
 } from './lib/phoneUtils';
+import {
+  appendAgreementHistory,
+  createAgreementHistoryEntry,
+  getBuyerReleaseOptionMeta,
+  getResellerReleaseOptionMeta,
+} from './lib/orderAgreement';
 import type {
+  BuyerReleaseOption,
   CallSessionRecord,
   CategoryMargin,
   ChatMessage,
@@ -258,6 +265,7 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  ResellerReleasePreference,
   SplitPaymentMethod,
   SubOrder,
   SupportTicket,
@@ -1710,6 +1718,14 @@ export default function App() {
         subscriptionStatus: overrides.subscriptionStatus ?? base?.subscriptionStatus ?? 'free',
         trialEndsAt: overrides.trialEndsAt ?? base?.trialEndsAt ?? 0,
         favoriteGrades: overrides.favoriteGrades ?? base?.favoriteGrades,
+        resellerReleasePreference:
+          overrides.resellerReleasePreference ?? base?.resellerReleasePreference,
+        resellerReleaseNote:
+          overrides.resellerReleaseNote !== undefined
+            ? overrides.resellerReleaseNote
+            : base?.resellerReleaseNote,
+        defaultCarrierDeadlineDays:
+          overrides.defaultCarrierDeadlineDays ?? base?.defaultCarrierDeadlineDays,
       });
     },
     [authUser, profile]
@@ -3501,11 +3517,16 @@ export default function App() {
       }
       const nextAsaasStatus = statusRes.asaasStatus || statusRes.mappedPaymentStatus;
       if (profile?.uid === order.buyerId || profile?.uid === order.resellerId) {
+        const shouldMarkHeld =
+          statusRes.mappedPaymentStatus === 'Quitado' &&
+          (!order.resellerShareReleaseStatus ||
+            order.resellerShareReleaseStatus === 'awaiting_payment');
         await updateRealOrder(order.id, {
           ...(statusRes.chargeId ? { asaasChargeId: statusRes.chargeId } : {}),
           ...(nextAsaasStatus ? { asaasChargeStatus: nextAsaasStatus } : {}),
           ...(statusRes.invoiceUrl ? { asaasInvoiceUrl: statusRes.invoiceUrl } : {}),
           ...(statusRes.pixCopyPaste ? { asaasPixPayload: statusRes.pixCopyPaste } : {}),
+          ...(shouldMarkHeld ? { resellerShareReleaseStatus: 'held' } : {}),
         }).catch(() => {});
       }
       if (profile?.uid === order.resellerId) {
@@ -3538,6 +3559,131 @@ export default function App() {
       return statusRes;
     },
     [profile?.uid, showToast]
+  );
+
+  const handleUpdateOrderReleasePreference = useCallback(
+    async (
+      order: MixedOrder,
+      preference: ResellerReleasePreference,
+      note: string
+    ) => {
+      if (!profile) return;
+      const prefMeta = getResellerReleaseOptionMeta(preference);
+      const nextHistory = appendAgreementHistory(
+        order.orderAgreementHistory,
+        createAgreementHistoryEntry({
+          actorUid: profile.uid,
+          actorRole: 'reseller',
+          actorName: profile.storefrontName || profile.name,
+          eventType: 'reseller_preference_updated',
+          summary: `Revendedor definiu condição: ${prefMeta.shortLabel}${note ? ` (${note})` : ''}`,
+        })
+      );
+      await updateRealOrder(order.id, {
+        resellerReleasePreference: preference,
+        resellerReleaseNote: note.slice(0, 240),
+        orderAgreementHistory: nextHistory,
+      });
+    },
+    [profile]
+  );
+
+  const handleUpdateBuyerReleaseOption = useCallback(
+    async (order: MixedOrder, option: BuyerReleaseOption) => {
+      if (!profile) return;
+      const optMeta = getBuyerReleaseOptionMeta(option);
+      const nextHistory = appendAgreementHistory(
+        order.orderAgreementHistory,
+        createAgreementHistoryEntry({
+          actorUid: profile.uid,
+          actorRole: 'buyer',
+          actorName: profile.name,
+          eventType: 'buyer_option_updated',
+          summary: `Cliente alterou sua opção de liberação para: ${optMeta.title}`,
+        })
+      );
+      await updateRealOrder(order.id, {
+        buyerReleaseOption: option,
+        mutualAwarenessConfirmed: true,
+        orderAgreementHistory: nextHistory,
+      });
+    },
+    [profile]
+  );
+
+  const handleReleaseResellerShareOnReceipt = useCallback(
+    async (order: MixedOrder) => {
+      if (!profile) return;
+      const nowMs = Date.now();
+      const nextHistory = appendAgreementHistory(
+        order.orderAgreementHistory,
+        createAgreementHistoryEntry({
+          actorUid: profile.uid,
+          actorRole: 'buyer',
+          actorName: profile.name,
+          eventType: 'reseller_share_released',
+          timestampMs: nowMs,
+          summary:
+            'Cliente conferiu o comprovante da transportadora e autorizou a liberação da parcela do revendedor.',
+        })
+      );
+      await updateRealOrder(order.id, {
+        resellerShareReleaseStatus: 'released_on_receipt',
+        resellerShareReleasedAtMs: nowMs,
+        resellerShareReleasedByUid: profile.uid,
+        orderAgreementHistory: nextHistory,
+      });
+    },
+    [profile]
+  );
+
+  const handleExtendCarrierDeadline = useCallback(
+    async (order: MixedOrder | undefined, sub: SubOrder) => {
+      if (!profile) return;
+      const nowMs = Date.now();
+      const currentDays = Math.max(1, sub.carrierDeadlineDays || 7);
+      const nextDays = Math.min(180, currentDays + 5);
+      const baseAtMs =
+        sub.carrierDeadlineAtMs && sub.carrierDeadlineAtMs > 0
+          ? sub.carrierDeadlineAtMs
+          : nowMs + currentDays * 24 * 60 * 60 * 1000;
+      const nextAtMs = baseAtMs + 5 * 24 * 60 * 60 * 1000;
+      const nextExt = (sub.carrierDeadlineExtensions || 0) + 1;
+
+      await updateRealSubOrder(sub.id, {
+        carrierDeadlineDays: nextDays,
+        carrierDeadlineAtMs: nextAtMs,
+        carrierDeadlineExtensions: nextExt,
+        carrierLastExtendedAtMs: nowMs,
+      });
+
+      if (order && order.status !== 'completed' && order.status !== 'cancelled') {
+        const actorRole =
+          profile.uid === order.resellerId
+            ? 'reseller'
+            : order.factoryIds.includes(profile.uid)
+              ? 'manufacturer'
+              : 'system';
+        const nextHistory = appendAgreementHistory(
+          order.orderAgreementHistory,
+          createAgreementHistoryEntry({
+            actorUid: profile.uid,
+            actorRole,
+            actorName:
+              actorRole === 'reseller'
+                ? profile.storefrontName || profile.name
+                : profile.factoryName || profile.name,
+            eventType: 'deadline_extended_5d',
+            timestampMs: nowMs,
+            summary: `Prazo da transportadora (${sub.subOrderCode}) prorrogado em +5 dias (total ${nextDays} dias · prorrogação nº ${nextExt}).`,
+          })
+        );
+        await updateRealOrder(order.id, {
+          orderAgreementHistory: nextHistory,
+        }).catch(() => {});
+      }
+    },
+    [profile]
   );
 
   const handleCancelOrderAndReleaseStock = useCallback(
@@ -6258,23 +6404,56 @@ export default function App() {
                 updateRealProductStock(productId, stockBoxes, isSoldOutToday)
               }
               onConfirmConference={handleConfirmConference}
-              onDispatchSubOrder={async (sub, receiptNote, receiptUrl) => {
+              onDispatchSubOrder={async (
+                sub,
+                receiptNote,
+                receiptUrl,
+                carrierDeadlineDays
+              ) => {
+                const nowMs = Date.now();
+                const deadlineUpdate =
+                  typeof carrierDeadlineDays === 'number' && carrierDeadlineDays >= 1
+                    ? {
+                        carrierDeadlineDays,
+                        carrierDeadlineAtMs:
+                          sub.carrierDeadlineAtMs ||
+                          nowMs + carrierDeadlineDays * 24 * 60 * 60 * 1000,
+                      }
+                    : {};
                 await updateRealSubOrder(sub.id, {
                   status: 'dispatched',
                   receiptNote,
                   receiptUrl,
                   receiptAttached: Boolean(receiptUrl || receiptNote),
+                  ...deadlineUpdate,
                 });
                 const parent = effectiveOrders.find((o) => o.id === sub.parentOrderId);
                 if (parent) {
                   const allDispatched = parent.subOrders.every(
                     (s) => s.id === sub.id || s.status === 'dispatched' || s.status === 'completed'
                   );
-                  if (allDispatched) {
-                    await updateRealOrder(parent.id, { status: 'dispatched' });
-                  }
+                  const nextHistory = appendAgreementHistory(
+                    parent.orderAgreementHistory,
+                    createAgreementHistoryEntry({
+                      actorUid: profile.uid,
+                      actorRole: 'manufacturer',
+                      actorName: profile.factoryName || profile.name,
+                      eventType: 'carrier_receipt_attached',
+                      timestampMs: nowMs,
+                      summary: `Despacho e comprovante anexados (${sub.subOrderCode}): ${receiptNote}${
+                        typeof carrierDeadlineDays === 'number'
+                          ? ` · Prazo ${carrierDeadlineDays}d`
+                          : ''
+                      }`,
+                    })
+                  );
+                  await updateRealOrder(parent.id, {
+                    ...(allDispatched ? { status: 'dispatched' } : {}),
+                    orderAgreementHistory: nextHistory,
+                  });
                 }
               }}
+              onExtendCarrierDeadline={handleExtendCarrierDeadline}
               onUpdatePayment={(paymentId, updates) =>
                 updateRealPayment(paymentId, updates)
               }
@@ -6298,6 +6477,11 @@ export default function App() {
               onSaveStorefrontIdentity={async (storefrontName, storefrontPrivacy) => {
                 await persistProfileUpdate({ storefrontName, storefrontPrivacy });
               }}
+              onSaveReleasePreferences={async (prefs) => {
+                await persistProfileUpdate(prefs);
+              }}
+              onUpdateOrderReleasePreference={handleUpdateOrderReleasePreference}
+              onExtendCarrierDeadline={handleExtendCarrierDeadline}
               onSaveAnchorDiscount={async (anchorDiscountPercent: number) => {
                 await persistProfileUpdate({ anchorDiscountPercent });
               }}
@@ -6342,14 +6526,38 @@ export default function App() {
                 sub: SubOrder,
                 logisticsType: LogisticsType,
                 logisticsCompany: string,
-                logisticsAddress: string
+                logisticsAddress: string,
+                carrierDeadlineDays: number
               ) => {
+                const nowMs = Date.now();
+                const safeDays = Math.min(180, Math.max(1, Math.round(carrierDeadlineDays || 7)));
+                const deadlineAtMs = nowMs + safeDays * 24 * 60 * 60 * 1000;
                 await updateRealSubOrder(sub.id, {
                   logisticsType,
                   logisticsCompany,
                   logisticsAddress,
+                  carrierDeadlineDays: safeDays,
+                  carrierDeadlineAtMs: deadlineAtMs,
+                  carrierDeadlineExtensions: sub.carrierDeadlineExtensions ?? 0,
                   status: 'logistics_sent',
                 });
+                const parent = effectiveOrders.find((o) => o.id === sub.parentOrderId);
+                if (parent && parent.status !== 'completed' && parent.status !== 'cancelled') {
+                  const nextHistory = appendAgreementHistory(
+                    parent.orderAgreementHistory,
+                    createAgreementHistoryEntry({
+                      actorUid: profile.uid,
+                      actorRole: 'reseller',
+                      actorName: profile.storefrontName || profile.name,
+                      eventType: 'logistics_and_deadline_set',
+                      timestampMs: nowMs,
+                      summary: `Transportadora informada (${logisticsType}: ${logisticsCompany}) · Prazo estimado ${safeDays} dia(s).`,
+                    })
+                  );
+                  await updateRealOrder(parent.id, {
+                    orderAgreementHistory: nextHistory,
+                  }).catch(() => {});
+                }
               }}
               onUpdatePayment={(paymentId, updates: { method?: PaymentMethod; status?: PaymentStatus }) =>
                 updateRealPayment(paymentId, updates)
@@ -6383,7 +6591,20 @@ export default function App() {
                   (s) => s.id === sub.id || s.status === 'completed' || s.status === 'cancelled'
                 );
                 if (allCompleted) {
-                  await updateRealOrder(order.id, { status: 'completed' }).catch(() => {});
+                  const nextHistory = appendAgreementHistory(
+                    order.orderAgreementHistory,
+                    createAgreementHistoryEntry({
+                      actorUid: profile.uid,
+                      actorRole: 'reseller',
+                      actorName: profile.storefrontName || profile.name,
+                      eventType: 'delivery_confirmed',
+                      summary: `Recebimento do lote ${sub.subOrderCode} confirmado.`,
+                    })
+                  );
+                  await updateRealOrder(order.id, {
+                    status: 'completed',
+                    orderAgreementHistory: nextHistory,
+                  }).catch(() => {});
                 }
               }}
               onSubmitReview={handleSubmitCommercialReview}
@@ -6529,10 +6750,13 @@ export default function App() {
           onGenerateOrderCharge={handleGenerateAsaasChargeForOrder}
           onSyncOrderStatus={handleSyncAsaasOrderStatus}
           onCancelOrder={handleCancelOrderAndReleaseStock}
+          onUpdateBuyerReleaseOption={handleUpdateBuyerReleaseOption}
+          onReleaseResellerShareOnReceipt={handleReleaseResellerShareOnReceipt}
           onConfirmOrderDelivered={async (order) => {
             await markOrderCompletedByParticipant({
               orderId: order.id,
               subOrderId: order.subOrders[0]?.id,
+              actorName: profile.name,
             });
             showToast(`Entrega do pedido ${order.orderCode} confirmada!`);
           }}
@@ -6548,6 +6772,10 @@ export default function App() {
             paymentMethod,
             installments,
             splitBreakdown,
+            resellerReleasePreference,
+            resellerReleaseNote,
+            buyerReleaseOption,
+            mutualAwarenessConfirmed,
           }) => {
             const firstSub = subOrders[0];
             const orderId = firstSub?.parentOrderId || `ord_${Date.now()}`;
@@ -6575,6 +6803,10 @@ export default function App() {
               minimumFeeApplied: splitBreakdown.minimumRuleApplied,
               splitFactoryNet: splitBreakdown.factoryNetTotal,
               splitResellerNet: splitBreakdown.resellerNetTotal,
+              resellerReleasePreference,
+              resellerReleaseNote,
+              buyerReleaseOption,
+              mutualAwarenessConfirmed,
             });
 
             // Send real interactive order card directly to the storefront owner's chat
@@ -6586,6 +6818,12 @@ export default function App() {
                     acc + s.items.reduce((sum, i) => sum + i.boxesRequested, 0),
                   0
                 );
+                const buyerRuleLabel = getBuyerReleaseOptionMeta(buyerReleaseOption).shortLabel;
+                const summaryRaw = `${totalBoxes} caixa(s) · ${
+                  paymentMethod === 'credit_card'
+                    ? `Cartão ${installments}x de ${formatBRL(splitBreakdown.installmentValue)}`
+                    : `Pix ${formatBRL(splitBreakdown.buyerChargedTotal)}`
+                } · Regra: ${buyerRuleLabel}`;
                 await sendRealChatMessage({
                   myUid: profile.uid,
                   myName: profile.name,
@@ -6594,14 +6832,10 @@ export default function App() {
                   type: 'order_card',
                   text: `Novo pedido ${orderCode} enviado (${totalBoxes} caixas · ${
                     paymentMethod === 'credit_card' ? `Cartão ${installments}x` : 'Pix'
-                  })`,
+                  }) · Liberação: ${buyerRuleLabel}`,
                   orderId,
                   orderCode,
-                  orderSummary: `${totalBoxes} caixa(s) · ${
-                    paymentMethod === 'credit_card'
-                      ? `Cartão ${installments}x de ${formatBRL(splitBreakdown.installmentValue)}`
-                      : `Pix ${formatBRL(splitBreakdown.buyerChargedTotal)}`
-                  }`,
+                  orderSummary: summaryRaw.slice(0, 235),
                   orderTotal: splitBreakdown.buyerChargedTotal,
                   orderStatusLabel: 'Aguardando conferência de estoque',
                 });

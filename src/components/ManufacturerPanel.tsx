@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookmarkPlus,
+  CalendarClock,
   Camera,
   CheckCircle2,
   ClipboardCheck,
@@ -9,6 +10,7 @@ import {
   CreditCard,
   Factory,
   HelpCircle,
+  History,
   Images,
   Minus,
   Package,
@@ -91,6 +93,7 @@ import { GradeVisualGrid } from './GradeVisualGrid';
 import { SplitBreakdownCard } from './SplitBreakdownCard';
 import { WalletIdSplitCard } from './WalletIdSplitCard';
 import type { HelpCenterContext } from './HelpCenterModal';
+import { formatCarrierDeadlineSummary } from '../lib/orderAgreement';
 import { StarRatingBadge } from './StarRatingBadge';
 
 interface ManufacturerPanelProps {
@@ -151,7 +154,12 @@ interface ManufacturerPanelProps {
   onDispatchSubOrder: (
     subOrder: SubOrder,
     receiptNote: string,
-    receiptUrl?: string
+    receiptUrl?: string,
+    carrierDeadlineDays?: number
+  ) => Promise<void>;
+  onExtendCarrierDeadline?: (
+    order: MixedOrder | undefined,
+    sub: SubOrder
   ) => Promise<void>;
   onUpdatePayment: (
     paymentId: string,
@@ -185,6 +193,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   onUpdateStock,
   onConfirmConference,
   onDispatchSubOrder,
+  onExtendCarrierDeadline,
   onUpdatePayment,
   onCancelOrder,
   onOpenBilling,
@@ -496,6 +505,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   // F05 Dispatch receipt drafts keyed by subOrderId
   const [receiptNotes, setReceiptNotes] = useState<Record<string, string>>({});
   const [receiptImages, setReceiptImages] = useState<Record<string, string>>({});
+  const [dispatchDeadlineDays, setDispatchDeadlineDays] = useState<Record<string, string>>({});
+  const [extendingSubId, setExtendingSubId] = useState<string | null>(null);
 
   const myProducts = useMemo(
     () => products.filter((p) => p.factoryId === profile.uid),
@@ -1899,7 +1910,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   <SplitBreakdownCard
                     breakdown={draftSplitPreview}
                     title="Simulação de Recebimento (venda direta)"
-                    factoryLabel="Quanto cai líquido para você"
+                    factoryLabel="Você recebe integralmente (100% do seu preço)"
                     hideResellerIfDirect
                     showMethodToggle
                     onChangeMethod={setPricingSimMethod}
@@ -2085,15 +2096,17 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                             >
                               {pixPreview.belowPixMinThreshold ? (
                                 <>
-                                  <strong>Abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}:</strong> venda
-                                  no Pix aplica tarifa mínima de {formatBRL(PIX_MIN_GROSS_BRL)} · Líquido:{' '}
-                                  <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong>
+                                  Você recebe: <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong>{' '}
+                                  · Total Pix comprador:{' '}
+                                  <strong>{formatBRL(pixPreview.buyerChargedTotal)}</strong> (+taxa
+                                  mínima {formatBRL(pixPreview.platformGrossFee)})
                                 </>
                               ) : (
                                 <>
-                                  Repasse líquido (venda direta Pix):{' '}
-                                  <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong> (taxa
-                                  plataforma {formatBRL(pixPreview.platformGrossFee)})
+                                  Você recebe (venda direta Pix):{' '}
+                                  <strong>{formatBRL(pixPreview.factoryNetTotal)}</strong> · Total Pix
+                                  comprador: <strong>{formatBRL(pixPreview.buyerChargedTotal)}</strong>{' '}
+                                  (+taxa ChatFi {formatBRL(pixPreview.platformGrossFee)})
                                 </>
                               )}
                             </div>
@@ -2565,8 +2578,44 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 )}
 
                 {sub.logisticsAddress && (
-                  <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-700">
-                    <strong>Endereço / Ponto de Entrega:</strong> {sub.logisticsAddress}
+                  <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-700 space-y-1.5">
+                    <p>
+                      <strong>Endereço / Ponto de Entrega:</strong> {sub.logisticsAddress}
+                    </p>
+                    {(sub.carrierDeadlineDays || sub.carrierDeadlineAtMs) && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#0D2B3E]">
+                        <span className="inline-flex items-center gap-1.5 font-medium">
+                          <CalendarClock className="h-3.5 w-3.5" />
+                          {formatCarrierDeadlineSummary({
+                            deadlineDays: sub.carrierDeadlineDays,
+                            deadlineAtMs: sub.carrierDeadlineAtMs,
+                            extensions: sub.carrierDeadlineExtensions,
+                            nowMs,
+                          })}
+                        </span>
+                        {onExtendCarrierDeadline && (
+                          <button
+                            type="button"
+                            disabled={extendingSubId === sub.id}
+                            onClick={async () => {
+                              setExtendingSubId(sub.id);
+                              try {
+                                await onExtendCarrierDeadline(linkedOrder, sub);
+                                setFeedback(
+                                  `Prazo da transportadora do subpedido ${sub.subOrderCode} prorrogado em +5 dias.`
+                                );
+                              } finally {
+                                setExtendingSubId(null);
+                              }
+                            }}
+                            className="inline-flex h-7 items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                          >
+                            <Clock className="h-3 w-3" />
+                            {extendingSubId === sub.id ? 'Prorrogando...' : '+5 dias (Prorrogar)'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2575,6 +2624,40 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     <p className="font-semibold">
                       Despacho concluído · {sub.receiptNote || 'Comprovante anexado'}
                     </p>
+                    {(sub.carrierDeadlineDays || sub.carrierDeadlineAtMs) && !sub.logisticsAddress && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#0D2B3E]">
+                        <span className="inline-flex items-center gap-1.5 font-medium">
+                          <CalendarClock className="h-3.5 w-3.5" />
+                          {formatCarrierDeadlineSummary({
+                            deadlineDays: sub.carrierDeadlineDays,
+                            deadlineAtMs: sub.carrierDeadlineAtMs,
+                            extensions: sub.carrierDeadlineExtensions,
+                            nowMs,
+                          })}
+                        </span>
+                        {onExtendCarrierDeadline && (
+                          <button
+                            type="button"
+                            disabled={extendingSubId === sub.id}
+                            onClick={async () => {
+                              setExtendingSubId(sub.id);
+                              try {
+                                await onExtendCarrierDeadline(linkedOrder, sub);
+                                setFeedback(
+                                  `Prazo da transportadora do subpedido ${sub.subOrderCode} prorrogado em +5 dias.`
+                                );
+                              } finally {
+                                setExtendingSubId(null);
+                              }
+                            }}
+                            className="inline-flex h-7 items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                          >
+                            <Clock className="h-3 w-3" />
+                            {extendingSubId === sub.id ? 'Prorrogando...' : '+5 dias (Prorrogar)'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {sub.receiptUrl && (
                       <img
                         src={sub.receiptUrl}
@@ -2585,7 +2668,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   </div>
                 ) : (
                   <div className="space-y-3 border-t border-slate-100 pt-3">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <input
                         type="text"
                         value={receiptNotes[sub.id] ?? ''}
@@ -2597,6 +2680,28 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         }
                         placeholder="Observação / Nº do conhecimento ou canhoto"
                         className="h-10 rounded-xl border border-slate-200 px-3 text-xs focus:border-[#0E7A34] focus:outline-none"
+                      />
+
+                      <input
+                        type="number"
+                        min="1"
+                        max="180"
+                        value={
+                          dispatchDeadlineDays[sub.id] ??
+                          (sub.carrierDeadlineDays ? String(sub.carrierDeadlineDays) : '')
+                        }
+                        onChange={(e) =>
+                          setDispatchDeadlineDays((prev) => ({
+                            ...prev,
+                            [sub.id]: e.target.value,
+                          }))
+                        }
+                        placeholder={
+                          sub.carrierDeadlineDays
+                            ? `Prazo: ${sub.carrierDeadlineDays} dias`
+                            : 'Prazo transportadora (dias)'
+                        }
+                        className="h-10 rounded-xl border border-slate-200 px-3 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
                       />
 
                       <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-700 hover:border-[#0E7A34]">
@@ -2618,10 +2723,17 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     <button
                       type="button"
                       onClick={async () => {
+                        const rawDays =
+                          dispatchDeadlineDays[sub.id] ??
+                          (sub.carrierDeadlineDays ? String(sub.carrierDeadlineDays) : '');
+                        const parsedDays = rawDays.trim()
+                          ? Math.min(180, Math.max(1, Math.round(Number(rawDays) || 7)))
+                          : undefined;
                         await onDispatchSubOrder(
                           sub,
                           receiptNotes[sub.id]?.trim() || 'Mercadoria despachada',
-                          receiptImages[sub.id]
+                          receiptImages[sub.id],
+                          parsedDays
                         );
                         setFeedback(`Subpedido ${sub.subOrderCode} marcado como despachado.`);
                       }}
@@ -2629,6 +2741,22 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                     >
                       Confirmar Despacho e Enviar Comprovante
                     </button>
+                  </div>
+                )}
+
+                {(linkedOrder?.orderAgreementHistory?.length ?? 0) > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-[11px] text-slate-600">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-[#0D2B3E]">
+                      <History className="h-3.5 w-3.5" />
+                      Último registro do pedido:{' '}
+                    </span>
+                    <span>
+                      {
+                        linkedOrder!.orderAgreementHistory![
+                          linkedOrder!.orderAgreementHistory!.length - 1
+                        ]?.summary
+                      }
+                    </span>
                   </div>
                 )}
 

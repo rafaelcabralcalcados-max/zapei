@@ -85,56 +85,47 @@ export function calculateOrderSplit(input: CalculateSplitInput): OrderSplitBreak
   const rawCommission85 = roundBRL(orderTotal * CHATFI_COMMISSION_RATE);
   const belowPixMinThreshold = orderTotal > 0 && orderTotal < MINIMUM_FEE_THRESHOLD_BRL;
 
+  const factoryNetTotal = orderTotal > 0 ? factoryCostTotal : 0;
+  const resellerNetTotal =
+    orderTotal > 0 && !isDirectManufacturerSale
+      ? roundBRL(Math.max(0, orderTotal - factoryCostTotal))
+      : 0;
+  const distributableToSellers = roundBRL(factoryNetTotal + resellerNetTotal);
+
   let gatewayFee = 0;
   let platformGrossFee = 0;
   let platformNetFee = 0;
   let minimumRuleApplied = false;
-  let buyerChargedTotal = orderTotal;
+  let buyerChargedTotal = distributableToSellers;
   let cardFeePassedToBuyer = 0;
 
   if (orderTotal > 0) {
     if (paymentMethod === 'pix') {
       gatewayFee = PIX_GATEWAY_FEE_BRL;
       minimumRuleApplied = belowPixMinThreshold;
-      const targetGross = minimumRuleApplied
+      platformGrossFee = minimumRuleApplied
         ? PIX_MIN_GROSS_BRL
-        : Math.max(PIX_MIN_GROSS_BRL, rawCommission85);
-      platformGrossFee = roundBRL(Math.min(orderTotal, targetGross));
+        : roundBRL(Math.max(PIX_MIN_GROSS_BRL, rawCommission85));
       platformNetFee = roundBRL(Math.max(0, platformGrossFee - gatewayFee));
-      buyerChargedTotal = orderTotal;
+      buyerChargedTotal = roundBRL(distributableToSellers + platformGrossFee);
       cardFeePassedToBuyer = 0;
     } else {
       minimumRuleApplied = rawCommission85 < CHATFI_MIN_NET_BRL;
-      platformNetFee = roundBRL(Math.min(orderTotal, Math.max(CHATFI_MIN_NET_BRL, rawCommission85)));
+      platformNetFee = roundBRL(Math.max(CHATFI_MIN_NET_BRL, rawCommission85));
       platformGrossFee = platformNetFee;
-      // Gross-up so that after Asaas deducts MDR + installment anticipation + fixed R$ 0.49,
-      // the remaining net equals exact orderTotal (preserving Manufacturer, Reseller, and ChatFi).
+      // Gross-up over (sellers net + ChatFi fee) so after Asaas deducts MDR + installment
+      // interest + fixed R$ 0.49, Manufacturer, Reseller, and ChatFi receive 100% intact.
+      const netBeforeCard = roundBRL(distributableToSellers + platformGrossFee);
       buyerChargedTotal = roundBRL(
-        (orderTotal + cardRates.fixedFee) / (1 - cardRates.totalPercentRate)
+        (netBeforeCard + cardRates.fixedFee) / (1 - cardRates.totalPercentRate)
       );
-      cardFeePassedToBuyer = roundBRL(Math.max(0, buyerChargedTotal - orderTotal));
+      cardFeePassedToBuyer = roundBRL(Math.max(0, buyerChargedTotal - netBeforeCard));
       gatewayFee = cardFeePassedToBuyer;
     }
   }
 
   const installmentValue =
     installments > 0 ? roundBRL(buyerChargedTotal / installments) : buyerChargedTotal;
-
-  const distributableToSellers = roundBRL(Math.max(0, orderTotal - platformGrossFee));
-
-  let factoryNetTotal = 0;
-  let resellerNetTotal = 0;
-
-  if (orderTotal > 0) {
-    if (isDirectManufacturerSale) {
-      factoryNetTotal = distributableToSellers;
-      resellerNetTotal = 0;
-    } else {
-      const factoryRatio = factoryCostTotal / orderTotal;
-      factoryNetTotal = roundBRL(distributableToSellers * factoryRatio);
-      resellerNetTotal = roundBRL(Math.max(0, distributableToSellers - factoryNetTotal));
-    }
-  }
 
   const subOrdersInput = input.subOrders && input.subOrders.length > 0 ? input.subOrders : [];
   const subOrderSplits: SubOrderSplitItem[] = [];

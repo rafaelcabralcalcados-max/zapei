@@ -64,7 +64,9 @@ service cloud.firestore {
           'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'cpfVerified',
           'ratingAverage', 'ratingCount', 'lastRatingReviewId',
           'commercialBanned', 'commercialBanReason', 'commercialBanAtMs',
-          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'createdAt', 'updatedAt'
+          'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen',
+          'resellerReleasePreference', 'resellerReleaseNote', 'defaultCarrierDeadlineDays',
+          'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
@@ -100,6 +102,9 @@ service cloud.firestore {
         && (!('lastSeenAt' in data) || (data.lastSeenAt is number && data.lastSeenAt >= 0))
         && (!('showOnlineStatus' in data) || data.showOnlineStatus is bool)
         && (!('showLastSeen' in data) || data.showLastSeen is bool)
+        && (!('resellerReleasePreference' in data) || data.resellerReleasePreference in ['after_account_release', 'upon_carrier_receipt', 'after_delivery_confirmation'])
+        && (!('resellerReleaseNote' in data) || (data.resellerReleaseNote is string && data.resellerReleaseNote.size() <= 240))
+        && (!('defaultCarrierDeadlineDays' in data) || (data.defaultCarrierDeadlineDays is number && data.defaultCarrierDeadlineDays >= 1 && data.defaultCarrierDeadlineDays <= 90))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -290,6 +295,10 @@ service cloud.firestore {
           'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
           'createdAtMs', 'stockReserved', 'stockRestored', 'reservationExpiresAtMs',
           'cancelledAtMs', 'cancelReason', 'cancelledByUid',
+          'resellerReleasePreference', 'resellerReleaseNote', 'buyerReleaseOption',
+          'mutualAwarenessConfirmed', 'resellerShareReleaseStatus',
+          'resellerShareReleasedAtMs', 'resellerShareReleasedByUid',
+          'orderAgreementHistory',
           'createdAt', 'updatedAt'
         ])
         && data.orderCode is string && data.orderCode.size() >= 2 && data.orderCode.size() <= 32
@@ -325,6 +334,14 @@ service cloud.firestore {
         && (!('cancelledAtMs' in data) || (data.cancelledAtMs is number && data.cancelledAtMs >= 0))
         && (!('cancelReason' in data) || (data.cancelReason is string && data.cancelReason.size() <= 80))
         && (!('cancelledByUid' in data) || isValidId(data.cancelledByUid))
+        && (!('resellerReleasePreference' in data) || data.resellerReleasePreference in ['after_account_release', 'upon_carrier_receipt', 'after_delivery_confirmation'])
+        && (!('resellerReleaseNote' in data) || (data.resellerReleaseNote is string && data.resellerReleaseNote.size() <= 240))
+        && (!('buyerReleaseOption' in data) || data.buyerReleaseOption in ['upon_carrier_receipt', 'upon_product_in_hand'])
+        && (!('mutualAwarenessConfirmed' in data) || data.mutualAwarenessConfirmed is bool)
+        && (!('resellerShareReleaseStatus' in data) || data.resellerShareReleaseStatus in ['awaiting_payment', 'held', 'released_on_receipt', 'released_on_delivery'])
+        && (!('resellerShareReleasedAtMs' in data) || (data.resellerShareReleasedAtMs is number && data.resellerShareReleasedAtMs >= 0))
+        && (!('resellerShareReleasedByUid' in data) || isValidId(data.resellerShareReleasedByUid))
+        && (!('orderAgreementHistory' in data) || (data.orderAgreementHistory is list && data.orderAgreementHistory.size() <= 30 && (data.orderAgreementHistory.size() == 0 || data.orderAgreementHistory[0] is map)))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -336,6 +353,7 @@ service cloud.firestore {
           'anonymousGroupLabel', 'deliveryPolicyLabel', 'items', 'status',
           'factoryCost', 'buyerSubtotal', 'logisticsType', 'logisticsCompany',
           'logisticsAddress', 'receiptNote', 'receiptUrl', 'receiptAttached',
+          'carrierDeadlineDays', 'carrierDeadlineAtMs', 'carrierDeadlineExtensions', 'carrierLastExtendedAtMs',
           'createdAt', 'updatedAt'
         ])
         && isValidId(data.parentOrderId)
@@ -356,6 +374,10 @@ service cloud.firestore {
         && (!('receiptNote' in data) || (data.receiptNote is string && data.receiptNote.size() <= 240))
         && (!('receiptUrl' in data) || (data.receiptUrl is string && data.receiptUrl.size() <= 350000))
         && (!('receiptAttached' in data) || data.receiptAttached is bool)
+        && (!('carrierDeadlineDays' in data) || (data.carrierDeadlineDays is number && data.carrierDeadlineDays >= 1 && data.carrierDeadlineDays <= 180))
+        && (!('carrierDeadlineAtMs' in data) || (data.carrierDeadlineAtMs is number && data.carrierDeadlineAtMs >= 0))
+        && (!('carrierDeadlineExtensions' in data) || (data.carrierDeadlineExtensions is number && data.carrierDeadlineExtensions >= 0 && data.carrierDeadlineExtensions <= 10))
+        && (!('carrierLastExtendedAtMs' in data) || (data.carrierLastExtendedAtMs is number && data.carrierLastExtendedAtMs >= 0))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -712,7 +734,9 @@ service cloud.firestore {
               'deliveryPolicyType', 'deliveryPolicyValue', 'deliveryPolicyPickup', 'deliveryPolicyLabel',
               'subscriptionStatus', 'trialEndsAt', 'virtualLine', 'authMethod', 'cpfVerified',
               'commercialBanned', 'commercialBanReason', 'commercialBanAtMs',
-              'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen', 'updatedAt'
+              'isOnline', 'lastSeenAt', 'showOnlineStatus', 'showLastSeen',
+              'resellerReleasePreference', 'resellerReleaseNote', 'defaultCarrierDeadlineDays',
+              'updatedAt'
             ])) ||
           // Tier 2: Order-verified reviewer atomically updates star rating aggregate
           (incoming().diff(existing()).affectedKeys().hasOnly(['ratingAverage', 'ratingCount', 'lastRatingReviewId', 'updatedAt'])
@@ -1029,7 +1053,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Reseller forwards inquiry, applies commission-only discount, or attaches Asaas split charge
+          // Action: Reseller forwards inquiry, updates release preference/history, applies commission-only discount, or attaches Asaas split charge
           (existing().resellerId == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'discountMode', 'discountValue', 'discountAmount',
@@ -1038,29 +1062,38 @@ service cloud.firestore {
               'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
               'splitFactoryNet', 'splitResellerNet', 'stockReserved',
               'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
+              'resellerReleasePreference', 'resellerReleaseNote',
+              'resellerShareReleaseStatus', 'orderAgreementHistory',
               'updatedAt'
             ])) ||
-          // Action: Participating manufacturer recalculates totals after partial cut / dispatch
+          // Action: Participating manufacturer recalculates totals after partial cut / dispatch or logs logistics deadline/receipt history
           (request.auth.uid in existing().factoryIds
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'buyerFinalTotal', 'buyerSubtotal', 'factoryCostTotal', 'discountAmount',
               'buyerChargedTotal', 'gatewayFee', 'platformFeeGross', 'platformFeeNet',
-              'minimumFeeApplied', 'splitFactoryNet', 'splitResellerNet', 'stockReserved', 'updatedAt'
+              'minimumFeeApplied', 'splitFactoryNet', 'splitResellerNet', 'stockReserved',
+              'orderAgreementHistory', 'updatedAt'
             ])) ||
-          // Action: Buyer records generated Asaas charge details
+          // Action: Buyer records generated Asaas charge details, updates optional release choice, or releases reseller share
           (existing().buyerId == request.auth.uid
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'paymentMethod', 'installments', 'buyerChargedTotal', 'gatewayFee',
               'platformFeeGross', 'platformFeeNet', 'minimumFeeApplied',
               'splitFactoryNet', 'splitResellerNet',
               'asaasChargeId', 'asaasChargeStatus', 'asaasInvoiceUrl', 'asaasPixPayload',
+              'buyerReleaseOption', 'mutualAwarenessConfirmed',
+              'resellerShareReleaseStatus', 'resellerShareReleasedAtMs', 'resellerShareReleasedByUid',
+              'orderAgreementHistory',
               'updatedAt'
             ])) ||
           // Action: Buyer confirms delivery on a dispatched order
           (existing().buyerId == request.auth.uid
             && existing().status == 'dispatched'
             && incoming().status == 'completed'
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])) ||
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'resellerShareReleaseStatus', 'resellerShareReleasedAtMs',
+              'resellerShareReleasedByUid', 'orderAgreementHistory', 'updatedAt'
+            ])) ||
           // Action: Buyer, Reseller, or Participating Manufacturer cancels unpaid order and marks stockRestored atomically
           ((existing().buyerId == request.auth.uid
               || existing().resellerId == request.auth.uid
@@ -1105,12 +1138,20 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Manufacturer confirms stock / partial cut / attaches dispatch receipt
+          // Action: Manufacturer confirms stock / partial cut / attaches dispatch receipt / updates carrier deadline
           (existing().factoryId == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'status', 'factoryCost', 'buyerSubtotal', 'receiptNote', 'receiptUrl', 'receiptAttached', 'updatedAt'])) ||
-          // Action: Reseller forwards inquiry or attaches post-confirmation logistics
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'items', 'status', 'factoryCost', 'buyerSubtotal', 'receiptNote', 'receiptUrl',
+              'receiptAttached', 'carrierDeadlineDays', 'carrierDeadlineAtMs',
+              'carrierDeadlineExtensions', 'carrierLastExtendedAtMs', 'updatedAt'
+            ])) ||
+          // Action: Reseller forwards inquiry or attaches post-confirmation logistics & carrier deadline
           (existing().resellerId == request.auth.uid
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'logisticsType', 'logisticsCompany', 'logisticsAddress', 'updatedAt'])) ||
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'logisticsType', 'logisticsCompany', 'logisticsAddress',
+              'carrierDeadlineDays', 'carrierDeadlineAtMs',
+              'carrierDeadlineExtensions', 'carrierLastExtendedAtMs', 'updatedAt'
+            ])) ||
           // Action: Atomic sub-order cancellation synced with parent order cancellation
           ((existing().buyerId == request.auth.uid
               || existing().resellerId == request.auth.uid

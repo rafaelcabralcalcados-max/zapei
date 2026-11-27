@@ -133,10 +133,10 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
                 <strong className="font-bold">
                   Tarifa mínima aplicada (pedido abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}):
                 </strong>{' '}
-                piso bruto de <strong className="font-mono">{formatBRL(PIX_MIN_GROSS_BRL)}</strong> no
-                Pix (<strong>R$ 5,00</strong> líquido garantido para o ChatFi +{' '}
+                acréscimo mínimo de <strong className="font-mono">{formatBRL(PIX_MIN_GROSS_BRL)}</strong> no
+                Pix (<strong>R$ 5,00</strong> líquido para o ChatFi +{' '}
                 <strong className="font-mono">{formatBRL(PIX_GATEWAY_FEE_BRL)}</strong> da tarifa
-                do gateway Asaas).
+                Asaas), preservando 100% do valor do fabricante.
               </>
             ) : breakdown.minimumRuleApplied ? (
               <>
@@ -144,18 +144,18 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
                   Tarifa mínima aplicada (abaixo de {formatBRL(CARD_MIN_THRESHOLD_BRL)} no Cartão /{' '}
                   {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)} no Pix):
                 </strong>{' '}
-                retorno líquido mínimo garantido de <strong>R$ 5,00</strong> para o ChatFi, com todas
-                as taxas e juros do cartão repassados integralmente ao comprador.
+                retorno líquido mínimo de <strong>R$ 5,00</strong> para o ChatFi somado ao total do
+                comprador junto com as taxas do cartão, preservando 100% do valor do fabricante.
               </>
             ) : (
               <>
                 <strong className="font-bold">
                   Aviso de faixa mínima ({formatBRL(MINIMUM_FEE_THRESHOLD_BRL)}):
                 </strong>{' '}
-                pedidos abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)} pagam o piso bruto de{' '}
+                pedidos abaixo de {formatBRL(MINIMUM_FEE_THRESHOLD_BRL)} somam o piso bruto de{' '}
                 {formatBRL(PIX_MIN_GROSS_BRL)} no Pix (R$ 5,00 líquido + R$ 1,99 Pix). No Cartão de
-                Crédito, aplica-se 8,5% ({formatBRL(breakdown.platformGrossFee)}) e os custos do
-                cartão são repassados ao comprador.
+                Crédito, soma-se 8,5% ({formatBRL(breakdown.platformGrossFee)}) e os custos do
+                cartão ao comprador.
               </>
             )}
           </div>
@@ -195,13 +195,13 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
               )
             </span>
             <span className="font-mono font-bold text-slate-900 tabular-nums">
-              {formatBRL(breakdown.platformGrossFee)}
+              +{formatBRL(breakdown.platformGrossFee)}
             </span>
           </div>
           <p className="mt-0.5 text-[10px] text-slate-500">
             {breakdown.paymentMethod === 'pix'
-              ? `Líquido ChatFi: ${formatBRL(breakdown.platformNetFee)} + Tarifa Pix Asaas: ${formatBRL(breakdown.gatewayFee)}`
-              : `Líquido ChatFi preservado: ${formatBRL(breakdown.platformNetFee)} (efetivo ${breakdown.effectivePlatformRatePct.toFixed(2)}%)`}
+              ? `Acrescida ao comprador · Líquido ChatFi: ${formatBRL(breakdown.platformNetFee)} + Tarifa Pix Asaas: ${formatBRL(breakdown.gatewayFee)}`
+              : `Acrescida ao comprador · Líquido ChatFi preservado: ${formatBRL(breakdown.platformNetFee)} (${breakdown.effectivePlatformRatePct.toFixed(2)}% sobre base)`}
           </p>
         </div>
 

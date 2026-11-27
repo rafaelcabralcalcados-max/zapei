@@ -246,7 +246,45 @@ export interface SubOrder {
   receiptNote?: string;
   receiptUrl?: string;
   receiptAttached?: boolean;
+  carrierDeadlineDays?: number;
+  carrierDeadlineAtMs?: number;
+  carrierDeadlineExtensions?: number;
+  carrierLastExtendedAtMs?: number;
   updatedAt: string;
+}
+
+export type ResellerReleasePreference =
+  | 'after_account_release'
+  | 'upon_carrier_receipt'
+  | 'after_delivery_confirmation';
+
+export type BuyerReleaseOption =
+  | 'upon_carrier_receipt'
+  | 'upon_product_in_hand';
+
+export type ResellerShareReleaseStatus =
+  | 'awaiting_payment'
+  | 'held'
+  | 'released_on_receipt'
+  | 'released_on_delivery';
+
+export interface OrderAgreementHistoryEntry {
+  id: string;
+  timestampMs: number;
+  dateLabel: string;
+  actorUid: string;
+  actorRole: 'buyer' | 'reseller' | 'manufacturer' | 'system';
+  actorName: string;
+  eventType:
+    | 'order_created_terms'
+    | 'reseller_preference_updated'
+    | 'buyer_option_updated'
+    | 'logistics_and_deadline_set'
+    | 'deadline_extended_5d'
+    | 'carrier_receipt_attached'
+    | 'reseller_share_released'
+    | 'delivery_confirmed';
+  summary: string;
 }
 
 export type SplitPaymentMethod = 'pix' | 'credit_card';
@@ -330,6 +368,14 @@ export interface MixedOrder {
   cancelledAtMs?: number;
   cancelReason?: string;
   cancelledByUid?: string;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  buyerReleaseOption?: BuyerReleaseOption;
+  mutualAwarenessConfirmed?: boolean;
+  resellerShareReleaseStatus?: ResellerShareReleaseStatus;
+  resellerShareReleasedAtMs?: number;
+  resellerShareReleasedByUid?: string;
+  orderAgreementHistory?: OrderAgreementHistoryEntry[];
 }
 
 export interface DualPaymentRecord {
@@ -466,6 +512,9 @@ export interface UserProfile {
   commercialBanned?: boolean;
   commercialBanReason?: string;
   commercialBanAtMs?: number;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  defaultCarrierDeadlineDays?: number;
 }
 
 export interface ConnectedDevice {

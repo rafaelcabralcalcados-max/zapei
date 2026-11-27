@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  CalendarClock,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -9,8 +10,11 @@ import {
   Copy,
   CreditCard,
   ExternalLink,
+  FileCheck2,
   FileWarning,
+  Handshake,
   HelpCircle,
+  History,
   Images,
   Minus,
   Package,
@@ -24,10 +28,12 @@ import {
   Store,
   Tag,
   Trash2,
+  Truck,
   X,
   XCircle,
 } from 'lucide-react';
 import type {
+  BuyerReleaseOption,
   CartItem,
   CommercialMode,
   CommercialReview,
@@ -36,6 +42,7 @@ import type {
   MixedOrder,
   OrderSplitBreakdown,
   Product,
+  ResellerReleasePreference,
   SplitPaymentMethod,
   SubOrder,
   SubscriptionStatus,
@@ -79,11 +86,7 @@ import {
   formatBRL,
   getTotalPairsFromGrade,
 } from '../lib/gradeParser';
-import {
-  calculateOrderSplit,
-  getAsaasCreditCardRates,
-  roundBRL,
-} from '../lib/splitCalculator';
+import { calculateOrderSplit } from '../lib/splitCalculator';
 import {
   AsaasChargeModal,
   toAsaasChargeModalData,
@@ -97,6 +100,14 @@ import {
   type ReportModalTarget,
   type ReviewModalTarget,
 } from './RatingAndReportModal';
+import {
+  BUYER_RELEASE_OPTIONS,
+  formatCarrierDeadlineSummary,
+  getBuyerReleaseOptionMeta,
+  getResellerReleaseOptionMeta,
+  getResellerShareReleaseStatusLabel,
+  hasPreferenceDivergence,
+} from '../lib/orderAgreement';
 import { StarRatingBadge } from './StarRatingBadge';
 
 export interface PublicStorefrontOwner {
@@ -112,6 +123,9 @@ export interface PublicStorefrontOwner {
   ratingAverage?: number;
   ratingCount?: number;
   commercialBanned?: boolean;
+  resellerReleasePreference?: ResellerReleasePreference;
+  resellerReleaseNote?: string;
+  defaultCarrierDeadlineDays?: number;
 }
 
 interface CatalogListing {
@@ -142,7 +156,16 @@ interface PublicStorefrontViewProps {
     paymentMethod: SplitPaymentMethod;
     installments: number;
     splitBreakdown: OrderSplitBreakdown;
+    resellerReleasePreference?: ResellerReleasePreference;
+    resellerReleaseNote?: string;
+    buyerReleaseOption: BuyerReleaseOption;
+    mutualAwarenessConfirmed: boolean;
   }) => Promise<CreateAsaasChargeResult | null>;
+  onUpdateBuyerReleaseOption?: (
+    order: MixedOrder,
+    option: BuyerReleaseOption
+  ) => Promise<void>;
+  onReleaseResellerShareOnReceipt?: (order: MixedOrder) => Promise<void>;
   onGenerateOrderCharge?: (
     order: MixedOrder,
     paymentMethod: SplitPaymentMethod,
@@ -190,6 +213,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   initialSubView = 'catalog',
   onClose,
   onCheckoutMixedOrder,
+  onUpdateBuyerReleaseOption,
+  onReleaseResellerShareOnReceipt,
   onGenerateOrderCharge,
   onSyncOrderStatus,
   onCancelOrder,
@@ -209,6 +234,15 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const [installments, setInstallments] = useState<number>(1);
   const [submitting, setSubmitting] = useState(false);
   const [orderNotice, setOrderNotice] = useState('');
+  const [buyerReleaseOption, setBuyerReleaseOption] = useState<BuyerReleaseOption>(() =>
+    owner.resellerReleasePreference === 'upon_carrier_receipt'
+      ? 'upon_carrier_receipt'
+      : 'upon_product_in_hand'
+  );
+  const [mutualAwarenessChecked, setMutualAwarenessChecked] = useState(true);
+  const [releasingShareOrderId, setReleasingShareOrderId] = useState<string | null>(null);
+  const [updatingOptionOrderId, setUpdatingOptionOrderId] = useState<string | null>(null);
+  const [expandedHistoryOrderIds, setExpandedHistoryOrderIds] = useState<Record<string, boolean>>({});
   const [confirmDeliveryOrderId, setConfirmDeliveryOrderId] = useState<string | null>(null);
   const [reviewTarget, setReviewTarget] = useState<ReviewModalTarget | null>(null);
   const [reportTarget, setReportTarget] = useState<ReportModalTarget | null>(null);
@@ -289,7 +323,13 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
     setSelectedCategory('Todas');
     setSelectedSubcategory('Todas');
     setCatalogSearch('');
-  }, [owner.uid, initialSubView]);
+    setBuyerReleaseOption(
+      owner.resellerReleasePreference === 'upon_carrier_receipt'
+        ? 'upon_carrier_receipt'
+        : 'upon_product_in_hand'
+    );
+    setMutualAwarenessChecked(true);
+  }, [owner.uid, owner.resellerReleasePreference, initialSubView]);
 
   const isStorefrontAvailable =
     owner.hasStorefront &&
@@ -490,6 +530,18 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
   const grandTotalBuyer = groupedCart.reduce((acc, g) => acc + g.buyerSubtotal, 0);
   const grandTotalFactory = groupedCart.reduce((acc, g) => acc + g.factoryCost, 0);
 
+  const pixCartBreakdown = useMemo(
+    () =>
+      calculateOrderSplit({
+        orderTotal: grandTotalBuyer,
+        factoryCostTotal: grandTotalFactory,
+        paymentMethod: 'pix',
+        installments: 1,
+        isDirectManufacturerSale: owner.commercialMode === 'manufacturer',
+      }),
+    [grandTotalBuyer, grandTotalFactory, owner.commercialMode]
+  );
+
   const cartBreakdown = useMemo(
     () =>
       calculateOrderSplit({
@@ -571,6 +623,10 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         paymentMethod,
         installments,
         splitBreakdown: cartBreakdown,
+        resellerReleasePreference: owner.resellerReleasePreference,
+        resellerReleaseNote: owner.resellerReleaseNote,
+        buyerReleaseOption,
+        mutualAwarenessConfirmed: mutualAwarenessChecked,
       });
 
       setLastChargeResult(chargeResult);
@@ -626,6 +682,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
               </div>
               <p className="text-xs text-slate-500">
                 Vitrine Comercial ChatFi · Compra gratuita para clientes
+                {owner.commercialMode === 'reseller' && owner.resellerReleasePreference
+                  ? ` · ${getResellerReleaseOptionMeta(owner.resellerReleasePreference).shortLabel}`
+                  : ''}
               </p>
             </div>
           </div>
@@ -1242,7 +1301,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           </div>
                         </div>
                         <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                          {formatBRL(grandTotalBuyer)}
+                          {formatBRL(pixCartBreakdown.buyerChargedTotal)}
                         </span>
                       </button>
 
@@ -1289,16 +1348,18 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-xs font-semibold text-slate-900"
                         >
                           {Array.from({ length: 12 }, (_, idx) => idx + 1).map((n) => {
-                            const rates = getAsaasCreditCardRates(n);
-                            const gross = roundBRL(
-                              (grandTotalBuyer + rates.fixedFee) / (1 - rates.totalPercentRate)
-                            );
-                            const perInst = roundBRL(gross / n);
+                            const instSplit = calculateOrderSplit({
+                              orderTotal: grandTotalBuyer,
+                              factoryCostTotal: grandTotalFactory,
+                              paymentMethod: 'credit_card',
+                              installments: n,
+                              isDirectManufacturerSale: owner.commercialMode === 'manufacturer',
+                            });
                             return (
                               <option key={n} value={n}>
                                 {n === 1
-                                  ? `1x à vista de ${formatBRL(gross)}`
-                                  : `${n}x de ${formatBRL(perInst)} (total ${formatBRL(gross)})`}
+                                  ? `1x à vista de ${formatBRL(instSplit.buyerChargedTotal)}`
+                                  : `${n}x de ${formatBRL(instSplit.installmentValue)} (total ${formatBRL(instSplit.buyerChargedTotal)})`}
                               </option>
                             );
                           })}
@@ -1306,6 +1367,154 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* Explicit Payment Release Rules & Mutual Awareness before Confirming */}
+                  {(() => {
+                    const resellerMeta = getResellerReleaseOptionMeta(
+                      owner.resellerReleasePreference
+                    );
+                    const buyerMeta = getBuyerReleaseOptionMeta(buyerReleaseOption);
+                    const divergence = hasPreferenceDivergence(
+                      owner.resellerReleasePreference,
+                      buyerReleaseOption
+                    );
+
+                    return (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <h3 className="flex items-center gap-1.5 text-sm font-bold text-slate-900">
+                              <Handshake className="h-4 w-4 text-[#0E7A34]" />
+                              Regras de Liberação do Pagamento &amp; Ciência Mútua
+                            </h3>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              Veja a condição informada pelo vendedor e escolha como deseja liberar a parcela comercial. Tudo fica registrado no histórico do pedido.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Reseller's Declared Condition */}
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-1.5">
+                          <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Condição informada pelo vendedor / vitrine
+                          </span>
+                          <p className="text-xs font-bold text-slate-900">
+                            {resellerMeta.title}
+                          </p>
+                          <p className="text-[11px] text-slate-600">
+                            {resellerMeta.description}
+                          </p>
+                          {owner.resellerReleaseNote && (
+                            <p className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] text-slate-700">
+                              <strong>Observação do vendedor:</strong> {owner.resellerReleaseNote}
+                            </p>
+                          )}
+                          {owner.defaultCarrierDeadlineDays && (
+                            <p className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0D2B3E]">
+                              <CalendarClock className="h-3.5 w-3.5" />
+                              Prazo estimado padrão da transportadora: {owner.defaultCarrierDeadlineDays} dia(s) (com possibilidade de prorrogação de +5 dias em imprevistos).
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Optional Buyer Choice */}
+                        <div className="space-y-2">
+                          <span className="block text-xs font-bold text-slate-800">
+                            Como você (Cliente) deseja liberar a parcela do pagamento? (Opcional)
+                          </span>
+                          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                            {BUYER_RELEASE_OPTIONS.map((opt) => {
+                              const selected = buyerReleaseOption === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={() => setBuyerReleaseOption(opt.id)}
+                                  className={`flex flex-col justify-between rounded-xl border p-3.5 text-left transition ${
+                                    selected
+                                      ? 'border-[#0E7A34] bg-emerald-50/70 ring-1 ring-[#0E7A34]'
+                                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <div className="space-y-1">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <span className="text-xs font-bold text-slate-900">
+                                        {opt.title}
+                                      </span>
+                                      <span
+                                        className={`mt-0.5 h-4 w-4 shrink-0 rounded-full border flex items-center justify-center ${
+                                          selected
+                                            ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                                            : 'border-slate-300 bg-white'
+                                        }`}
+                                      >
+                                        {selected && (
+                                          <span className="h-1.5 w-1.5 rounded-full bg-white" />
+                                        )}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] leading-relaxed text-slate-600">
+                                      {opt.description}
+                                    </p>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Mutual Awareness Summary Before Order Confirmation */}
+                        <div
+                          className={`rounded-xl border p-3.5 space-y-2 ${
+                            divergence
+                              ? 'border-amber-200 bg-amber-50/70'
+                              : 'border-emerald-200 bg-emerald-50/50'
+                          }`}
+                        >
+                          <p className="text-xs font-bold text-slate-900">
+                            Resumo de Ciência Mútua (antes da confirmação)
+                          </p>
+                          <div className="grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
+                            <div className="rounded-lg bg-white/90 p-2.5 border border-slate-200/80">
+                              <span className="block font-semibold text-slate-500">
+                                Condição do vendedor:
+                              </span>
+                              <span className="font-bold text-slate-900">
+                                {resellerMeta.shortLabel}
+                              </span>
+                            </div>
+                            <div className="rounded-lg bg-white/90 p-2.5 border border-slate-200/80">
+                              <span className="block font-semibold text-slate-500">
+                                Sua escolha (Cliente):
+                              </span>
+                              <span className="font-bold text-[#0E7A34]">
+                                {buyerMeta.shortLabel}
+                              </span>
+                            </div>
+                          </div>
+                          {divergence && (
+                            <div className="flex items-start gap-2 rounded-lg border border-amber-300/70 bg-amber-100/60 px-2.5 py-2 text-[11px] text-amber-950">
+                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
+                              <span>
+                                <strong>Atenção à combinação:</strong> o vendedor informou preferência por &ldquo;{resellerMeta.shortLabel}&rdquo;, e sua opção está definida como &ldquo;{buyerMeta.shortLabel}&rdquo;. Ambas as posições ficarão registradas no histórico do pedido para ciência mútua.
+                              </span>
+                            </div>
+                          )}
+                          <label className="flex cursor-pointer items-start gap-2 pt-1 text-xs text-slate-800">
+                            <input
+                              type="checkbox"
+                              checked={mutualAwarenessChecked}
+                              onChange={(e) => setMutualAwarenessChecked(e.target.checked)}
+                              className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-[#0E7A34]"
+                            />
+                            <span>
+                              Estou ciente das condições de liberação e envio exibidas acima e concordo em registrá-las no histórico deste pedido.
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-500">
@@ -1317,6 +1526,28 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         {formatBRL(grandTotalBuyer)}
                       </span>
                     </div>
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>
+                        Taxa da plataforma ChatFi (
+                        {cartBreakdown.minimumRuleApplied
+                          ? paymentMethod === 'pix'
+                            ? 'mínima Pix'
+                            : 'mínima'
+                          : '8,5%'}
+                        )
+                      </span>
+                      <span className="font-mono font-semibold text-slate-700 tabular-nums">
+                        +{formatBRL(cartBreakdown.platformGrossFee)}
+                      </span>
+                    </div>
+                    {paymentMethod === 'credit_card' && cartBreakdown.cardFeePassedToBuyer > 0 && (
+                      <div className="flex items-center justify-between text-xs text-slate-500">
+                        <span>Taxas e parcelamento do cartão</span>
+                        <span className="font-mono font-semibold text-[#F97316] tabular-nums">
+                          +{formatBRL(cartBreakdown.cardFeePassedToBuyer)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between border-t border-slate-100 pt-2">
                       <span className="text-sm font-bold text-slate-900">
                         Total Final a Pagar
@@ -1333,12 +1564,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       </div>
                     </div>
                     <p className="text-xs text-slate-500">
-                      Ao confirmar, seu pedido entra em conferência de estoque e um cartão interativo é enviado na conversa.
+                      Ao confirmar, seu pedido entra em conferência de estoque e um cartão interativo com as regras combinadas é enviado na conversa.
                     </p>
                     <button
                       type="button"
                       onClick={() => void handleCheckout()}
-                      disabled={submitting}
+                      disabled={submitting || !mutualAwarenessChecked}
                       className="mt-2 h-12 w-full rounded-xl bg-[#0E7A34] text-sm font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
                     >
                       {submitting
@@ -1430,6 +1661,13 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                   const selectedInst =
                     orderInstMap[order.id] ?? order.installments ?? 1;
                   const isDirectMfg = owner.commercialMode === 'manufacturer';
+                  const orderPixBreakdown = calculateOrderSplit({
+                    orderTotal: order.buyerFinalTotal,
+                    factoryCostTotal: order.factoryCostTotal,
+                    paymentMethod: 'pix',
+                    installments: 1,
+                    isDirectManufacturerSale: isDirectMfg,
+                  });
                   const orderBreakdown = calculateOrderSplit({
                     orderTotal: order.buyerFinalTotal,
                     factoryCostTotal: order.factoryCostTotal,
@@ -1589,7 +1827,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 </div>
                               </div>
                               <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                                {formatBRL(order.buyerFinalTotal)}
+                                {formatBRL(orderPixBreakdown.buyerChargedTotal)}
                               </span>
                             </button>
 
@@ -1643,17 +1881,18 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-xs font-semibold text-slate-900"
                               >
                                 {Array.from({ length: 12 }, (_, idx) => idx + 1).map((n) => {
-                                  const rates = getAsaasCreditCardRates(n);
-                                  const gross = roundBRL(
-                                    (order.buyerFinalTotal + rates.fixedFee) /
-                                      (1 - rates.totalPercentRate)
-                                  );
-                                  const perInst = roundBRL(gross / n);
+                                  const instSplit = calculateOrderSplit({
+                                    orderTotal: order.buyerFinalTotal,
+                                    factoryCostTotal: order.factoryCostTotal,
+                                    paymentMethod: 'credit_card',
+                                    installments: n,
+                                    isDirectManufacturerSale: isDirectMfg,
+                                  });
                                   return (
                                     <option key={n} value={n}>
                                       {n === 1
-                                        ? `1x à vista de ${formatBRL(gross)}`
-                                        : `${n}x de ${formatBRL(perInst)} (total ${formatBRL(gross)})`}
+                                        ? `1x à vista de ${formatBRL(instSplit.buyerChargedTotal)}`
+                                        : `${n}x de ${formatBRL(instSplit.installmentValue)} (total ${formatBRL(instSplit.buyerChargedTotal)})`}
                                     </option>
                                   );
                                 })}
@@ -1851,11 +2090,195 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         </section>
                       )}
 
+                      {/* Mutual Awareness & Payment Release Terms on Order */}
+                      {(() => {
+                        const resellerMeta = getResellerReleaseOptionMeta(
+                          order.resellerReleasePreference
+                        );
+                        const buyerMeta = getBuyerReleaseOptionMeta(order.buyerReleaseOption);
+                        const shareStatusMeta = getResellerShareReleaseStatusLabel(
+                          order.resellerShareReleaseStatus
+                        );
+                        const divergence = hasPreferenceDivergence(
+                          order.resellerReleasePreference,
+                          order.buyerReleaseOption
+                        );
+                        const canChangeBuyerOpt =
+                          Boolean(onUpdateBuyerReleaseOption) &&
+                          order.status !== 'completed' &&
+                          order.status !== 'cancelled' &&
+                          order.resellerShareReleaseStatus !== 'released_on_receipt' &&
+                          order.resellerShareReleaseStatus !== 'released_on_delivery';
+                        const hasAnyReceiptOrDispatch = order.subOrders.some(
+                          (s) =>
+                            Boolean(s.receiptAttached || s.receiptUrl || s.receiptNote) ||
+                            s.status === 'dispatched' ||
+                            s.status === 'completed'
+                        );
+                        const canReleaseOnReceipt =
+                          Boolean(onReleaseResellerShareOnReceipt) &&
+                          order.buyerReleaseOption === 'upon_carrier_receipt' &&
+                          hasAnyReceiptOrDispatch &&
+                          order.status !== 'cancelled' &&
+                          order.status !== 'completed' &&
+                          order.resellerShareReleaseStatus !== 'released_on_receipt' &&
+                          order.resellerShareReleaseStatus !== 'released_on_delivery';
+                        const historyList = order.orderAgreementHistory || [];
+                        const historyExpanded = Boolean(expandedHistoryOrderIds[order.id]);
+
+                        return (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2.5 text-xs">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="inline-flex items-center gap-1.5 font-bold text-slate-900">
+                                <Handshake className="h-3.5 w-3.5 text-[#0E7A34]" />
+                                Acordo de Liberação &amp; Ciência Mútua
+                              </span>
+                              <span
+                                className={`rounded-lg px-2 py-0.5 text-[10px] font-bold ${
+                                  shareStatusMeta.tone === 'green'
+                                    ? 'bg-emerald-100 text-[#0E7A34]'
+                                    : shareStatusMeta.tone === 'amber'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : 'bg-slate-200 text-slate-700'
+                                }`}
+                              >
+                                {shareStatusMeta.label}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-0.5">
+                                <span className="block text-[10px] font-semibold uppercase text-slate-400">
+                                  Condição do vendedor
+                                </span>
+                                <span className="block font-bold text-slate-900">
+                                  {resellerMeta.title}
+                                </span>
+                                {order.resellerReleaseNote && (
+                                  <span className="block text-[11px] text-slate-600">
+                                    Obs.: {order.resellerReleaseNote}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-1">
+                                <span className="block text-[10px] font-semibold uppercase text-slate-400">
+                                  Sua escolha (Cliente)
+                                </span>
+                                <span className="block font-bold text-[#0E7A34]">
+                                  {buyerMeta.title}
+                                </span>
+                                {canChangeBuyerOpt && onUpdateBuyerReleaseOption && (
+                                  <div className="flex flex-wrap gap-1 pt-1">
+                                    {BUYER_RELEASE_OPTIONS.map((opt) => (
+                                      <button
+                                        key={opt.id}
+                                        type="button"
+                                        disabled={updatingOptionOrderId === order.id}
+                                        onClick={async () => {
+                                          if (order.buyerReleaseOption === opt.id) return;
+                                          setUpdatingOptionOrderId(order.id);
+                                          try {
+                                            await onUpdateBuyerReleaseOption(order, opt.id);
+                                            setOrderNotice(
+                                              `Regra de liberação atualizada para "${opt.shortLabel}" e registrada no histórico.`
+                                            );
+                                          } finally {
+                                            setUpdatingOptionOrderId(null);
+                                          }
+                                        }}
+                                        className={`rounded-md px-2 py-1 text-[10px] font-semibold transition ${
+                                          order.buyerReleaseOption === opt.id
+                                            ? 'bg-[#0E7A34] text-white'
+                                            : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                                        }`}
+                                      >
+                                        {opt.shortLabel}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {divergence && (
+                              <div className="flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                <span>
+                                  Divergência registrada para ciência mútua: vendedor ({resellerMeta.shortLabel}) × cliente ({buyerMeta.shortLabel}).
+                                </span>
+                              </div>
+                            )}
+
+                            {canReleaseOnReceipt && onReleaseResellerShareOnReceipt && (
+                              <button
+                                type="button"
+                                disabled={releasingShareOrderId === order.id}
+                                onClick={async () => {
+                                  setReleasingShareOrderId(order.id);
+                                  try {
+                                    await onReleaseResellerShareOnReceipt(order);
+                                    setOrderNotice(
+                                      `Parcela do vendedor liberada mediante conferência do comprovante no pedido ${order.orderCode}.`
+                                    );
+                                  } finally {
+                                    setReleasingShareOrderId(null);
+                                  }
+                                }}
+                                className="inline-flex min-h-[38px] w-full items-center justify-center gap-1.5 rounded-xl bg-[#0E7A34] px-3 text-xs font-semibold text-white transition hover:bg-[#0B5D27] disabled:opacity-60"
+                              >
+                                <FileCheck2 className="h-4 w-4" />
+                                {releasingShareOrderId === order.id
+                                  ? 'Registrando liberação...'
+                                  : 'Liberar Parcela do Revendedor (Comprovante Conferido)'}
+                              </button>
+                            )}
+
+                            {historyList.length > 0 && (
+                              <div className="border-t border-slate-200/80 pt-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedHistoryOrderIds((p) => ({
+                                      ...p,
+                                      [order.id]: !p[order.id],
+                                    }))
+                                  }
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0D2B3E] hover:underline"
+                                >
+                                  <History className="h-3.5 w-3.5" />
+                                  {historyExpanded
+                                    ? `Ocultar histórico de condições e envios (${historyList.length})`
+                                    : `Ver histórico registrado do pedido (${historyList.length})`}
+                                </button>
+                                {historyExpanded && (
+                                  <div className="mt-2 space-y-1.5">
+                                    {historyList.map((entry) => (
+                                      <div
+                                        key={entry.id}
+                                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px]"
+                                      >
+                                        <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                                          <span className="font-semibold text-slate-600">
+                                            {entry.actorName}
+                                          </span>
+                                          <span className="font-mono">{entry.dateLabel}</span>
+                                        </div>
+                                        <p className="mt-0.5 text-slate-700">{entry.summary}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       <div className="space-y-2">
                         {order.subOrders.map((sub) => (
                           <div
                             key={sub.id}
-                            className="rounded-xl bg-slate-50 p-3 text-xs space-y-1"
+                            className="rounded-xl bg-slate-50 p-3 text-xs space-y-1.5"
                           >
                             <div className="flex items-center justify-between font-semibold text-slate-800">
                               <span>{sub.anonymousGroupLabel}</span>
@@ -1877,10 +2300,43 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                               : sub.status}
                               </span>
                             </div>
-                            {(sub.status === 'dispatched' || sub.status === 'completed') && sub.receiptNote && (
-                              <p className="text-[#0E7A34]">
-                                Comprovante: {sub.receiptNote}
+                            {sub.logisticsType !== 'none' && (
+                              <p className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                                <Truck className="h-3.5 w-3.5 shrink-0 text-[#0D2B3E]" />
+                                <span>
+                                  {sub.logisticsType === 'distribuidora'
+                                    ? 'Distribuidora'
+                                    : 'Transportadora'}
+                                  : <strong>{sub.logisticsCompany || 'A definir'}</strong>
+                                  {sub.logisticsAddress ? ` · ${sub.logisticsAddress}` : ''}
+                                </span>
                               </p>
+                            )}
+                            {(sub.carrierDeadlineDays || sub.carrierDeadlineAtMs) && (
+                              <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#0D2B3E]">
+                                <CalendarClock className="h-3.5 w-3.5 shrink-0" />
+                                <span>
+                                  {formatCarrierDeadlineSummary({
+                                    deadlineDays: sub.carrierDeadlineDays,
+                                    deadlineAtMs: sub.carrierDeadlineAtMs,
+                                    extensions: sub.carrierDeadlineExtensions,
+                                    nowMs,
+                                  })}
+                                </span>
+                              </p>
+                            )}
+                            {(sub.status === 'dispatched' || sub.status === 'completed' || sub.receiptAttached) &&
+                              sub.receiptNote && (
+                                <p className="text-[#0E7A34] font-medium">
+                                  Comprovante: {sub.receiptNote}
+                                </p>
+                              )}
+                            {sub.receiptUrl && (
+                              <img
+                                src={sub.receiptUrl}
+                                alt="Comprovante da transportadora"
+                                className="mt-1 h-28 rounded-lg border border-emerald-200 object-cover"
+                              />
                             )}
                           </div>
                         ))}
@@ -1953,7 +2409,10 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                   <CheckCircle2 className="h-3.5 w-3.5" />
                                   {confirmDeliveryOrderId === order.id
                                     ? 'Confirmando...'
-                                    : 'Confirmar Entrega'}
+                                    : order.buyerReleaseOption === 'upon_product_in_hand' &&
+                                        order.resellerShareReleaseStatus !== 'released_on_receipt'
+                                      ? 'Confirmar Produto em Mãos e Liberar'
+                                      : 'Confirmar Entrega'}
                                 </button>
                               )}
 

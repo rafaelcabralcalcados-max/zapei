@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  CalendarClock,
   Check,
   CheckCircle2,
   Clock,
@@ -9,7 +10,9 @@ import {
   ExternalLink,
   Eye,
   FileWarning,
+  Handshake,
   HelpCircle,
+  History,
   Image as ImageIcon,
   Layers,
   Link2,
@@ -40,6 +43,7 @@ import type {
   PaymentStatus,
   Product,
   ProductCategory,
+  ResellerReleasePreference,
   SplitPaymentMethod,
   SubOrder,
   TargetCommercialRole,
@@ -95,6 +99,14 @@ import {
   type ReportModalTarget,
   type ReviewModalTarget,
 } from './RatingAndReportModal';
+import {
+  RESELLER_RELEASE_OPTIONS,
+  formatCarrierDeadlineSummary,
+  getBuyerReleaseOptionMeta,
+  getResellerReleaseOptionMeta,
+  getResellerShareReleaseStatusLabel,
+  hasPreferenceDivergence,
+} from '../lib/orderAgreement';
 import { StarRatingBadge } from './StarRatingBadge';
 
 interface ResellerPanelProps {
@@ -109,6 +121,17 @@ interface ResellerPanelProps {
     storefrontName: string,
     storefrontPrivacy: 'open' | 'approved'
   ) => Promise<void>;
+  onSaveReleasePreferences?: (prefs: {
+    resellerReleasePreference: ResellerReleasePreference;
+    resellerReleaseNote: string;
+    defaultCarrierDeadlineDays: number;
+  }) => Promise<void>;
+  onUpdateOrderReleasePreference?: (
+    order: MixedOrder,
+    preference: ResellerReleasePreference,
+    note: string
+  ) => Promise<void>;
+  onExtendCarrierDeadline?: (order: MixedOrder, sub: SubOrder) => Promise<void>;
   onSaveAnchorDiscount?: (discountPercent: number) => Promise<void>;
   onSaveWalletId: (walletId: string) => Promise<void>;
   onConnectFactoryByPhone: (phone: string) => Promise<{ ok: boolean; message: string }>;
@@ -134,7 +157,8 @@ interface ResellerPanelProps {
     subOrder: SubOrder,
     logisticsType: LogisticsType,
     logisticsCompany: string,
-    logisticsAddress: string
+    logisticsAddress: string,
+    carrierDeadlineDays: number
   ) => Promise<void>;
   onUpdatePayment: (
     paymentId: string,
@@ -191,6 +215,9 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   writtenReviews = [],
   receivedReviews = [],
   onSaveStorefrontIdentity,
+  onSaveReleasePreferences,
+  onUpdateOrderReleasePreference,
+  onExtendCarrierDeadline,
   onSaveAnchorDiscount,
   onSaveWalletId,
   onConnectFactoryByPhone,
@@ -228,6 +255,14 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   );
   const [savingAnchorDiscount, setSavingAnchorDiscount] = useState(false);
   const [anchorSavedOk, setAnchorSavedOk] = useState(false);
+  const [releasePref, setReleasePref] = useState<ResellerReleasePreference>(
+    profile.resellerReleasePreference ?? 'upon_carrier_receipt'
+  );
+  const [releaseNote, setReleaseNote] = useState(profile.resellerReleaseNote ?? '');
+  const [defaultCarrierDays, setDefaultCarrierDays] = useState<string>(
+    String(profile.defaultCarrierDeadlineDays ?? 7)
+  );
+  const [savingReleasePrefs, setSavingReleasePrefs] = useState(false);
 
   useEffect(() => {
     setStorefrontName(profile.storefrontName || `Vitrine ${profile.name}`);
@@ -236,6 +271,18 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   useEffect(() => {
     setAnchorDiscountPct(profile.anchorDiscountPercent ?? 0);
   }, [profile.anchorDiscountPercent]);
+
+  useEffect(() => {
+    setReleasePref(profile.resellerReleasePreference ?? 'upon_carrier_receipt');
+  }, [profile.resellerReleasePreference]);
+
+  useEffect(() => {
+    setReleaseNote(profile.resellerReleaseNote ?? '');
+  }, [profile.resellerReleaseNote]);
+
+  useEffect(() => {
+    setDefaultCarrierDays(String(profile.defaultCarrierDeadlineDays ?? 7));
+  }, [profile.defaultCarrierDeadlineDays]);
 
   // R02 Connect factory by phone & Margin Split Simulator state
   const [factoryPhone, setFactoryPhone] = useState('');
@@ -305,6 +352,16 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const [logTypeMap, setLogTypeMap] = useState<Record<string, LogisticsType>>({});
   const [logCompanyMap, setLogCompanyMap] = useState<Record<string, string>>({});
   const [logAddressMap, setLogAddressMap] = useState<Record<string, string>>({});
+  const [logDeadlineDaysMap, setLogDeadlineDaysMap] = useState<Record<string, string>>({});
+  const [extendingSubId, setExtendingSubId] = useState<string | null>(null);
+  const [orderReleasePrefDraftMap, setOrderReleasePrefDraftMap] = useState<
+    Record<string, ResellerReleasePreference>
+  >({});
+  const [orderReleaseNoteDraftMap, setOrderReleaseNoteDraftMap] = useState<
+    Record<string, string>
+  >({});
+  const [savingOrderPrefId, setSavingOrderPrefId] = useState<string | null>(null);
+  const [expandedHistoryOrderIds, setExpandedHistoryOrderIds] = useState<Record<string, boolean>>({});
 
   const myConnections = useMemo(
     () => connections.filter((c) => c.resellerId === profile.uid),
@@ -916,7 +973,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                             </div>
                             <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
                               {simQty > 1
-                                ? `Vitrine: ${formatBRL(simUnitPublicPrice)} / ${simUnitSuffix} (${formatBRL(simPublicPrice)} total)`
+                                ? `Vitrine: ${formatBRL(simUnitPublicPrice)} / ${simUnitSuffix} (${formatBRL(simPublicPrice)} base)`
                                 : `Vitrine: ${formatBRL(simPublicPrice)} / unid.`}
                             </span>
                           </div>
@@ -1567,6 +1624,150 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                     );
                   })()}
 
+                  {/* Mutual Awareness & Payment Release Terms (Reseller + Buyer) */}
+                  {(() => {
+                    const currentResellerPref =
+                      order.resellerReleasePreference ??
+                      profile.resellerReleasePreference ??
+                      'upon_carrier_receipt';
+                    const draftPref =
+                      orderReleasePrefDraftMap[order.id] ?? currentResellerPref;
+                    const draftNote =
+                      orderReleaseNoteDraftMap[order.id] ??
+                      order.resellerReleaseNote ??
+                      profile.resellerReleaseNote ??
+                      '';
+                    const resellerMeta = getResellerReleaseOptionMeta(currentResellerPref);
+                    const buyerMeta = getBuyerReleaseOptionMeta(order.buyerReleaseOption);
+                    const shareStatusMeta = getResellerShareReleaseStatusLabel(
+                      order.resellerShareReleaseStatus
+                    );
+                    const divergence = hasPreferenceDivergence(
+                      currentResellerPref,
+                      order.buyerReleaseOption
+                    );
+                    const canEditOrderPref =
+                      Boolean(onUpdateOrderReleasePreference) &&
+                      order.status !== 'completed' &&
+                      order.status !== 'cancelled';
+
+                    return (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2.5 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 font-bold text-slate-900">
+                            <Handshake className="h-4 w-4 text-[#0E7A34]" />
+                            Ciência Mútua · Condições de Liberação do Pagamento
+                          </span>
+                          <span
+                            className={`rounded-lg px-2 py-0.5 text-[10px] font-bold ${
+                              shareStatusMeta.tone === 'green'
+                                ? 'bg-emerald-100 text-[#0E7A34]'
+                                : shareStatusMeta.tone === 'amber'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {shareStatusMeta.label}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-0.5">
+                            <span className="block text-[10px] font-semibold uppercase text-slate-400">
+                              Opção escolhida pelo Cliente Final
+                            </span>
+                            <span className="block font-bold text-[#0E7A34]">
+                              {buyerMeta.title}
+                            </span>
+                            <span className="block text-[11px] text-slate-500">
+                              {buyerMeta.description}
+                            </span>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-0.5">
+                            <span className="block text-[10px] font-semibold uppercase text-slate-400">
+                              Sua preferência registrada neste pedido
+                            </span>
+                            <span className="block font-bold text-slate-900">
+                              {resellerMeta.title}
+                            </span>
+                            {order.resellerReleaseNote && (
+                              <span className="block text-[11px] text-slate-600">
+                                Obs.: {order.resellerReleaseNote}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {divergence && (
+                          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900">
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                            <span>
+                              <strong>Atenção:</strong> sua preferência ({resellerMeta.shortLabel}) difere da escolha do cliente ({buyerMeta.shortLabel}). Alinhe pelo chat ou registre abaixo antes de despachar.
+                            </span>
+                          </div>
+                        )}
+
+                        {canEditOrderPref && onUpdateOrderReleasePreference && (
+                          <div className="grid grid-cols-1 gap-2 border-t border-slate-200/80 pt-2 sm:grid-cols-12">
+                            <select
+                              value={draftPref}
+                              onChange={(e) =>
+                                setOrderReleasePrefDraftMap((p) => ({
+                                  ...p,
+                                  [order.id]: e.target.value as ResellerReleasePreference,
+                                }))
+                              }
+                              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold sm:col-span-5"
+                            >
+                              {RESELLER_RELEASE_OPTIONS.map((opt) => (
+                                <option key={opt.id} value={opt.id}>
+                                  {opt.title}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={draftNote}
+                              onChange={(e) =>
+                                setOrderReleaseNoteDraftMap((p) => ({
+                                  ...p,
+                                  [order.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="Observação opcional (ex.: envio após liberação / prazo)"
+                              maxLength={240}
+                              className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs sm:col-span-4"
+                            />
+                            <button
+                              type="button"
+                              disabled={savingOrderPrefId === order.id}
+                              onClick={async () => {
+                                setSavingOrderPrefId(order.id);
+                                try {
+                                  await onUpdateOrderReleasePreference(
+                                    order,
+                                    draftPref,
+                                    draftNote.trim()
+                                  );
+                                  setFeedback(
+                                    `Preferência de liberação do pedido ${order.orderCode} atualizada e registrada no histórico.`
+                                  );
+                                } finally {
+                                  setSavingOrderPrefId(null);
+                                }
+                              }}
+                              className="h-9 rounded-lg bg-[#0D2B3E] px-3 text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50 sm:col-span-3"
+                            >
+                              {savingOrderPrefId === order.id
+                                ? 'Salvando...'
+                                : 'Atualizar Regra'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {/* Sub-orders & Post-Confirmation Logistics (R05) */}
                   <div className="space-y-3">
                     {order.subOrders.map((sub) => {
@@ -1585,6 +1786,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                         logCompanyMap[sub.id] ?? sub.logisticsCompany ?? '';
                       const lAddress =
                         logAddressMap[sub.id] ?? sub.logisticsAddress ?? '';
+                      const lDeadlineDays =
+                        logDeadlineDaysMap[sub.id] ??
+                        String(
+                          sub.carrierDeadlineDays ??
+                            profile.defaultCarrierDeadlineDays ??
+                            7
+                        );
 
                       return (
                         <div
@@ -1632,11 +1840,45 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               </span>
                             </div>
                           ) : sub.status === 'dispatched' || sub.status === 'completed' ? (
-                            <div className="rounded-lg bg-emerald-50 p-3 text-xs text-[#0E7A34]">
+                            <div className="rounded-lg bg-emerald-50 p-3 text-xs text-[#0E7A34] space-y-2">
                               <p className="font-semibold">
                                 Despachado via {sub.logisticsType} ({sub.logisticsCompany}) ·{' '}
                                 {sub.receiptNote || 'Comprovante anexado'}
                               </p>
+                              {(sub.carrierDeadlineDays || sub.carrierDeadlineAtMs) && (
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#0D2B3E]">
+                                  <span className="inline-flex items-center gap-1.5 font-medium">
+                                    <CalendarClock className="h-3.5 w-3.5" />
+                                    {formatCarrierDeadlineSummary({
+                                      deadlineDays: sub.carrierDeadlineDays,
+                                      deadlineAtMs: sub.carrierDeadlineAtMs,
+                                      extensions: sub.carrierDeadlineExtensions,
+                                      nowMs,
+                                    })}
+                                  </span>
+                                  {sub.status === 'dispatched' && onExtendCarrierDeadline && (
+                                    <button
+                                      type="button"
+                                      disabled={extendingSubId === sub.id}
+                                      onClick={async () => {
+                                        setExtendingSubId(sub.id);
+                                        try {
+                                          await onExtendCarrierDeadline(order, sub);
+                                          setFeedback(
+                                            `Prazo da transportadora do subpedido ${sub.subOrderCode} prorrogado em +5 dias.`
+                                          );
+                                        } finally {
+                                          setExtendingSubId(null);
+                                        }
+                                      }}
+                                      className="inline-flex h-7 items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                                    >
+                                      <Clock className="h-3 w-3" />
+                                      {extendingSubId === sub.id ? 'Prorrogando...' : '+5 dias (Prorrogar)'}
+                                    </button>
+                                  )}
+                                </div>
+                              )}
                               {sub.receiptUrl && (
                                 <img
                                   src={sub.receiptUrl}
@@ -1646,63 +1888,124 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                               )}
                             </div>
                           ) : (
-                            <div className="grid grid-cols-1 gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 sm:grid-cols-3">
-                              <select
-                                value={lType}
-                                onChange={(e) =>
-                                  setLogTypeMap((p) => ({
-                                    ...p,
-                                    [sub.id]: e.target.value as LogisticsType,
-                                  }))
-                                }
-                                className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
-                              >
-                                <option value="transportadora">Transportadora</option>
-                                <option value="distribuidora">Distribuidora</option>
-                              </select>
-                              <input
-                                type="text"
-                                value={lCompany}
-                                onChange={(e) =>
-                                  setLogCompanyMap((p) => ({
-                                    ...p,
-                                    [sub.id]: e.target.value,
-                                  }))
-                                }
-                                placeholder="Nome da transportadora/distribuidora"
-                                className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs"
-                              />
-                              <input
-                                type="text"
-                                value={lAddress}
-                                onChange={(e) =>
-                                  setLogAddressMap((p) => ({
-                                    ...p,
-                                    [sub.id]: e.target.value,
-                                  }))
-                                }
-                                placeholder="Endereço / ponto de despacho"
-                                className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs"
-                              />
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  if (!lCompany.trim() || !lAddress.trim()) return;
-                                  await onSubmitLogistics(
-                                    sub,
-                                    lType,
-                                    lCompany.trim(),
-                                    lAddress.trim()
-                                  );
-                                  setFeedback(
-                                    `Logística do subpedido ${sub.subOrderCode} enviada para ${sub.factoryName}.`
-                                  );
-                                }}
-                                className="sm:col-span-3 flex h-9 items-center justify-center gap-1.5 rounded-lg bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
-                              >
-                                <Truck className="h-4 w-4" />
-                                Enviar Dados de Despacho para a Fábrica
-                              </button>
+                            <div className="space-y-2">
+                              {sub.status === 'logistics_sent' && (
+                                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                                  <div className="space-y-0.5">
+                                    <p className="font-semibold text-slate-900">
+                                      Logística informada: {sub.logisticsType.toUpperCase()} — {sub.logisticsCompany}
+                                    </p>
+                                    <p className="text-[11px] text-slate-500">
+                                      {formatCarrierDeadlineSummary({
+                                        deadlineDays: sub.carrierDeadlineDays,
+                                        deadlineAtMs: sub.carrierDeadlineAtMs,
+                                        extensions: sub.carrierDeadlineExtensions,
+                                        nowMs,
+                                      })}
+                                    </p>
+                                  </div>
+                                  {onExtendCarrierDeadline && (
+                                    <button
+                                      type="button"
+                                      disabled={extendingSubId === sub.id}
+                                      onClick={async () => {
+                                        setExtendingSubId(sub.id);
+                                        try {
+                                          await onExtendCarrierDeadline(order, sub);
+                                          setFeedback(
+                                            `Prazo da transportadora do subpedido ${sub.subOrderCode} prorrogado em +5 dias.`
+                                          );
+                                        } finally {
+                                          setExtendingSubId(null);
+                                        }
+                                      }}
+                                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                                    >
+                                      <Clock className="h-3.5 w-3.5" />
+                                      {extendingSubId === sub.id ? 'Prorrogando...' : '+5 dias (Prorrogar)'}
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-1 gap-2 rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 sm:grid-cols-4">
+                                <select
+                                  value={lType}
+                                  onChange={(e) =>
+                                    setLogTypeMap((p) => ({
+                                      ...p,
+                                      [sub.id]: e.target.value as LogisticsType,
+                                    }))
+                                  }
+                                  className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold"
+                                >
+                                  <option value="transportadora">Transportadora</option>
+                                  <option value="distribuidora">Distribuidora</option>
+                                </select>
+                                <input
+                                  type="text"
+                                  value={lCompany}
+                                  onChange={(e) =>
+                                    setLogCompanyMap((p) => ({
+                                      ...p,
+                                      [sub.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Nome da transportadora/distribuidora"
+                                  className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs"
+                                />
+                                <input
+                                  type="text"
+                                  value={lAddress}
+                                  onChange={(e) =>
+                                    setLogAddressMap((p) => ({
+                                      ...p,
+                                      [sub.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Endereço / ponto de despacho"
+                                  className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs"
+                                />
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="180"
+                                  value={lDeadlineDays}
+                                  onChange={(e) =>
+                                    setLogDeadlineDaysMap((p) => ({
+                                      ...p,
+                                      [sub.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Prazo (dias)"
+                                  title="Prazo estimado da transportadora em dias"
+                                  className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 font-mono text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (!lCompany.trim() || !lAddress.trim()) return;
+                                    const parsedDays = Math.min(
+                                      180,
+                                      Math.max(1, Math.round(Number(lDeadlineDays) || 7))
+                                    );
+                                    await onSubmitLogistics(
+                                      sub,
+                                      lType,
+                                      lCompany.trim(),
+                                      lAddress.trim(),
+                                      parsedDays
+                                    );
+                                    setFeedback(
+                                      `Dados da transportadora e prazo de ${parsedDays} dia(s) enviados para ${sub.factoryName}.`
+                                    );
+                                  }}
+                                  className="sm:col-span-4 flex h-9 items-center justify-center gap-1.5 rounded-lg bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
+                                >
+                                  <Truck className="h-4 w-4" />
+                                  Enviar Dados e Prazo da Transportadora para a Fábrica
+                                </button>
+                              </div>
                             </div>
                           )}
 
@@ -1819,6 +2122,44 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                       );
                     })}
                   </div>
+
+                  {(order.orderAgreementHistory?.length ?? 0) > 0 && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedHistoryOrderIds((p) => ({
+                            ...p,
+                            [order.id]: !p[order.id],
+                          }))
+                        }
+                        className="inline-flex items-center gap-1.5 font-semibold text-[#0D2B3E] hover:underline"
+                      >
+                        <History className="h-3.5 w-3.5" />
+                        {expandedHistoryOrderIds[order.id]
+                          ? `Ocultar histórico registrado do pedido (${order.orderAgreementHistory?.length})`
+                          : `Ver histórico registrado do pedido (${order.orderAgreementHistory?.length})`}
+                      </button>
+                      {expandedHistoryOrderIds[order.id] && (
+                        <div className="mt-2 space-y-1.5">
+                          {(order.orderAgreementHistory || []).map((entry) => (
+                            <div
+                              key={entry.id}
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px]"
+                            >
+                              <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                                <span className="font-semibold text-slate-600">
+                                  {entry.actorName}
+                                </span>
+                                <span className="font-mono">{entry.dateLabel}</span>
+                              </div>
+                              <p className="mt-0.5 text-slate-700">{entry.summary}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {onOpenHelp && (
                     <div className="flex justify-end border-t border-slate-100 pt-2.5">
@@ -2231,6 +2572,101 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 ? `Prévia: De ${formatBRL(sampleAnchorOriginalPrice)} → Por ${formatBRL(samplePreviewSellingPrice)} (${anchorDiscountPct}% OFF). O Split e o seu lucro líquido não mudam.`
                 : 'Exibindo apenas o preço final único nos cards da vitrine.'}
             </p>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
+            <div>
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                <Handshake className="h-3.5 w-3.5 text-[#0E7A34]" />
+                Preferência Padrão de Liberação do Pagamento (Exibida ao Cliente)
+              </label>
+              <p className="mt-0.5 text-[11px] text-slate-500">
+                Deixe claro para seus clientes antes do pedido qual é sua preferência de liberação e prazo padrão de transportadora.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              {RESELLER_RELEASE_OPTIONS.map((opt) => (
+                <label
+                  key={opt.id}
+                  className={`flex cursor-pointer items-start gap-2.5 rounded-xl border p-2.5 text-xs transition ${
+                    releasePref === opt.id
+                      ? 'border-[#0E7A34] bg-white ring-1 ring-[#0E7A34]'
+                      : 'border-slate-200 bg-white/80 hover:bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="reseller-release-pref"
+                    checked={releasePref === opt.id}
+                    onChange={() => setReleasePref(opt.id)}
+                    className="mt-0.5 accent-[#0E7A34]"
+                  />
+                  <div>
+                    <span className="block font-bold text-slate-900">{opt.title}</span>
+                    <span className="block text-[11px] text-slate-500">{opt.description}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] font-semibold text-slate-700">
+                  Observação sobre envio / comprovação (opcional)
+                </label>
+                <input
+                  type="text"
+                  value={releaseNote}
+                  onChange={(e) => setReleaseNote(e.target.value)}
+                  maxLength={240}
+                  placeholder="Ex.: Envio em até 24h úteis após confirmação com comprovante"
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs focus:border-[#0E7A34] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700">
+                  Prazo padrão transportadora (dias)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="180"
+                  value={defaultCarrierDays}
+                  onChange={(e) => setDefaultCarrierDays(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2.5 font-mono text-xs focus:border-[#0E7A34] focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {onSaveReleasePreferences && (
+              <button
+                type="button"
+                disabled={savingReleasePrefs}
+                onClick={async () => {
+                  setSavingReleasePrefs(true);
+                  try {
+                    const days = Math.min(
+                      180,
+                      Math.max(1, Math.round(Number(defaultCarrierDays) || 7))
+                    );
+                    await onSaveReleasePreferences({
+                      resellerReleasePreference: releasePref,
+                      resellerReleaseNote: releaseNote.trim(),
+                      defaultCarrierDeadlineDays: days,
+                    });
+                    setFeedback('Preferência de liberação e prazo padrão salvos na sua vitrine.');
+                  } finally {
+                    setSavingReleasePrefs(false);
+                  }
+                }}
+                className="h-9 w-full rounded-lg bg-[#0D2B3E] text-xs font-semibold text-white hover:bg-[#143d57] disabled:opacity-50"
+              >
+                {savingReleasePrefs
+                  ? 'Salvando preferência...'
+                  : 'Salvar Regra de Liberação e Prazo Padrão'}
+              </button>
+            )}
           </div>
 
           <button
