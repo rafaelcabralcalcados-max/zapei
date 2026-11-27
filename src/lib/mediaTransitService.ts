@@ -4,9 +4,10 @@ import type { ChatMessage } from '../types/zapei';
 import {
   auth,
   getDeterministicChatId,
+  markChatMessageMediaDelivered,
+  sendRealChatMessage,
   storage,
 } from './firebase';
-import { updateLocalMessagesStatus } from './localChatStore';
 import {
   type CachedMediaType,
   getLocalMedia,
@@ -15,7 +16,7 @@ import {
   saveLocalMedia,
 } from './localMediaCache';
 import { blobToDataUrl, dataUrlToBlob } from './phoneUtils';
-import { sendRelayChatMessage } from './realtimeClient';
+import { triggerRemoteMessagePush } from './pushService';
 
 /**
  * ZAPEI WHATSAPP-STYLE MEDIA TRANSIT BRIDGE
@@ -280,7 +281,7 @@ export async function sendMediaWithTransitBridge(
           : 'Enviou um vídeo'
         : `Áudio (${durationLabel || '0:00'})`;
 
-  await sendRelayChatMessage({
+  await sendRealChatMessage({
     myUid,
     myName,
     otherUid: recipientId,
@@ -296,10 +297,17 @@ export async function sendMediaWithTransitBridge(
     mediaMimeType: mimeType,
     mediaExpiresAtMs: expiresAtMs,
     customMessageId: messageId,
-    pushPreviewText,
-    pushMessageType: mediaType,
-    authUser,
   });
+
+  const activePushUser = authUser || auth.currentUser;
+  if (activePushUser) {
+    void triggerRemoteMessagePush(activePushUser, {
+      recipientId,
+      senderName: myName,
+      previewText: pushPreviewText,
+      messageType: mediaType,
+    });
+  }
 
   return {
     messageId,
@@ -501,11 +509,8 @@ export async function receiveAndDeliverTransitMedia(params: {
         savedAtMs: Date.now(),
       });
 
-      // 2) Confirm delivery locally in IndexedDB -> mediaDelivered: true & clear inline transit payload
-      await updateLocalMessagesStatus(myUid, msg.chatId, [msg.id], {
-        mediaDelivered: true,
-        mediaUrl: '',
-      });
+      // 2) Confirm delivery in Firestore -> mediaDelivered: true & clear temporary inline URL
+      await markChatMessageMediaDelivered(msg.chatId, msg.id);
 
       // 3) Automatically delete temporary file from Firebase Storage transit_media/ or server transit
       if (msg.mediaTransitPath) {

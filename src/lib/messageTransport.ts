@@ -1,7 +1,7 @@
 import type { User } from 'firebase/auth';
 import type { ChatMessage } from '../types/zapei';
-import { getDeterministicChatId } from './firebase';
-import { sendRelayChatMessage } from './realtimeClient';
+import { getDeterministicChatId, sendRealChatMessage } from './firebase';
+import { triggerRemoteMessagePush } from './pushService';
 
 /**
  * ZAPEI MODULAR MESSAGE TRANSPORT LAYER (Phase 1: Smart Offline Outbox + Mesh Bridge Ready)
@@ -230,7 +230,7 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
   channelName: 'cloud_firebase',
   isAvailable: () => typeof navigator === 'undefined' || navigator.onLine,
   sendPacket: async (packet, authUser) => {
-    await sendRelayChatMessage({
+    await sendRealChatMessage({
       myUid: packet.senderId,
       myName: packet.senderName,
       otherUid: packet.recipientId,
@@ -242,14 +242,20 @@ const cloudFirebaseAdapter: MessageTransportAdapter = {
       audioDuration: packet.audioDuration,
       videoDuration: packet.videoDuration,
       customMessageId: packet.id,
-      pushPreviewText: packet.pushPreviewText || packet.text,
-      pushMessageType:
-        packet.pushMessageType ||
-        (packet.type === 'audio' || packet.type === 'image' || packet.type === 'video'
-          ? packet.type
-          : 'text'),
-      authUser,
     });
+
+    if (authUser) {
+      void triggerRemoteMessagePush(authUser, {
+        recipientId: packet.recipientId,
+        senderName: packet.senderName,
+        previewText: packet.pushPreviewText || packet.text,
+        messageType:
+          packet.pushMessageType ||
+          (packet.type === 'audio' || packet.type === 'image' || packet.type === 'video'
+            ? packet.type
+            : 'text'),
+      });
+    }
 
     return { ok: true, viaMesh: false, hops: 0 };
   },
