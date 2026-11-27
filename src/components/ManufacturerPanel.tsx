@@ -9,6 +9,7 @@ import {
   CreditCard,
   Factory,
   HelpCircle,
+  Images,
   Minus,
   Package,
   Pencil,
@@ -16,9 +17,11 @@ import {
   Receipt,
   RefreshCw,
   Settings2,
+  Star,
   Truck,
   Upload,
   Users,
+  X,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -38,6 +41,7 @@ import type {
   UserProfile,
 } from '../types/zapei';
 import {
+  MAX_PRODUCT_IMAGES,
   PRODUCT_CATEGORIES,
   categoryUsesApparelSizes,
   categoryUsesFootwearSizes,
@@ -52,6 +56,7 @@ import {
   isSingleAssetCategory,
   normalizeProductCategory,
   parseSpecsSummaryEntries,
+  resolveProductImages,
   resolveProductPackLabel,
   resolveProductQuantityPerPack,
   resolveProductUnitType,
@@ -69,7 +74,10 @@ import {
   MINIMUM_FEE_THRESHOLD_BRL,
   PIX_MIN_GROSS_BRL,
 } from '../lib/splitCalculator';
-import { compressImageFileToDataUrl } from '../lib/phoneUtils';
+import {
+  compressImageFileToDataUrl,
+  compressImageFileToMaxBytes,
+} from '../lib/phoneUtils';
 import {
   canCancelUnpaidOrder,
   formatAsaasStatusLabel,
@@ -113,6 +121,7 @@ interface ManufacturerPanelProps {
     stockBoxes: number;
     gradeRaw: string;
     imageUrl: string;
+    imageUrls?: string[];
   }) => Promise<void>;
   onUpdateProduct?: (
     productId: string,
@@ -129,6 +138,7 @@ interface ManufacturerPanelProps {
       stockBoxes: number;
       gradeRaw: string;
       imageUrl: string;
+      imageUrls?: string[];
       isSoldOutToday?: boolean;
     }
   ) => Promise<void>;
@@ -257,8 +267,9 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   const [prodStock, setProdStock] = useState('1');
   const [prodGradeRaw, setProdGradeRaw] = useState('Único:1');
   const [specValues, setSpecValues] = useState<Record<string, string>>({});
-  const [prodImageUrl, setProdImageUrl] = useState('');
-  const [prodImageName, setProdImageName] = useState('');
+  const [prodImageUrls, setProdImageUrls] = useState<string[]>([]);
+  const [prodImageNames, setProdImageNames] = useState<string[]>([]);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [moderationWarning, setModerationWarning] = useState('');
   const [favLabel, setFavLabel] = useState('');
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -532,8 +543,9 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
     setProdStock(String(product.stockBoxes));
     setProdGradeRaw(product.gradeRaw || (qty === 1 ? 'Único:1' : catDef.defaultGradeRaw));
     setSpecValues(parsedSpecs);
-    setProdImageUrl(product.imageUrl);
-    setProdImageName('Foto atual do anúncio');
+    const existingImgs = resolveProductImages(product);
+    setProdImageUrls(existingImgs);
+    setProdImageNames(existingImgs.map((_, idx) => `Foto ${idx + 1} atual`));
     setModerationWarning('');
     setFeedback('');
 
@@ -557,8 +569,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
     setProdStock('1');
     setProdGradeRaw('Único:1');
     setSpecValues({});
-    setProdImageUrl('');
-    setProdImageName('');
+    setProdImageUrls([]);
+    setProdImageNames([]);
     setModerationWarning('');
   };
 
@@ -652,29 +664,76 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
   );
 
   const handleProductPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const fileList = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!file) return;
-    setModerationWarning('');
-    const modCheck = runImageModerationFilter(file.name);
-    if (!modCheck.approved) {
-      setModerationWarning(modCheck.reason || 'Imagem bloqueada pelo filtro de moderação.');
-      setProdImageUrl('');
-      setProdImageName('');
+    if (fileList.length === 0) return;
+
+    const remainingSlots = MAX_PRODUCT_IMAGES - prodImageUrls.length;
+    if (remainingSlots <= 0) {
+      setModerationWarning(`Você já adicionou o limite de ${MAX_PRODUCT_IMAGES} imagens neste anúncio.`);
       return;
     }
+
+    setModerationWarning('');
+    setUploadingPhotos(true);
+    const filesToProcess = fileList.slice(0, remainingSlots);
+    const skippedCount = fileList.length - filesToProcess.length;
+
+    const addedUrls: string[] = [];
+    const addedNames: string[] = [];
+    let blockedReason = '';
+
     try {
-      const compressed = await compressImageFileToDataUrl(file, 840, 0.74);
-      if (compressed.length > 340000) {
-        const smaller = await compressImageFileToDataUrl(file, 640, 0.62);
-        setProdImageUrl(smaller);
-      } else {
-        setProdImageUrl(compressed);
+      for (const file of filesToProcess) {
+        const modCheck = runImageModerationFilter(file.name);
+        if (!modCheck.approved) {
+          blockedReason = modCheck.reason || 'Imagem bloqueada pelo filtro de moderação.';
+          continue;
+        }
+        const compressed = await compressImageFileToMaxBytes(file, 190000);
+        if (compressed) {
+          addedUrls.push(compressed);
+          addedNames.push(file.name);
+        }
       }
-      setProdImageName(file.name);
+
+      if (addedUrls.length > 0) {
+        setProdImageUrls((prev) => [...prev, ...addedUrls].slice(0, MAX_PRODUCT_IMAGES));
+        setProdImageNames((prev) => [...prev, ...addedNames].slice(0, MAX_PRODUCT_IMAGES));
+      }
+
+      if (blockedReason) {
+        setModerationWarning(blockedReason);
+      } else if (skippedCount > 0) {
+        setModerationWarning(
+          `Máximo de ${MAX_PRODUCT_IMAGES} imagens por anúncio. Apenas as ${filesToProcess.length} primeiras selecionadas foram adicionadas.`
+        );
+      }
     } catch {
-      setModerationWarning('Falha ao processar a imagem escolhida.');
+      setModerationWarning('Falha ao processar uma ou mais imagens escolhidas.');
+    } finally {
+      setUploadingPhotos(false);
     }
+  };
+
+  const handleRemoveProductPhoto = (index: number) => {
+    setProdImageUrls((prev) => prev.filter((_, idx) => idx !== index));
+    setProdImageNames((prev) => prev.filter((_, idx) => idx !== index));
+    setModerationWarning('');
+  };
+
+  const handleSetCoverPhoto = (index: number) => {
+    if (index <= 0 || index >= prodImageUrls.length) return;
+    setProdImageUrls((prev) => {
+      const next = [...prev];
+      const [chosen] = next.splice(index, 1);
+      return [chosen, ...next];
+    });
+    setProdImageNames((prev) => {
+      const next = [...prev];
+      const [chosen] = next.splice(index, 1);
+      return [chosen ?? 'Foto de capa', ...next];
+    });
   };
 
   const handleAddFavoriteGrade = async () => {
@@ -701,13 +760,13 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
       return;
     }
 
-    const titleMod = runImageModerationFilter(`${prodName} ${prodImageName}`);
+    const titleMod = runImageModerationFilter(`${prodName} ${prodImageNames.join(' ')}`);
     if (!titleMod.approved) {
       setModerationWarning(titleMod.reason || 'Conteúdo retido pela moderação.');
       return;
     }
-    if (!prodImageUrl) {
-      setModerationWarning('Envie uma foto real do item antes de publicar o anúncio.');
+    if (prodImageUrls.length === 0) {
+      setModerationWarning('Envie pelo menos 1 foto real do item (você pode enviar até 3) antes de publicar.');
       return;
     }
 
@@ -788,7 +847,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           factoryPrice: priceNum,
           stockBoxes: safeStockBoxes,
           gradeRaw: finalGradeRaw,
-          imageUrl: prodImageUrl,
+          imageUrl: prodImageUrls[0],
+          imageUrls: prodImageUrls,
           isSoldOutToday:
             safeStockBoxes > 0 && editingProduct?.stockBoxes === 0
               ? false
@@ -809,7 +869,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           factoryPrice: priceNum,
           stockBoxes: safeStockBoxes,
           gradeRaw: finalGradeRaw,
-          imageUrl: prodImageUrl,
+          imageUrl: prodImageUrls[0],
+          imageUrls: prodImageUrls,
         });
         cancelEditingProduct();
         setFeedback('Anúncio publicado com sucesso!');
@@ -1159,48 +1220,126 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   </div>
                 </div>
 
-                {/* ETAPA 3: Foto, Título e Campos Específicos da Categoria */}
+                {/* ETAPA 3: Fotos (até 3), Título e Campos Específicos da Categoria */}
                 <input
                   ref={productPhotoInputRef}
                   type="file"
                   accept="image/*"
+                  multiple
                   onChange={handleProductPhotoUpload}
                   className="hidden"
                 />
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700">
-                    3. Foto real do anúncio
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => productPhotoInputRef.current?.click()}
-                    className="mt-1.5 flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-4 text-center transition hover:border-[#0E7A34] hover:bg-emerald-50/40"
-                  >
-                    {prodImageUrl ? (
-                      <div className="w-full space-y-2">
-                        <img
-                          src={prodImageUrl}
-                          alt="Prévia do anúncio"
-                          className="mx-auto h-40 w-full rounded-lg object-cover"
-                        />
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#0E7A34]">
-                          <Camera className="h-3.5 w-3.5" />
-                          Trocar foto ({prodImageName})
-                        </span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      3. Fotos reais do anúncio (até {MAX_PRODUCT_IMAGES} imagens)
+                    </label>
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-600 tabular-nums">
+                      {prodImageUrls.length}/{MAX_PRODUCT_IMAGES}
+                    </span>
+                  </div>
+
+                  {prodImageUrls.length === 0 ? (
+                    <button
+                      type="button"
+                      disabled={uploadingPhotos}
+                      onClick={() => productPhotoInputRef.current?.click()}
+                      className="flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-5 text-center transition hover:border-[#0E7A34] hover:bg-emerald-50/40 disabled:opacity-60"
+                    >
+                      <Upload className="h-7 w-7 text-slate-400" />
+                      <span className="mt-2 text-xs font-semibold text-slate-700">
+                        {uploadingPhotos
+                          ? 'Otimizando imagens...'
+                          : `Selecionar até ${MAX_PRODUCT_IMAGES} fotos da câmera ou galeria`}
+                      </span>
+                      <span className="mt-0.5 text-[11px] text-slate-500">
+                        A 1ª foto será a capa do anúncio · Compressão automática
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-3 gap-2">
+                        {Array.from({ length: MAX_PRODUCT_IMAGES }).map((_, slotIdx) => {
+                          const imgUrl = prodImageUrls[slotIdx];
+                          if (imgUrl) {
+                            return (
+                              <div
+                                key={`slot-${slotIdx}`}
+                                className={`group relative aspect-square overflow-hidden rounded-xl border bg-slate-100 ${
+                                  slotIdx === 0
+                                    ? 'border-[#0E7A34] ring-2 ring-[#0E7A34]/20'
+                                    : 'border-slate-200'
+                                }`}
+                              >
+                                <img
+                                  src={imgUrl}
+                                  alt={`Foto ${slotIdx + 1} do anúncio`}
+                                  className="h-full w-full object-cover"
+                                />
+                                {slotIdx === 0 ? (
+                                  <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-md bg-[#0E7A34] px-1.5 py-0.5 text-[10px] font-bold text-white shadow-xs">
+                                    <Star className="h-2.5 w-2.5 fill-current" />
+                                    Capa
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetCoverPhoto(slotIdx)}
+                                    title="Definir como foto de capa"
+                                    className="absolute bottom-1.5 left-1.5 inline-flex items-center gap-0.5 rounded-md bg-slate-900/75 px-1.5 py-0.5 text-[10px] font-semibold text-white transition hover:bg-[#0E7A34]"
+                                  >
+                                    <Star className="h-2.5 w-2.5" />
+                                    Capa
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveProductPhoto(slotIdx)}
+                                  aria-label={`Remover foto ${slotIdx + 1}`}
+                                  title="Remover foto"
+                                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/75 text-white transition hover:bg-red-600"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={`empty-slot-${slotIdx}`}
+                              type="button"
+                              disabled={uploadingPhotos}
+                              onClick={() => productPhotoInputRef.current?.click()}
+                              className="flex aspect-square flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 text-slate-500 transition hover:border-[#0E7A34] hover:bg-emerald-50/40 hover:text-[#0E7A34] disabled:opacity-60"
+                            >
+                              <Camera className="h-5 w-5" />
+                              <span className="text-[11px] font-semibold">
+                                + Foto {slotIdx + 1}
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
-                    ) : (
-                      <>
-                        <Upload className="h-7 w-7 text-slate-400" />
-                        <span className="mt-2 text-xs font-semibold text-slate-700">
-                          Selecionar foto da câmera ou galeria
-                        </span>
-                        <span className="mt-0.5 text-[11px] text-slate-500">
-                          Comprimida automaticamente com filtro de moderação
-                        </span>
-                      </>
-                    )}
-                  </button>
+
+                      {prodImageUrls.length < MAX_PRODUCT_IMAGES && (
+                        <button
+                          type="button"
+                          disabled={uploadingPhotos}
+                          onClick={() => productPhotoInputRef.current?.click()}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0E7A34] hover:underline disabled:opacity-60"
+                        >
+                          <Camera className="h-3.5 w-3.5" />
+                          {uploadingPhotos
+                            ? 'Otimizando imagens...'
+                            : `Adicionar mais fotos (faltam ${
+                                MAX_PRODUCT_IMAGES - prodImageUrls.length
+                              })`}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1838,11 +1977,19 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                           : 'border-slate-200 bg-white'
                       }`}
                     >
-                      <img
-                        src={product.imageUrl}
-                        alt={product.name}
-                        className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-28 sm:w-28"
-                      />
+                      <div className="relative h-28 w-full shrink-0 overflow-hidden rounded-xl bg-slate-100 sm:h-28 sm:w-28">
+                        <img
+                          src={product.imageUrl}
+                          alt={product.name}
+                          className="h-full w-full object-cover"
+                        />
+                        {resolveProductImages(product).length > 1 && (
+                          <span className="absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 rounded-md bg-slate-900/75 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            <Images className="h-3 w-3" />
+                            {resolveProductImages(product).length} fotos
+                          </span>
+                        )}
+                      </div>
                       <div className="flex-1 min-w-0 space-y-2">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>

@@ -41,7 +41,7 @@ import {
   isVirtualLinePrefix,
 } from '../lib/cpfAndDeviceUtils';
 import {
-  compressImageFileToDataUrl,
+  compressAvatarImageHD,
   formatPhoneDisplay,
 } from '../lib/phoneUtils';
 import { DEFAULT_STATUS_MESSAGE, sanitizeStatusMessage } from '../lib/presenceUtils';
@@ -410,13 +410,8 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
     e.target.value = '';
     if (!file) return;
     try {
-      const compressed = await compressImageFileToDataUrl(file, 256, 0.78);
-      if (compressed.length <= 145000) {
-        setAvatarUrl(compressed);
-      } else {
-        const smaller = await compressImageFileToDataUrl(file, 180, 0.65);
-        setAvatarUrl(smaller);
-      }
+      const hdAvatar = await compressAvatarImageHD(file, 440000);
+      setAvatarUrl(hdAvatar);
     } catch {
       setErrorInfo({
         message: 'Não foi possível processar a foto selecionada.',

@@ -26,7 +26,6 @@ import {
   Send,
   Share2,
   Smile,
-  Square,
   Store,
   Trash2,
   Video,
@@ -1117,6 +1116,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     [myUid, peer.uid]
   );
 
+  const [optimisticAudios, setOptimisticAudios] = useState<ChatMessage[]>([]);
+
+  const renderedMessages = useMemo(() => {
+    if (optimisticAudios.length === 0) return messages;
+    return [...messages, ...optimisticAudios];
+  }, [messages, optimisticAudios]);
+
   const notify = (text: string) => {
     if (onNotify) {
       onNotify(text);
@@ -1125,12 +1131,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, peer.uid]);
+  }, [renderedMessages.length, peer.uid]);
 
   useEffect(() => {
     setReplyingTo(null);
     setShowEmojiPicker(false);
     setActionSheetMsg(null);
+    setOptimisticAudios([]);
   }, [peer.uid]);
 
   // React immediately if user deletes media in Settings -> Armazenamento e Dados
@@ -1218,7 +1225,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     if (resolved?.status === 'deleted_locally' || resolved?.status === 'expired') {
       return undefined;
     }
-    if (msg.mediaUrl && msg.mediaUrl.startsWith('data:')) return msg.mediaUrl;
+    if (
+      msg.mediaUrl &&
+      (msg.mediaUrl.startsWith('data:') || msg.mediaUrl.startsWith('blob:'))
+    ) {
+      return msg.mediaUrl;
+    }
     return undefined;
   };
 
@@ -1714,6 +1726,31 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       setMediaError('Não foi possível capturar o áudio. Verifique o microfone e grave por pelo menos 1 segundo.');
       return;
     }
+
+    // Show the voice message bubble immediately (0ms perceived latency)
+    const tempId = `opt_audio_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const previewUrl = URL.createObjectURL(blob);
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, '0')}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      chatId: activeChatId,
+      senderId: myUid,
+      senderName: myName,
+      type: 'audio',
+      text: `Mensagem de voz (${durationLabel})`,
+      mediaUrl: previewUrl,
+      audioDuration: durationLabel,
+      mediaSizeBytes: blob.size,
+      mediaMimeType: blob.type || 'audio/mp4',
+      mediaDelivered: false,
+      deliveryStatus: 'sending',
+      timestamp: timeStr,
+    };
+    setOptimisticAudios((prev) => [...prev, optimisticMsg]);
     setSending(true);
     try {
       await onSendAudio(blob, durationLabel);
@@ -1722,6 +1759,14 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         err instanceof Error ? err.message : 'Erro ao enviar mensagem de voz.'
       );
     } finally {
+      setOptimisticAudios((prev) => prev.filter((m) => m.id !== tempId));
+      window.setTimeout(() => {
+        try {
+          URL.revokeObjectURL(previewUrl);
+        } catch {
+          // Ignore revoke error
+        }
+      }, 2000);
       setSending(false);
     }
   };
@@ -2112,7 +2157,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
       {/* Messages Stream with Bespoke ChatFi Messenger Wallpaper */}
       <div className="chatfi-chat-wallpaper flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
-        {messages.length === 0 ? (
+        {renderedMessages.length === 0 ? (
           <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-emerald-900/10 bg-white/92 p-5 text-center shadow-sm backdrop-blur-xs">
             <p className="text-sm font-semibold text-slate-800">
               Conversa iniciada com {peer.name}
@@ -2122,7 +2167,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </p>
           </div>
         ) : (
-          messages.map((msg) => {
+          renderedMessages.map((msg) => {
             const isMine = msg.senderId === myUid;
             const parsedQuote =
               msg.type === 'text' ? parseQuotedMessage(msg.text) : null;
@@ -2747,35 +2792,62 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         />
 
         {recording ? (
-          <div className="flex items-center justify-between gap-2 rounded-full border border-red-200 bg-red-50 px-3.5 py-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-600" />
-              <span className="truncate text-xs font-semibold text-red-700">
-                Gravando...
-              </span>
-              <span className="shrink-0 font-mono text-xs font-bold text-red-800 tabular-nums">
+          <div className="chatfi-record-capsule flex w-full items-center justify-between gap-2.5 rounded-full py-1.5 pl-1.5 pr-1.5 sm:gap-3">
+            {/* Discard recording button on the left (ergonomic thumb reach) */}
+            <button
+              type="button"
+              onClick={cancelRecording}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-500 shadow-xs transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 active:scale-95"
+              title="Descartar gravação"
+              aria-label="Descartar gravação"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+
+            {/* Glowing live emerald mic badge + crisp timer */}
+            <div className="flex shrink-0 items-center gap-2">
+              <div className="relative flex h-7 w-7 items-center justify-center">
+                <span className="chatfi-mic-ripple absolute inset-0 rounded-full bg-[#16A34A]/30" />
+                <span className="relative flex h-7 w-7 items-center justify-center rounded-full bg-[#0E7A34] text-white shadow-xs">
+                  <Mic className="h-3.5 w-3.5" />
+                </span>
+              </div>
+              <span className="font-mono text-sm font-extrabold tracking-tight text-[#0D3B22] tabular-nums dark:text-emerald-200">
                 {Math.floor(recordSeconds / 60)}:
                 {(recordSeconds % 60).toString().padStart(2, '0')}
               </span>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                type="button"
-                onClick={cancelRecording}
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
-                title="Cancelar gravação"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => void stopAndSendRecording()}
-                className="flex min-h-[40px] items-center gap-1.5 rounded-full bg-[#0E7A34] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0B5D27]"
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                Enviar
-              </button>
+
+            {/* Organic animated live emerald voice waveform bars */}
+            <div
+              aria-hidden="true"
+              className="flex h-7 min-w-0 flex-1 items-center justify-center gap-[3px] overflow-hidden px-1"
+            >
+              {[
+                36, 62, 84, 48, 95, 70, 42, 88, 100, 64, 82, 46, 92, 68, 52, 78, 44, 58,
+              ].map((heightPct, idx) => (
+                <span
+                  key={idx}
+                  className="chatfi-voice-bar w-[3px] shrink-0 rounded-full bg-gradient-to-t from-[#0E7A34] to-[#4ADE80]"
+                  style={{
+                    height: `${Math.max(8, Math.round((heightPct / 100) * 24))}px`,
+                    animationDelay: `${(idx * 75) % 900}ms`,
+                    animationDuration: `${850 + (idx % 5) * 140}ms`,
+                  }}
+                />
+              ))}
             </div>
+
+            {/* Tactile ChatFi emerald send button */}
+            <button
+              type="button"
+              onClick={() => void stopAndSendRecording()}
+              title="Enviar áudio"
+              aria-label="Enviar áudio"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#16A34A] to-[#0B662B] text-white shadow-md shadow-emerald-600/25 transition hover:brightness-110 active:scale-95 sm:h-11 sm:w-11"
+            >
+              <Send className="h-4 w-4 translate-x-[0.5px]" />
+            </button>
           </div>
         ) : (
           <form onSubmit={handleSubmitText} className="flex w-full min-w-0 items-center gap-1 sm:gap-1.5">

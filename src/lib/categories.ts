@@ -599,3 +599,24 @@ export function searchMatchesCategoryOrProduct(
   if (subcategory && norm(subcategory).includes(q)) return true;
   return def.subcategories.some((s) => norm(s).includes(q));
 }
+
+export const MAX_PRODUCT_IMAGES = 3;
+
+export function resolveProductImages(
+  product: Pick<Product, 'imageUrl' | 'imageUrls'>
+): string[] {
+  const result: string[] = [];
+  if (Array.isArray(product.imageUrls)) {
+    for (const raw of product.imageUrls) {
+      if (typeof raw === 'string' && raw.trim() && !result.includes(raw)) {
+        result.push(raw);
+      }
+      if (result.length >= MAX_PRODUCT_IMAGES) break;
+    }
+  }
+  if (result.length === 0 && typeof product.imageUrl === 'string' && product.imageUrl.trim()) {
+    result.push(product.imageUrl);
+  }
+  return result.slice(0, MAX_PRODUCT_IMAGES);
+}
+

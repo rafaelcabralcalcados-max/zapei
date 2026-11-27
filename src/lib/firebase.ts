@@ -458,7 +458,7 @@ export async function registerOrUpdateUserProfile(params: {
     initials,
     statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-    avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+    avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
     commercialMode: mode,
     manufacturerActivated: Boolean(params.manufacturerActivated),
     resellerActivated: Boolean(params.resellerActivated),
@@ -566,7 +566,7 @@ export async function registerOrUpdateUserProfile(params: {
       displayName: params.displayName.slice(0, 80),
       initials,
       avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-      avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+      avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
       role: indexRole,
       hasStorefront,
       storefrontName: resolvedStorefrontName,
@@ -599,7 +599,7 @@ export async function registerOrUpdateUserProfile(params: {
         displayName: params.displayName.slice(0, 80),
         initials,
         avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-        avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+        avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
         role: indexRole,
         hasStorefront,
         storefrontName: resolvedStorefrontName,
@@ -641,7 +641,7 @@ export async function registerOrUpdateUserProfile(params: {
     initials,
     statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-    avatarUrl: (params.avatarUrl ?? '').slice(0, 150000),
+    avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
     role: dirBanned ? 'normal' : indexRole,
     hasStorefront: dirBanned ? false : hasStorefront,
     storefrontName: resolvedStorefrontName,
@@ -964,7 +964,7 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     initials: (profile.initials || getInitials(profile.name)).slice(0, 4),
     statusMessage: sanitizeStatusMessage(profile.statusMessage).slice(0, 160),
     avatarColor: (profile.avatarBg || '#0E7A34').slice(0, 20),
-    avatarUrl: (profile.avatarUrl || '').slice(0, 150000),
+    avatarUrl: (profile.avatarUrl || '').slice(0, 450000),
     role,
     hasStorefront: banned ? false : Boolean(profile.hasStorefront),
     storefrontName,
@@ -1575,6 +1575,8 @@ export function subscribeChatMessages(
   };
 }
 
+const knownExistingChatIds = new Set<string>();
+
 export async function sendRealChatMessage(params: {
   myUid: string;
   myName: string;
@@ -1604,38 +1606,6 @@ export async function sendRealChatMessage(params: {
   const userBName = userB === params.myUid ? safeMyName : safeOtherName;
   const chatId = `${userA}__${userB}`;
   const chatRef = doc(db, 'chats', chatId);
-  let chatExists = false;
-  try {
-    const existingChat = await getDoc(chatRef);
-    chatExists = existingChat.exists();
-  } catch {
-    chatExists = false;
-  }
-
-  try {
-    if (chatExists) {
-      await updateDoc(chatRef, {
-        userAName,
-        userBName,
-        lastMessage: (params.text || '').slice(0, 400),
-        lastSenderId: params.myUid,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(chatRef, {
-        userA,
-        userB,
-        userAName,
-        userBName,
-        lastMessage: (params.text || '').slice(0, 400),
-        lastSenderId: params.myUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `chats/${chatId}`);
-  }
 
   const msgId =
     params.customMessageId && params.customMessageId.trim()
@@ -1670,6 +1640,58 @@ export async function sendRealChatMessage(params: {
   if (params.orderSummary) payload.orderSummary = params.orderSummary.slice(0, 240);
   if (typeof params.orderTotal === 'number') payload.orderTotal = params.orderTotal;
   if (params.orderStatusLabel) payload.orderStatusLabel = params.orderStatusLabel.slice(0, 120);
+
+  const chatUpdateFields = {
+    userAName,
+    userBName,
+    lastMessage: (params.text || '').slice(0, 400),
+    lastSenderId: params.myUid,
+    updatedAt: serverTimestamp(),
+  };
+
+  // Fast path: if this chat thread already exists, skip the extra getDoc() round-trip
+  // and write the message + chat summary in parallel!
+  if (knownExistingChatIds.has(chatId)) {
+    try {
+      await Promise.all([
+        setDoc(doc(db, 'chats', chatId, 'messages', msgId), payload),
+        updateDoc(chatRef, chatUpdateFields),
+      ]);
+      return chatId;
+    } catch {
+      knownExistingChatIds.delete(chatId);
+      // Fall through to full check-and-create path below
+    }
+  }
+
+  let chatExists = false;
+  try {
+    const existingChat = await getDoc(chatRef);
+    chatExists = existingChat.exists();
+  } catch {
+    chatExists = false;
+  }
+
+  try {
+    if (chatExists) {
+      knownExistingChatIds.add(chatId);
+      await Promise.all([
+        setDoc(doc(db, 'chats', chatId, 'messages', msgId), payload),
+        updateDoc(chatRef, chatUpdateFields),
+      ]);
+      return chatId;
+    }
+
+    await setDoc(chatRef, {
+      userA,
+      userB,
+      ...chatUpdateFields,
+      createdAt: serverTimestamp(),
+    });
+    knownExistingChatIds.add(chatId);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `chats/${chatId}`);
+  }
 
   try {
     await setDoc(doc(db, 'chats', chatId, 'messages', msgId), payload);
@@ -1864,6 +1886,13 @@ export function subscribeProducts(
       stockBoxes: Number(d.stockBoxes ?? 0),
       gradeRaw: String(d.gradeRaw || ''),
       imageUrl: String(d.imageUrl || ''),
+      imageUrls: Array.isArray(d.imageUrls)
+        ? (d.imageUrls as unknown[])
+            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+            .slice(0, 3)
+        : d.imageUrl
+          ? [String(d.imageUrl)]
+          : [],
       isSoldOutToday: Boolean(d.isSoldOutToday),
       moderationStatus: (d.moderationStatus as 'approved' | 'flagged') ?? 'approved',
       createdAt: formatTimestampShort(d.createdAt as Timestamp | undefined) || 'Agora',
@@ -1909,8 +1938,18 @@ export async function createRealProduct(params: {
   stockBoxes: number;
   gradeRaw: string;
   imageUrl: string;
+  imageUrls?: string[];
 }): Promise<void> {
   const id = `prod_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const sanitizedImages = (
+    Array.isArray(params.imageUrls) && params.imageUrls.length > 0
+      ? params.imageUrls
+      : [params.imageUrl]
+  )
+    .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+    .slice(0, 3)
+    .map((u, idx) => u.slice(0, idx === 0 ? 350000 : 240000));
+  const coverImage = sanitizedImages[0] || params.imageUrl.slice(0, 350000);
   const payload: Record<string, unknown> = {
     factoryId: params.factoryId,
     factoryName: params.factoryName.slice(0, 100),
@@ -1920,7 +1959,8 @@ export async function createRealProduct(params: {
     factoryPrice: params.factoryPrice,
     stockBoxes: params.stockBoxes,
     gradeRaw: params.gradeRaw.slice(0, 200),
-    imageUrl: params.imageUrl,
+    imageUrl: coverImage,
+    imageUrls: sanitizedImages.length > 0 ? sanitizedImages : [coverImage],
     isSoldOutToday: false,
     moderationStatus: 'approved',
     createdAt: serverTimestamp(),
@@ -1967,6 +2007,7 @@ export async function updateRealProduct(
     stockBoxes: number;
     gradeRaw: string;
     imageUrl: string;
+    imageUrls?: string[];
     isSoldOutToday?: boolean;
   }
 ): Promise<void> {
@@ -1983,6 +2024,16 @@ export async function updateRealProduct(
       ? Math.min(10000, Math.round(params.quantityPerPack))
       : 1;
 
+  const sanitizedImages = (
+    Array.isArray(params.imageUrls) && params.imageUrls.length > 0
+      ? params.imageUrls
+      : [params.imageUrl]
+  )
+    .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+    .slice(0, 3)
+    .map((u, idx) => u.slice(0, idx === 0 ? 350000 : 240000));
+  const coverImage = sanitizedImages[0] || params.imageUrl.slice(0, 350000);
+
   const payload: Record<string, unknown> = {
     name: params.name.trim().slice(0, 120),
     sku: params.sku.trim().slice(0, 40),
@@ -1995,7 +2046,8 @@ export async function updateRealProduct(
     factoryPrice: safePrice,
     stockBoxes: safeStock,
     gradeRaw: (params.gradeRaw.trim() || 'Único:1').slice(0, 200),
-    imageUrl: params.imageUrl.slice(0, 350000),
+    imageUrl: coverImage,
+    imageUrls: sanitizedImages.length > 0 ? sanitizedImages : [coverImage],
     updatedAt: serverTimestamp(),
   };
 

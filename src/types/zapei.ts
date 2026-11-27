@@ -150,6 +150,7 @@ export interface Product {
   stockBoxes: number;
   gradeRaw: string;
   imageUrl: string;
+  imageUrls?: string[];
   isSoldOutToday: boolean;
   moderationStatus: 'approved' | 'flagged';
   lastStockOrderId?: string;

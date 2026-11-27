@@ -73,6 +73,7 @@ import {
   isSingleAssetCategory,
   normalizeProductCategory,
   resolveMarginForProduct,
+  resolveProductImages,
   resolveProductPackLabel,
   resolveProductQuantityPerPack,
   resolveProductUnitType,
@@ -212,6 +213,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
   const [confirmSubDeliveryId, setConfirmSubDeliveryId] = useState<string | null>(null);
   const [reviewTarget, setReviewTarget] = useState<ReviewModalTarget | null>(null);
   const [reportTarget, setReportTarget] = useState<ReportModalTarget | null>(null);
+  const [curationPhotoIdxMap, setCurationPhotoIdxMap] = useState<Record<string, number>>({});
 
   // R01 Identity & Visual Anchor Discount state
   const [storefrontName, setStorefrontName] = useState(
@@ -949,17 +951,52 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                 const mainCat = normalizeProductCategory(product.category);
                 const subCat = inferProductSubcategory(product.category, product.subcategory);
                 const singleAsset = isSingleAssetCategory(product.category);
+                const productImages = resolveProductImages(product);
+                const cardKey = `${connection.id}_${product.id}`;
+                const activeImgIdx = Math.min(
+                  curationPhotoIdxMap[cardKey] ?? 0,
+                  Math.max(0, productImages.length - 1)
+                );
 
                 return (
                   <div
-                    key={`${connection.id}_${product.id}`}
+                    key={cardKey}
                     className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
                   >
-                    <img
-                      src={product.imageUrl}
-                      alt={product.name}
-                      className="h-48 w-full object-cover"
-                    />
+                    <div className="relative h-48 w-full bg-slate-100">
+                      <img
+                        src={productImages[activeImgIdx] || product.imageUrl}
+                        alt={product.name}
+                        className="h-full w-full object-cover"
+                      />
+                      {productImages.length > 1 && (
+                        <>
+                          <span className="absolute right-2.5 top-2.5 rounded-md bg-slate-900/75 px-2 py-0.5 font-mono text-[10px] font-bold text-white tabular-nums">
+                            {activeImgIdx + 1}/{productImages.length}
+                          </span>
+                          <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-slate-900/65 px-2.5 py-1">
+                            {productImages.map((_, idx) => (
+                              <button
+                                key={`${cardKey}-dot-${idx}`}
+                                type="button"
+                                onClick={() =>
+                                  setCurationPhotoIdxMap((prev) => ({
+                                    ...prev,
+                                    [cardKey]: idx,
+                                  }))
+                                }
+                                aria-label={`Ver foto ${idx + 1}`}
+                                className={`h-2 rounded-full transition-all ${
+                                  idx === activeImgIdx
+                                    ? 'w-5 bg-[#4ADE80]'
+                                    : 'w-2 bg-white/60 hover:bg-white'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                     <div className="p-4 space-y-3">
                       <div>
                         <span className="text-[11px] font-semibold text-slate-500">

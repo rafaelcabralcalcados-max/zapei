@@ -39,8 +39,10 @@ export const MAX_MEDIA_BYTES = 25 * 1024 * 1024; // 25 MB
 export const TRANSIT_RETENTION_DAYS = 14;
 export const TRANSIT_RETENTION_MS = TRANSIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-// Safe Firestore fallback ceiling for small photos/short audios if Firebase Storage is unavailable
-const INLINE_FALLBACK_MAX_BYTES = 330 * 1024;
+// Safe Firestore direct-delivery ceiling for voice messages & compact photos
+// (340 KB binary ≈ 453 KB base64, safely under the 500 KB Firestore message mediaUrl rule)
+const INLINE_FALLBACK_MAX_BYTES = 340 * 1024;
+let firebaseStorageUnavailable = false;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -117,62 +119,75 @@ export async function sendMediaWithTransitBridge(
   const transitPath = `transit_media/${chatId}/${messageId}`;
   const expiresAtMs = Date.now() + TRANSIT_RETENTION_MS;
 
-  // Step 1: Save permanent copy immediately in the sender's local IndexedDB
-  const localObjectUrl = await saveLocalMedia({
-    messageId,
-    chatId,
-    peerUid: recipientId,
-    peerName: recipientName,
-    senderId: myUid,
-    mediaType,
-    mimeType,
-    blob,
-    sizeBytes: blob.size,
-    durationLabel,
-    caption,
-    fileName,
-    savedAtMs: Date.now(),
-  });
+  const isPdfFile =
+    mimeType.toLowerCase().includes('pdf') ||
+    (fileName ? fileName.toLowerCase().endsWith('.pdf') : false);
 
-  // Step 2: Upload to temporary Firebase Storage transit bridge
   let downloadUrl = '';
-  let storedTransitPath: string | undefined = transitPath;
+  let storedTransitPath: string | undefined = undefined;
   let usedStorageTransit = false;
 
-  try {
-    const storageRef = ref(storage, transitPath);
-    const timeoutMs = mediaType === 'video' ? 45000 : 10000;
-    downloadUrl = await withTimeout(
-      (async () => {
-        await uploadBytes(storageRef, blob, {
-          contentType: mimeType,
-          customMetadata: {
-            chatId,
-            messageId,
-            senderId: myUid,
-            recipientId,
-            expiresAtMs: String(expiresAtMs),
-          },
-        });
-        return getDownloadURL(storageRef);
-      })(),
-      timeoutMs,
-      'Firebase Storage upload timeout'
-    );
-    usedStorageTransit = true;
-  } catch (uploadError) {
-    // Graceful fallback 1: Inline Firestore data URL for small photos/audios
-    if (blob.size <= INLINE_FALLBACK_MAX_BYTES) {
-      downloadUrl = await blobToDataUrl(blob);
+  // FAST PATH 1: Voice messages & compact images <= 340 KB.
+  // Encode Data URL in parallel with local IndexedDB save (~10ms) and send directly
+  // in Firestore without stalling 4-10s waiting on Firebase Storage upload/retry.
+  const canUseInstantInline =
+    !isPdfFile &&
+    (mediaType === 'audio' || mediaType === 'image') &&
+    blob.size <= INLINE_FALLBACK_MAX_BYTES;
+
+  let localObjectUrl: string;
+  if (canUseInstantInline) {
+    const [savedUrl, inlineDataUrl] = await Promise.all([
+      saveLocalMedia({
+        messageId,
+        chatId,
+        peerUid: recipientId,
+        peerName: recipientName,
+        senderId: myUid,
+        mediaType,
+        mimeType,
+        blob,
+        sizeBytes: blob.size,
+        durationLabel,
+        caption,
+        fileName,
+        savedAtMs: Date.now(),
+      }),
+      blobToDataUrl(blob),
+    ]);
+    localObjectUrl = savedUrl;
+    if (inlineDataUrl.length <= 495000) {
+      downloadUrl = inlineDataUrl;
       storedTransitPath = undefined;
       usedStorageTransit = false;
-    } else {
-      // Graceful fallback 2: Authenticated same-origin transit bridge for long audios / videos
-      const activeUser = authUser || auth.currentUser;
-      if (activeUser) {
-        try {
-          const token = await activeUser.getIdToken();
-          const res = await fetch(
+    }
+  } else {
+    // Save permanent copy immediately in the sender's local IndexedDB
+    localObjectUrl = await saveLocalMedia({
+      messageId,
+      chatId,
+      peerUid: recipientId,
+      peerName: recipientName,
+      senderId: myUid,
+      mediaType,
+      mimeType,
+      blob,
+      sizeBytes: blob.size,
+      durationLabel,
+      caption,
+      fileName,
+      savedAtMs: Date.now(),
+    });
+  }
+
+  // FAST PATH 2: Larger audios, videos, PDFs, or > 495k base64 -> fast same-origin transit endpoint FIRST
+  if (!downloadUrl) {
+    const activeUser = authUser || auth.currentUser;
+    if (activeUser) {
+      try {
+        const token = await activeUser.getIdToken();
+        const res = await withTimeout(
+          fetch(
             `/api/media/transit/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}`,
             {
               method: 'POST',
@@ -182,34 +197,61 @@ export async function sendMediaWithTransitBridge(
               },
               body: blob,
             }
-          );
-          if (res.ok) {
-            const payload = (await res.json()) as { url?: string };
-            if (payload.url) {
-              downloadUrl = payload.url;
-              storedTransitPath = undefined;
-              usedStorageTransit = true;
-            }
-          }
-        } catch (serverErr) {
-          console.error('[Zapei Media Transit] Server transit fallback failed:', serverErr);
-        }
-      }
-
-      if (!downloadUrl) {
-        console.error('[Zapei Media Transit] Firebase Storage upload failed:', uploadError);
-        throw new Error(
-          'Não foi possível enviar esta mídia agora. Verifique sua conexão com a internet e tente novamente.'
+          ),
+          mediaType === 'video' ? 45000 : 12000,
+          'Same-origin transit upload timeout'
         );
+        if (res.ok) {
+          const payload = (await res.json()) as { url?: string };
+          if (payload.url) {
+            downloadUrl = payload.url;
+            storedTransitPath = undefined;
+            usedStorageTransit = true;
+          }
+        }
+      } catch (serverErr) {
+        console.warn('[Zapei Media Transit] Same-origin transit fallback triggered:', serverErr);
       }
     }
   }
 
-  // Step 3: Create message document in Firestore with mediaDelivered: false
-  const isPdfFile =
-    mimeType.toLowerCase().includes('pdf') ||
-    (fileName ? fileName.toLowerCase().endsWith('.pdf') : false);
+  // FALLBACK 3: Firebase Storage transit bucket (only if same-origin transit was unavailable)
+  if (!downloadUrl && !firebaseStorageUnavailable) {
+    try {
+      const storageRef = ref(storage, transitPath);
+      const timeoutMs = mediaType === 'video' ? 30000 : 5000;
+      downloadUrl = await withTimeout(
+        (async () => {
+          await uploadBytes(storageRef, blob, {
+            contentType: mimeType,
+            customMetadata: {
+              chatId,
+              messageId,
+              senderId: myUid,
+              recipientId,
+              expiresAtMs: String(expiresAtMs),
+            },
+          });
+          return getDownloadURL(storageRef);
+        })(),
+        timeoutMs,
+        'Firebase Storage upload timeout'
+      );
+      storedTransitPath = transitPath;
+      usedStorageTransit = true;
+    } catch (uploadError) {
+      firebaseStorageUnavailable = true;
+      console.error('[Zapei Media Transit] Firebase Storage upload failed:', uploadError);
+    }
+  }
 
+  if (!downloadUrl) {
+    throw new Error(
+      'Não foi possível enviar esta mídia agora. Verifique sua conexão com a internet e tente novamente.'
+    );
+  }
+
+  // Step 3: Create message document in Firestore with mediaDelivered: false
   const textLabel = isPdfFile
     ? caption?.trim() || fileName?.trim() || 'Documento.pdf'
     : mediaType === 'image'

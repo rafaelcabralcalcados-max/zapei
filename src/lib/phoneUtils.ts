@@ -142,9 +142,50 @@ export function parseVCardText(vcfContent: string): ImportedPhonebookContact[] {
   return parsed;
 }
 
+function drawImageHighQuality(
+  img: HTMLImageElement,
+  targetWidth: number,
+  targetHeight: number
+): HTMLCanvasElement {
+  // Multi-step halving downscale prevents aliasing/blurriness when resizing
+  // high-megapixel phone camera photos (e.g. 4000px -> 1080px).
+  let currentSource: CanvasImageSource = img;
+  let curW = img.naturalWidth || img.width;
+  let curH = img.naturalHeight || img.height;
+
+  while (curW > targetWidth * 2 && curH > targetHeight * 2) {
+    const nextW = Math.max(targetWidth, Math.round(curW / 2));
+    const nextH = Math.max(targetHeight, Math.round(curH / 2));
+    const stepCanvas = document.createElement('canvas');
+    stepCanvas.width = nextW;
+    stepCanvas.height = nextH;
+    const stepCtx = stepCanvas.getContext('2d');
+    if (!stepCtx) break;
+    stepCtx.imageSmoothingEnabled = true;
+    stepCtx.imageSmoothingQuality = 'high';
+    stepCtx.drawImage(currentSource, 0, 0, nextW, nextH);
+    currentSource = stepCanvas;
+    curW = nextW;
+    curH = nextH;
+  }
+
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = targetWidth;
+  finalCanvas.height = targetHeight;
+  const ctx = finalCanvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, targetWidth, targetHeight);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(currentSource, 0, 0, targetWidth, targetHeight);
+  }
+  return finalCanvas;
+}
+
 /**
- * Compresses a real uploaded image File into a compact JPEG data URL (< 280 KB)
- * suitable for fast real-time rendering and Firestore persistence without hitting the 1MB doc limit.
+ * Compresses a real uploaded image File into a crisp JPEG data URL using
+ * high-quality multi-step resampling suitable for Retina displays and Firestore persistence.
  */
 export async function compressImageFileToDataUrl(
   file: File,
@@ -170,22 +211,39 @@ export async function compressImageFileToDataUrl(
           height = maxDimension;
         }
       }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Não foi possível processar a imagem.'));
-        return;
-      }
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
+      const canvas = drawImageHighQuality(img, width, height);
       const dataUrl = canvas.toDataURL('image/jpeg', quality);
       resolve(dataUrl);
     };
     img.src = objectUrl;
   });
+}
+
+/**
+ * Encodes a user profile avatar at Full HD (up to 1080px, high JPEG quality)
+ * so enlarged profile views look razor sharp on Retina phones while staying
+ * safely below Firestore's 450,000-char avatar field cap.
+ */
+export async function compressAvatarImageHD(
+  file: File,
+  maxDataUrlChars = 440000
+): Promise<string> {
+  const attempts: Array<[number, number]> = [
+    [1080, 0.9],
+    [1080, 0.84],
+    [960, 0.84],
+    [840, 0.82],
+    [720, 0.78],
+    [600, 0.74],
+  ];
+  let lastResult = '';
+  for (const [dim, q] of attempts) {
+    lastResult = await compressImageFileToDataUrl(file, dim, q);
+    if (lastResult.length <= maxDataUrlChars) {
+      return lastResult;
+    }
+  }
+  return lastResult;
 }
 
 /**
@@ -197,11 +255,11 @@ export async function compressImageFileToMaxBytes(
   maxDataUrlChars = 320000
 ): Promise<string> {
   const attempts: Array<[number, number]> = [
+    [960, 0.8],
     [840, 0.74],
-    [680, 0.64],
-    [540, 0.56],
-    [420, 0.48],
-    [320, 0.42],
+    [680, 0.66],
+    [540, 0.58],
+    [420, 0.5],
   ];
   let lastResult = '';
   for (const [dim, q] of attempts) {

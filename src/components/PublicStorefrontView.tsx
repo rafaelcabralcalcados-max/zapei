@@ -1,14 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   CreditCard,
   ExternalLink,
   FileWarning,
   HelpCircle,
+  Images,
   Minus,
   Package,
   Plus,
@@ -53,6 +56,7 @@ import {
   normalizeProductCategory,
   parseSpecsSummaryEntries,
   resolveMarginForProduct,
+  resolveProductImages,
   resolveProductPackLabel,
   resolveProductQuantityPerPack,
   resolveProductUnitType,
@@ -228,6 +232,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
     useState<AsaasChargeModalData | null>(null);
   const [selectedProductListing, setSelectedProductListing] =
     useState<CatalogListing | null>(null);
+  const [detailPhotoIdx, setDetailPhotoIdx] = useState(0);
+  const detailSwipeStartXRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setDetailPhotoIdx(0);
+  }, [selectedProductListing?.product.id]);
 
   const anchorDiscountPct = Math.min(
     80,
@@ -786,6 +796,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     const specEntries = parseSpecsSummaryEntries(listing.product.specsSummary);
                     const showGradeGrid =
                       !singleAsset && hasStructuredGrade(listing.product.gradeRaw);
+                    const cardImages = resolveProductImages(listing.product);
 
                     return (
                       <article
@@ -798,7 +809,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           className="group relative h-52 w-full overflow-hidden bg-slate-100 text-left"
                         >
                           <img
-                            src={listing.product.imageUrl}
+                            src={cardImages[0] || listing.product.imageUrl}
                             alt={listing.product.name}
                             className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                           />
@@ -811,6 +822,12 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
                               <Tag className="h-3 w-3" />
                               {anchorDiscountPct}% OFF
+                            </span>
+                          )}
+                          {cardImages.length > 1 && (
+                            <span className="absolute bottom-2.5 left-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900/75 px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur-xs">
+                              <Images className="h-3 w-3" />
+                              {cardImages.length} fotos
                             </span>
                           )}
                           <span className="absolute bottom-2.5 right-2.5 rounded-lg bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 opacity-0 shadow-xs transition group-hover:opacity-100">
@@ -2033,6 +2050,9 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
         );
         const detailShowGradeGrid =
           !detailSingleAsset && hasStructuredGrade(detailListing.product.gradeRaw);
+        const detailImages = resolveProductImages(detailListing.product);
+        const activePhotoIndex = Math.min(detailPhotoIdx, Math.max(0, detailImages.length - 1));
+        const activePhotoUrl = detailImages[activePhotoIndex] || detailListing.product.imageUrl;
 
         return (
           <div
@@ -2042,10 +2062,28 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
             aria-labelledby="product-detail-title"
           >
             <div className="relative flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-              <div className="relative h-64 shrink-0 bg-slate-100 sm:h-72">
+              <div
+                className="relative h-64 shrink-0 bg-slate-100 sm:h-72 select-none"
+                onTouchStart={(e) => {
+                  detailSwipeStartXRef.current = e.touches[0]?.clientX ?? null;
+                }}
+                onTouchEnd={(e) => {
+                  const startX = detailSwipeStartXRef.current;
+                  detailSwipeStartXRef.current = null;
+                  if (startX === null || detailImages.length <= 1) return;
+                  const endX = e.changedTouches[0]?.clientX ?? startX;
+                  const delta = endX - startX;
+                  if (Math.abs(delta) < 35) return;
+                  setDetailPhotoIdx((prev) =>
+                    delta < 0
+                      ? (prev + 1) % detailImages.length
+                      : (prev - 1 + detailImages.length) % detailImages.length
+                  );
+                }}
+              >
                 <img
-                  src={detailListing.product.imageUrl}
-                  alt={detailListing.product.name}
+                  src={activePhotoUrl}
+                  alt={`${detailListing.product.name} — foto ${activePhotoIndex + 1}`}
                   className="h-full w-full object-cover"
                 />
                 {detailShowLotBadge && (
@@ -2059,6 +2097,35 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     {anchorDiscountPct}% OFF
                   </span>
                 )}
+                {detailImages.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDetailPhotoIdx(
+                          (prev) => (prev - 1 + detailImages.length) % detailImages.length
+                        )
+                      }
+                      aria-label="Foto anterior"
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900/65 text-white shadow-sm transition hover:bg-slate-900/85"
+                    >
+                      <ChevronLeft className="h-5 w-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDetailPhotoIdx((prev) => (prev + 1) % detailImages.length)
+                      }
+                      aria-label="Próxima foto"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900/65 text-white shadow-sm transition hover:bg-slate-900/85"
+                    >
+                      <ChevronRight className="h-5 w-5" />
+                    </button>
+                    <span className="absolute bottom-3 right-3 rounded-lg bg-slate-900/75 px-2.5 py-1 font-mono text-[11px] font-bold text-white tabular-nums">
+                      {activePhotoIndex + 1} / {detailImages.length}
+                    </span>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => setSelectedProductListing(null)}
@@ -2068,6 +2135,30 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                   <X className="h-4 w-4" />
                 </button>
               </div>
+
+              {detailImages.length > 1 && (
+                <div className="flex items-center justify-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2 shrink-0">
+                  {detailImages.map((img, idx) => (
+                    <button
+                      key={`detail-thumb-${idx}`}
+                      type="button"
+                      onClick={() => setDetailPhotoIdx(idx)}
+                      aria-label={`Ver foto ${idx + 1}`}
+                      className={`h-12 w-14 overflow-hidden rounded-lg border-2 transition ${
+                        idx === activePhotoIndex
+                          ? 'border-[#0E7A34] ring-2 ring-[#0E7A34]/25'
+                          : 'border-transparent opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <img
+                        src={img}
+                        alt={`Miniatura ${idx + 1}`}
+                        className="h-full w-full object-cover"
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">

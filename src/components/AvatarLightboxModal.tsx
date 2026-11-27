@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Copy, Phone, X } from 'lucide-react';
+import { Check, Copy, Phone, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { StarRatingBadge } from './StarRatingBadge';
 
 export interface AvatarPreviewTarget {
@@ -24,6 +24,13 @@ export const AvatarLightboxModal: React.FC<AvatarLightboxModalProps> = ({
   onClose,
 }) => {
   const [copiedPhone, setCopiedPhone] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
+  const [naturalDim, setNaturalDim] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    setZoomed(false);
+    setNaturalDim(null);
+  }, [target.avatarUrl]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -42,6 +49,12 @@ export const AvatarLightboxModal: React.FC<AvatarLightboxModalProps> = ({
     target.subtitle && target.subtitle.trim() !== primaryNumber
       ? target.subtitle.trim()
       : '';
+
+  // Legacy avatars saved before the HD upgrade were stored at 180-256px.
+  // Prevent browser over-stretching so older avatars stay clean instead of turning pixelated,
+  // while Full HD avatars (600-1080px) render large and razor sharp with zoom support.
+  const maxNaturalSide = naturalDim ? Math.max(naturalDim.w, naturalDim.h) : 1080;
+  const isLegacyLowRes = Boolean(naturalDim && maxNaturalSide > 0 && maxNaturalSide <= 320);
 
   const handleCopyNumber = async () => {
     if (!primaryNumber) return;
@@ -62,7 +75,7 @@ export const AvatarLightboxModal: React.FC<AvatarLightboxModalProps> = ({
       onClick={onClose}
       className="fixed inset-0 z-[70] flex flex-col bg-slate-950/95"
     >
-      {/* Clean top bar without blurry glow beam */}
+      {/* Clean top bar */}
       <header
         onClick={(e) => e.stopPropagation()}
         className="flex items-center justify-between gap-3 border-b border-white/10 bg-slate-950 px-4 py-3.5 pt-safe text-white"
@@ -91,25 +104,60 @@ export const AvatarLightboxModal: React.FC<AvatarLightboxModalProps> = ({
             <p className="truncate text-xs text-white/70">{secondaryLabel}</p>
           ) : null}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Fechar foto"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white transition hover:bg-white/20"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {target.avatarUrl && !isLegacyLowRes && (
+            <button
+              type="button"
+              onClick={() => setZoomed((z) => !z)}
+              aria-label={zoomed ? 'Reduzir zoom' : 'Ampliar foto'}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white transition hover:bg-white/20"
+            >
+              {zoomed ? <ZoomOut className="h-5 w-5" /> : <ZoomIn className="h-5 w-5" />}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fechar foto"
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white transition hover:bg-white/20"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </header>
 
-      {/* Enlarged photo + phone info card */}
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-4 sm:p-8">
+      {/* Enlarged HD photo + phone info card */}
+      <div className="flex flex-1 flex-col items-center justify-center gap-4 overflow-auto p-4 sm:p-8">
         {target.avatarUrl ? (
-          <img
-            src={target.avatarUrl}
-            alt={target.name}
-            onClick={(e) => e.stopPropagation()}
-            className="max-h-[66dvh] max-w-[92vw] sm:max-w-[500px] w-auto rounded-2xl object-contain shadow-xl ring-1 ring-white/15 select-none"
-          />
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!isLegacyLowRes) setZoomed((z) => !z);
+            }}
+            className={`relative overflow-hidden rounded-2xl bg-slate-900 shadow-2xl ring-1 ring-white/15 select-none transition-transform duration-200 ${
+              !isLegacyLowRes ? 'cursor-zoom-in' : ''
+            } ${zoomed ? 'cursor-zoom-out scale-125 sm:scale-150' : ''}`}
+            style={
+              isLegacyLowRes
+                ? {
+                    maxWidth: `${Math.min(340, Math.max(240, Math.round(maxNaturalSide * 1.25)))}px`,
+                  }
+                : undefined
+            }
+          >
+            <img
+              src={target.avatarUrl}
+              alt={target.name}
+              decoding="sync"
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                  setNaturalDim({ w: img.naturalWidth, h: img.naturalHeight });
+                }
+              }}
+              className="block max-h-[70dvh] max-w-[92vw] sm:max-w-[560px] w-auto object-contain"
+            />
+          </div>
         ) : (
           <div
             onClick={(e) => e.stopPropagation()}

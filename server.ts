@@ -529,7 +529,7 @@ function parseAvatarDataUrl(
   const contentType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
   try {
     const buffer = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
-    if (buffer.length === 0 || buffer.length > 260 * 1024) return null;
+    if (buffer.length === 0 || buffer.length > 512 * 1024) return null;
     return { buffer, contentType };
   } catch {
     return null;

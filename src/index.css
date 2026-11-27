@@ -344,6 +344,55 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.28);
 }
 
+/* Sleek ChatFi Voice Recording Capsule & Animated Waveform */
+.chatfi-record-capsule {
+  background: linear-gradient(135deg, #f0faf3 0%, #ffffff 55%, #eaf7ee 100%);
+  border: 1px solid rgba(14, 122, 52, 0.22);
+  box-shadow: 0 4px 16px -4px rgba(11, 93, 39, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+html.dark .chatfi-record-capsule {
+  background: linear-gradient(135deg, #11261b 0%, #16242a 55%, #10241a 100%) !important;
+  border-color: rgba(74, 222, 128, 0.28) !important;
+  box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+@keyframes chatfi-voice-wave {
+  0%, 100% {
+    transform: scaleY(0.28);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.chatfi-voice-bar {
+  transform-origin: center;
+  animation: chatfi-voice-wave 1.15s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes chatfi-mic-ripple {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.65;
+  }
+  70% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+.chatfi-mic-ripple {
+  animation: chatfi-mic-ripple 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
