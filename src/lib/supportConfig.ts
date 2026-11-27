@@ -61,8 +61,8 @@ export const FAQ_PROFILE_TABS: Array<{
   },
   {
     id: 'manufacturer',
-    label: 'Fabricantes',
-    subtitle: 'Grades, conferência de estoque e cota de produção',
+    label: 'Anunciantes / Fabricantes',
+    subtitle: 'Anúncios por categoria, estoque, entregas e recebimento',
   },
 ];
 
@@ -157,42 +157,42 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
   manufacturer: [
     {
       id: 'mfg-catalog',
-      question: 'Como cadastrar produtos por grade, caixa ou unidade avulsa?',
+      question: 'Como criar anúncios de diferentes categorias no ChatFi?',
       answer:
-        'No Painel do Fabricante → Catálogo → Cadastrar Novo Produto, você escolhe a categoria do produto, a unidade de venda (Par, Unidade ou Kit) e a quantidade por grade/caixa (1 unidade avulsa, 6, 12, 15 pares ou valor personalizado).',
+        'No Painel do Anunciante → Meus Anúncios → Criar Novo Anúncio, você escolhe primeiro a categoria (Calçados, Roupas, Veículos/Motos, Eletrônicos, Casa ou Geral) e o formulário exibe apenas os campos relevantes para o seu item.',
       steps: [
-        'Selecione a categoria e preencha nome, SKU/referência e foto do produto.',
-        'Defina a Quantidade por Grade / Caixa e informe a numeração ou variação (ex.: 34/1, 35/2...).',
-        'Ao digitar o preço da caixa ou grade, o ChatFi calcula automaticamente o valor unitário por par/peça.',
+        'Escolha a categoria principal e, quando aplicável, a subcategoria e o público (ex.: Infantil ou Adulto).',
+        'Preencha os atributos exibidos para aquela categoria (grade de numerações em calçados, tamanhos em roupas, marca/modelo/ano/cor em veículos ou condição e entrega nas demais categorias).',
+        'Envie uma foto real, informe preço e quantidade disponível e publique — você também pode editar qualquer anúncio quando precisar.',
       ],
     },
     {
       id: 'mfg-stock',
       question: 'Como confirmar estoque e enviar o comprovante de despacho?',
       answer:
-        'Todos os pedidos recebidos aparecem na aba Conferência do Painel do Fabricante. Após confirmar os itens disponíveis, o revendedor envia os dados da transportadora/distribuidora para você despachar e anexar o canhoto.',
+        'Todos os pedidos recebidos aparecem na aba Conferência do Painel do Anunciante. Após confirmar os itens disponíveis, acompanhe os dados de entrega/retirada ou transportadora para despachar e anexar o comprovante.',
       steps: [
         'Abra a aba Conferência e marque cada item como "Disponível" ou "Esgotado".',
         'Clique em "Confirmar Conferência e Baixar Estoque" para atualizar o estoque em tempo real.',
-        'Na aba Despacho, confira a transportadora informada, anexe a foto/observação do canhoto e confirme o envio.',
+        'Na aba Despacho, confira os dados informados, anexe a foto/observação do comprovante e confirme o envio.',
       ],
     },
     {
       id: 'mfg-split',
-      question: 'Como receber minha cota de produção via Split Asaas?',
+      question: 'Como receber o valor das minhas vendas via Split Asaas?',
       answer:
-        'Cadastre o Wallet ID Asaas da fábrica no topo da aba Financeiro do Painel do Fabricante (ou em Ajustes). Assim que o comprador finaliza o pagamento da cobrança Asaas, sua cota líquida de produção é creditada automaticamente via Split.',
+        'Cadastre seu Wallet ID Asaas no topo do Painel do Anunciante (ou em Ajustes). Assim que o comprador finaliza o pagamento da cobrança Asaas, seu valor líquido é creditado automaticamente via Split.',
       steps: [
         'Acesse asaas.com → Configurações da Conta → Integrações e copie seu Wallet ID.',
-        'Cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Fabricante e salve.',
-        'Acompanhe o extrato líquido de cada subpedido e o status da cobrança na aba Financeiro.',
+        'Cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Anunciante e salve.',
+        'Acompanhe o extrato líquido de cada pedido e o status da cobrança na aba Financeiro.',
       ],
     },
     {
       id: 'mfg-cpf-compliance',
       question: 'Como funcionam o CPF obrigatório, as estrelas e a revisão comercial?',
       answer:
-        'Para fabricar e fornecer no ChatFi, é necessário validar seu CPF uma única vez. Revendedores avaliam sua pontualidade após o despacho (1 a 5 estrelas), exibindo sua média no perfil. Em eventual suspensão comercial por ocorrência na entrega, seu uso pessoal do mensageiro não é afetado e o suporte realiza a apuração para reativação.',
+        'Para atuar como Anunciante / Fabricante no ChatFi, é necessário validar seu CPF uma única vez. Compradores e revendedores avaliam sua entrega (1 a 5 estrelas), exibindo sua média no perfil. Em eventual suspensão comercial por má-fé na entrega, seu uso pessoal do mensageiro não é afetado e o suporte realiza a apuração para reativação.',
     },
   ],
 };

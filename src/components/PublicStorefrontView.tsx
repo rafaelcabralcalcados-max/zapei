@@ -45,9 +45,13 @@ import {
   formatPackSummaryLabel,
   formatUnitSuffix,
   getCategoryDefinition,
+  getGradeDisplayTitle,
+  hasExplicitWholesalePolicy,
+  hasStructuredGrade,
   inferProductSubcategory,
   isSingleAssetCategory,
   normalizeProductCategory,
+  parseSpecsSummaryEntries,
   resolveMarginForProduct,
   resolveProductPackLabel,
   resolveProductQuantityPerPack,
@@ -303,6 +307,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
     return result;
   }, [isStorefrontAvailable, owner, products, connections]);
 
+  const distinctLotCount = useMemo(
+    () => new Set(listings.map((l) => l.lotGroupKey)).size,
+    [listings]
+  );
+
   const activeCategoryDef = useMemo(
     () =>
       selectedCategory === 'Todas'
@@ -409,7 +418,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
     }
 
     groups.forEach((grp) => {
-      if (grp.deliveryPolicy.type === 'boxes') {
+      const hasWholesaleItems = grp.items.some(
+        ({ listing }) =>
+          !isSingleAssetCategory(listing.product.category) &&
+          resolveProductQuantityPerPack(listing.product) > 1
+      );
+      if (!hasWholesaleItems || !hasExplicitWholesalePolicy(grp.deliveryPolicy)) {
+        grp.meetsMinimum = true;
+      } else if (grp.deliveryPolicy.type === 'boxes') {
         grp.meetsMinimum = grp.totalBoxes >= grp.deliveryPolicy.value;
       } else if (grp.deliveryPolicy.type === 'pieces') {
         grp.meetsMinimum = grp.totalPieces >= grp.deliveryPolicy.value;
@@ -759,6 +775,17 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       listing.product.subcategory
                     );
                     const singleAsset = isSingleAssetCategory(listing.product.category);
+                    const showLotBadge =
+                      owner.commercialMode === 'reseller' &&
+                      distinctLotCount > 1 &&
+                      !singleAsset;
+                    const showWholesalePolicy =
+                      !singleAsset &&
+                      qty > 1 &&
+                      hasExplicitWholesalePolicy(listing.deliveryPolicy);
+                    const specEntries = parseSpecsSummaryEntries(listing.product.specsSummary);
+                    const showGradeGrid =
+                      !singleAsset && hasStructuredGrade(listing.product.gradeRaw);
 
                     return (
                       <article
@@ -775,9 +802,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             alt={listing.product.name}
                             className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                           />
-                          <span className="absolute left-3 top-3 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-[11px] font-semibold text-white">
-                            {listing.lotLabel}
-                          </span>
+                          {showLotBadge && (
+                            <span className="absolute left-3 top-3 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-[11px] font-semibold text-white">
+                              {listing.lotLabel}
+                            </span>
+                          )}
                           {packOriginalPrice && (
                             <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-2.5 py-1 text-[11px] font-extrabold text-white shadow-sm">
                               <Tag className="h-3 w-3" />
@@ -868,33 +897,71 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                         {formatBRL(listing.publicPrice)}
                                       </span>
                                     )}
-                                    <span className="block text-[10px] text-slate-400">
-                                      / {unitSuffix}
-                                    </span>
+                                    {!singleAsset && unitType === 'par' && (
+                                      <span className="block text-[10px] text-slate-400">
+                                        / par
+                                      </span>
+                                    )}
                                   </>
                                 )}
                               </div>
                             </div>
 
-                            {listing.product.specsSummary && (
-                              <p className="text-xs text-slate-600">
-                                {listing.product.specsSummary}
-                              </p>
+                            {specEntries.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {specEntries.map((entry, idx) => (
+                                  <span
+                                    key={`${entry.label}-${idx}`}
+                                    className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700"
+                                  >
+                                    {entry.label ? (
+                                      <>
+                                        <span className="font-semibold text-slate-500 mr-1">
+                                          {entry.label}:
+                                        </span>
+                                        <span className="font-medium text-slate-800">
+                                          {entry.value}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="font-medium text-slate-800">
+                                        {entry.value}
+                                      </span>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
                             )}
 
-                            {/* Visual Grade Boxes (NEVER raw commas; hidden for single-unit/vehicle/real-estate listings) */}
-                            {!singleAsset && qty > 1 && (
+                            {/* Visual Grade Boxes (only when product has structured sizes/numbers) */}
+                            {showGradeGrid && (
                               <GradeVisualGrid
                                 gradeRaw={listing.product.gradeRaw}
                                 compact
+                                title={getGradeDisplayTitle(listing.product.category)}
                                 unitLabel={unitType === 'par' ? 'pares' : 'un'}
                               />
                             )}
 
                             <p className="text-[11px] text-slate-500">
-                              Envio ({listing.lotLabel}): {listing.deliveryPolicy.label} ·{' '}
-                              {listing.product.stockBoxes}{' '}
-                              {qty === 1 ? 'unid. disponível' : 'em estoque'}
+                              {singleAsset
+                                ? listing.product.stockBoxes > 1
+                                  ? `${listing.product.stockBoxes} disponíveis`
+                                  : 'Disponível'
+                                : qty === 1
+                                  ? `${listing.product.stockBoxes} ${
+                                      listing.product.stockBoxes === 1
+                                        ? unitType === 'par'
+                                          ? 'par disponível'
+                                          : 'unidade disponível'
+                                        : unitType === 'par'
+                                          ? 'pares disponíveis'
+                                          : 'unidades disponíveis'
+                                    }`
+                                  : `${listing.product.stockBoxes} ${packLabel.toLowerCase()}${
+                                      listing.product.stockBoxes === 1 ? '' : 's'
+                                    } em estoque`}
+                              {showWholesalePolicy && ` · ${listing.deliveryPolicy.label}`}
                             </p>
                           </div>
 
@@ -914,7 +981,16 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 <Minus className="h-4 w-4" />
                               </button>
                               <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                                {inCart.boxes} {qty === 1 ? 'unid.' : 'cx'} no carrinho
+                                {inCart.boxes}{' '}
+                                {qty === 1
+                                  ? singleAsset
+                                    ? 'no carrinho'
+                                    : unitType === 'par'
+                                      ? inCart.boxes === 1
+                                        ? 'par no carrinho'
+                                        : 'pares no carrinho'
+                                      : 'unid. no carrinho'
+                                  : `${packLabel.toLowerCase()}${inCart.boxes === 1 ? '' : 's'} no carrinho`}
                               </span>
                               <button
                                 type="button"
@@ -966,7 +1042,14 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                 </div>
               ) : (
                 <>
-                  {groupedCart.map((group) => (
+                  {groupedCart.map((group) => {
+                    const showGroupPolicy =
+                      group.items.some(
+                        ({ listing }) =>
+                          !isSingleAssetCategory(listing.product.category) &&
+                          resolveProductQuantityPerPack(listing.product) > 1
+                      ) && hasExplicitWholesalePolicy(group.deliveryPolicy);
+                    return (
                     <div
                       key={group.lotGroupKey}
                       className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
@@ -974,25 +1057,29 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
                         <div>
                           <h3 className="text-sm font-bold text-slate-900">
-                            Grupo de Despacho: {group.lotLabel}
+                            {groupedCart.length > 1
+                              ? `Grupo de Envio: ${group.lotLabel}`
+                              : 'Itens do Pedido'}
                           </h3>
-                          <p className="text-xs text-slate-500">
-                            Regra de envio: {group.deliveryPolicy.label}
-                          </p>
+                          {showGroupPolicy && (
+                            <p className="text-xs text-slate-500">
+                              Regra de envio: {group.deliveryPolicy.label}
+                            </p>
+                          )}
                         </div>
                         <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
                           {formatBRL(group.buyerSubtotal)}
                         </span>
                       </div>
 
-                      {!group.meetsMinimum && (
+                      {showGroupPolicy && !group.meetsMinimum && (
                         <div className="flex items-start gap-2 rounded-xl border border-orange-200 bg-orange-50 p-3 text-xs text-orange-900">
                           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#F97316]" />
                           <span>
-                            Atenção: este grupo ({group.lotLabel}) ainda está abaixo do mínimo para entrega ({group.deliveryPolicy.label}).
+                            Atenção: este pedido ainda está abaixo do mínimo configurado ({group.deliveryPolicy.label}).
                             {group.deliveryPolicy.allowCounterPickup
-                              ? ' Você pode adicionar mais itens ou combinar retirada no balcão.'
-                              : ' Adicione mais itens para liberar entrega.'}
+                              ? ' Você pode adicionar mais itens ou combinar retirada no local.'
+                              : ' Adicione mais itens para liberar envio.'}
                           </span>
                         </div>
                       )}
@@ -1058,7 +1145,8 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                         })}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
 
                   {/* Payment Method Selection (Clean Online Store Checkout) */}
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
@@ -1932,6 +2020,19 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
           detailListing.product.subcategory
         );
         const detailSingleAsset = isSingleAssetCategory(detailListing.product.category);
+        const detailShowLotBadge =
+          owner.commercialMode === 'reseller' &&
+          distinctLotCount > 1 &&
+          !detailSingleAsset;
+        const detailShowPolicy =
+          !detailSingleAsset &&
+          detailQty > 1 &&
+          hasExplicitWholesalePolicy(detailListing.deliveryPolicy);
+        const detailSpecEntries = parseSpecsSummaryEntries(
+          detailListing.product.specsSummary
+        );
+        const detailShowGradeGrid =
+          !detailSingleAsset && hasStructuredGrade(detailListing.product.gradeRaw);
 
         return (
           <div
@@ -1947,9 +2048,11 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                   alt={detailListing.product.name}
                   className="h-full w-full object-cover"
                 />
-                <span className="absolute left-3.5 top-3.5 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-xs font-semibold text-white">
-                  {detailListing.lotLabel}
-                </span>
+                {detailShowLotBadge && (
+                  <span className="absolute left-3.5 top-3.5 rounded-lg bg-[#0D2B3E]/90 px-2.5 py-1 text-xs font-semibold text-white">
+                    {detailListing.lotLabel}
+                  </span>
+                )}
                 {detailPackOriginal && (
                   <span className="absolute left-3.5 bottom-3.5 inline-flex items-center gap-1 rounded-lg bg-[#0E7A34] px-3 py-1 text-xs font-extrabold text-white shadow-sm">
                     <Tag className="h-3.5 w-3.5" />
@@ -1979,15 +2082,25 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                     >
                       {detailListing.product.name}
                     </h2>
-                    {detailListing.product.specsSummary && (
-                      <p className="mt-0.5 text-xs font-medium text-slate-600">
-                        {detailListing.product.specsSummary}
-                      </p>
-                    )}
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      Envio ({detailListing.lotLabel}): {detailListing.deliveryPolicy.label} ·{' '}
-                      {detailListing.product.stockBoxes}{' '}
-                      {detailQty === 1 ? 'unid. disponível' : 'em estoque'}
+                    <p className="mt-1 text-xs text-slate-500">
+                      {detailSingleAsset
+                        ? detailListing.product.stockBoxes > 1
+                          ? `${detailListing.product.stockBoxes} disponíveis`
+                          : 'Disponível'
+                        : detailQty === 1
+                          ? `${detailListing.product.stockBoxes} ${
+                              detailListing.product.stockBoxes === 1
+                                ? detailUnitType === 'par'
+                                  ? 'par disponível'
+                                  : 'unidade disponível'
+                                : detailUnitType === 'par'
+                                  ? 'pares disponíveis'
+                                  : 'unidades disponíveis'
+                            }`
+                          : `${detailListing.product.stockBoxes} ${detailPackLabel.toLowerCase()}${
+                              detailListing.product.stockBoxes === 1 ? '' : 's'
+                            } em estoque`}
+                      {detailShowPolicy && ` · ${detailListing.deliveryPolicy.label}`}
                     </p>
                   </div>
 
@@ -2054,21 +2167,42 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                             {formatBRL(detailListing.publicPrice)}
                           </span>
                         )}
-                        <span className="block text-[11px] text-slate-400">
-                          / {detailUnitSuffix}
-                        </span>
+                        {!detailSingleAsset && detailUnitType === 'par' && (
+                          <span className="block text-[11px] text-slate-400">
+                            / par
+                          </span>
+                        )}
                       </>
                     )}
                   </div>
                 </div>
 
-                {!detailSingleAsset && detailQty > 1 && (
+                {detailSpecEntries.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-3">
+                    {detailSpecEntries.map((entry, idx) => (
+                      <div key={`${entry.label}-${idx}`} className="min-w-0">
+                        {entry.label && (
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            {entry.label}
+                          </span>
+                        )}
+                        <span className="block truncate text-xs font-semibold text-slate-800">
+                          {entry.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {detailShowGradeGrid && (
                   <div className="space-y-1.5">
                     <span className="block text-xs font-bold text-slate-700">
-                      Distribuição ({detailPackSummary})
+                      {getGradeDisplayTitle(detailListing.product.category)}
+                      {detailQty > 1 ? ` (${detailPackSummary})` : ''}
                     </span>
                     <GradeVisualGrid
                       gradeRaw={detailListing.product.gradeRaw}
+                      title={getGradeDisplayTitle(detailListing.product.category)}
                       unitLabel={detailUnitType === 'par' ? 'pares' : 'un'}
                     />
                   </div>
@@ -2092,7 +2226,16 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                           <Minus className="h-4 w-4" />
                         </button>
                         <span className="font-mono text-xs font-bold text-[#0E7A34] tabular-nums">
-                          {detailInCart.boxes} {detailQty === 1 ? 'unid.' : 'cx'} no carrinho
+                          {detailInCart.boxes}{' '}
+                          {detailQty === 1
+                            ? detailSingleAsset
+                              ? 'no carrinho'
+                              : detailUnitType === 'par'
+                                ? detailInCart.boxes === 1
+                                  ? 'par no carrinho'
+                                  : 'pares no carrinho'
+                                : 'unid. no carrinho'
+                            : `${detailPackLabel.toLowerCase()}${detailInCart.boxes === 1 ? '' : 's'} no carrinho`}
                         </span>
                         <button
                           type="button"

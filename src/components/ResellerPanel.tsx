@@ -66,6 +66,9 @@ import {
   formatPackSummaryLabel,
   formatUnitSuffix,
   getCategoryDefinition,
+  getGradeDisplayTitle,
+  hasExplicitWholesalePolicy,
+  hasStructuredGrade,
   inferProductSubcategory,
   isSingleAssetCategory,
   normalizeProductCategory,
@@ -439,7 +442,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
 
         <div className="mt-4 flex gap-1.5 overflow-x-auto border-t border-slate-100 pt-3">
           {[
-            { id: 'connections', label: `Fábricas & Margens (${myConnections.length})`, icon: Link2 },
+            { id: 'connections', label: `Anunciantes & Margens (${myConnections.length})`, icon: Link2 },
             {
               id: 'review',
               label: `Revisão de Fotos (${pendingReviewItems.length})`,
@@ -494,7 +497,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
             className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
           >
             <h2 className="text-sm font-bold text-slate-900">
-              Solicitar Parceria com Fabricante
+              Solicitar Parceria com Anunciante / Fabricante
             </h2>
             <p className="mt-1 text-xs text-slate-500">
               Digite o telefone ou Linha Virtual (ex: CFI-1234-5678) de um fabricante no ChatFi. O pedido de parceria será enviado ao fabricante e os produtos aparecerão na sua vitrine assim que ele aceitar você como revendedor.
@@ -657,9 +660,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-slate-500">
-                        Política da fábrica: {conn.deliveryPolicy.label}
-                      </p>
+                      {hasExplicitWholesalePolicy(conn.deliveryPolicy) && (
+                        <p className="text-xs text-slate-500">
+                          Regra de lote: {conn.deliveryPolicy.label}
+                        </p>
+                      )}
                     </div>
 
                     {isApproved && (
@@ -1009,10 +1014,11 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                         resellerLabel="Fica retido/liberado para você"
                       />
 
-                      {!singleAsset && qty > 1 && (
+                      {!singleAsset && hasStructuredGrade(product.gradeRaw) && (
                         <GradeVisualGrid
                           gradeRaw={product.gradeRaw}
                           compact
+                          title={getGradeDisplayTitle(product.category)}
                           unitLabel={unitType === 'par' ? 'pares' : 'un'}
                         />
                       )}

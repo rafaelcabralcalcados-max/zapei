@@ -411,10 +411,10 @@ export async function registerOrUpdateUserProfile(params: {
     (mode === 'manufacturer' || mode === 'reseller') &&
     subStatus !== 'expired';
   const policy = params.factoryPolicy ?? {
-    type: 'boxes',
+    type: 'pieces',
     value: 1,
-    allowCounterPickup: true,
-    label: 'Mínimo 1 caixa · Retirada no balcão',
+    allowCounterPickup: false,
+    label: '',
   };
 
   const resolvedShowOnline =
@@ -753,10 +753,10 @@ function buildUserProfileFromDocs(
       Math.max(0, Math.round(Number(publicData.anchorDiscountPercent ?? 0) || 0))
     ),
     factoryPolicy: {
-      type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
+      type: (publicData.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'pieces',
       value: Number(publicData.deliveryPolicyValue ?? 1),
-      allowCounterPickup: Boolean(publicData.deliveryPolicyPickup ?? true),
-      label: String(publicData.deliveryPolicyLabel ?? 'Mínimo 1 caixa'),
+      allowCounterPickup: Boolean(publicData.deliveryPolicyPickup ?? false),
+      label: String(publicData.deliveryPolicyLabel ?? ''),
     },
     favoriteGrades:
       Array.isArray(privateData.favoriteGrades) && privateData.favoriteGrades.length > 0
@@ -968,7 +968,7 @@ export async function syncPublicDirectoryEntry(profile: UserProfile): Promise<vo
     role,
     hasStorefront: banned ? false : Boolean(profile.hasStorefront),
     storefrontName,
-    deliveryPolicyLabel: (profile.factoryPolicy?.label || 'Mínimo 1 caixa').slice(0, 160),
+    deliveryPolicyLabel: (profile.factoryPolicy?.label || '').slice(0, 160),
     isDiscoverable: true,
     showOnlineStatus: showOnline,
     showLastSeen,
@@ -1288,10 +1288,10 @@ export async function lookupRegisteredUserByPhone(
       hasStorefront: isBanned ? false : Boolean(d.hasStorefront),
       storefrontName: String(d.storefrontName || d.displayName),
       deliveryPolicy: {
-        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
+        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'pieces',
         value: Number(d.deliveryPolicyValue ?? 1),
-        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? true),
-        label: String(d.deliveryPolicyLabel || 'Mínimo 1 caixa'),
+        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? false),
+        label: String(d.deliveryPolicyLabel || ''),
       },
       ratingAverage: Number(d.ratingAverage ?? 0) || 0,
       ratingCount: Math.max(0, Math.round(Number(d.ratingCount ?? 0) || 0)),
@@ -1952,6 +1952,64 @@ export async function createRealProduct(params: {
   }
 }
 
+export async function updateRealProduct(
+  productId: string,
+  params: {
+    name: string;
+    sku: string;
+    category: ProductCategory;
+    subcategory?: string;
+    unitType?: ProductUnitType;
+    quantityPerPack?: number;
+    packLabel?: string;
+    specsSummary?: string;
+    factoryPrice: number;
+    stockBoxes: number;
+    gradeRaw: string;
+    imageUrl: string;
+    isSoldOutToday?: boolean;
+  }
+): Promise<void> {
+  const safePrice = Number.isFinite(params.factoryPrice)
+    ? Math.min(100000000, Math.max(0, Number(params.factoryPrice.toFixed(2))))
+    : 0;
+  const safeStock = Number.isFinite(params.stockBoxes)
+    ? Math.min(100000, Math.max(0, Math.round(params.stockBoxes)))
+    : 0;
+  const safeQtyPerPack =
+    typeof params.quantityPerPack === 'number' &&
+    Number.isFinite(params.quantityPerPack) &&
+    params.quantityPerPack >= 1
+      ? Math.min(10000, Math.round(params.quantityPerPack))
+      : 1;
+
+  const payload: Record<string, unknown> = {
+    name: params.name.trim().slice(0, 120),
+    sku: params.sku.trim().slice(0, 40),
+    category: params.category,
+    subcategory: (params.subcategory ?? '').trim().slice(0, 60),
+    unitType: params.unitType ?? 'unidade',
+    quantityPerPack: safeQtyPerPack,
+    packLabel: (params.packLabel ?? '').trim().slice(0, 30),
+    specsSummary: (params.specsSummary ?? '').trim().slice(0, 240),
+    factoryPrice: safePrice,
+    stockBoxes: safeStock,
+    gradeRaw: (params.gradeRaw.trim() || 'Único:1').slice(0, 200),
+    imageUrl: params.imageUrl.slice(0, 350000),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (typeof params.isSoldOutToday === 'boolean') {
+    payload.isSoldOutToday = params.isSoldOutToday;
+  }
+
+  try {
+    await updateDoc(doc(db, 'products', productId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `products/${productId}`);
+  }
+}
+
 export async function updateRealProductStock(
   productId: string,
   stockBoxes: number,
@@ -2011,10 +2069,10 @@ export function subscribeConnections(
       factoryName: String(d.factoryName || ''),
       approvalStatus,
       deliveryPolicy: {
-        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
+        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'pieces',
         value: Number(d.deliveryPolicyValue ?? 1),
-        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? true),
-        label: String(d.deliveryPolicyLabel || 'Mínimo 1 caixa'),
+        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? false),
+        label: String(d.deliveryPolicyLabel || ''),
       },
       reviewPhotos: Boolean(d.reviewPhotos),
       paused: Boolean(d.paused),
@@ -2107,7 +2165,7 @@ export async function createRealFactoryConnection(params: {
       deliveryPolicyType: params.factory.deliveryPolicy.type,
       deliveryPolicyValue: safeDeliveryValue,
       deliveryPolicyPickup: Boolean(params.factory.deliveryPolicy.allowCounterPickup),
-      deliveryPolicyLabel: (params.factory.deliveryPolicy.label || 'Mínimo 1 caixa').slice(0, 160),
+      deliveryPolicyLabel: (params.factory.deliveryPolicy.label || '').slice(0, 160),
       reviewPhotos: true,
       paused: false,
       margins: DEFAULT_CATEGORY_MARGINS,
@@ -2695,10 +2753,10 @@ export async function fetchPublicUserStorefront(uid: string): Promise<{
         Math.max(0, Math.round(Number(d.anchorDiscountPercent ?? 0) || 0))
       ),
       deliveryPolicy: {
-        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'boxes',
+        type: (d.deliveryPolicyType as MinimumDeliveryPolicy['type']) ?? 'pieces',
         value: Number(d.deliveryPolicyValue ?? 1),
-        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? true),
-        label: String(d.deliveryPolicyLabel || 'Mínimo 1 caixa'),
+        allowCounterPickup: Boolean(d.deliveryPolicyPickup ?? false),
+        label: String(d.deliveryPolicyLabel || ''),
       },
       subscriptionStatus: (d.subscriptionStatus as SubscriptionStatus) ?? 'free',
       ratingAverage: Number(d.ratingAverage ?? 0) || 0,

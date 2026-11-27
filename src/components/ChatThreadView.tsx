@@ -310,7 +310,44 @@ const WAVEFORM_BARS = [
   44, 72, 56, 82, 48, 66, 38, 70, 54, 60, 42, 50, 34, 44,
 ];
 
-let activeChatAudioElement: HTMLAudioElement | null = null;
+let activeChatAudioElement: HTMLMediaElement | null = null;
+let activeChatAudioToken = 0;
+const registeredAudioStoppers = new Map<string, () => void>();
+
+function stopAllChatMediaExcept(
+  keepEl: HTMLMediaElement | null,
+  keepBubbleKey?: string
+): number {
+  activeChatAudioToken += 1;
+  activeChatAudioElement = keepEl;
+
+  registeredAudioStoppers.forEach((stopFn, key) => {
+    if (key !== keepBubbleKey) {
+      try {
+        stopFn();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  });
+
+  if (typeof document !== 'undefined') {
+    const mediaEls = document.querySelectorAll<HTMLMediaElement>(
+      'audio[data-chatfi-voice="1"], video[data-chatfi-media="1"]'
+    );
+    mediaEls.forEach((mediaEl) => {
+      if (mediaEl !== keepEl && !mediaEl.paused) {
+        try {
+          mediaEl.pause();
+        } catch {
+          // Ignore pause errors
+        }
+      }
+    });
+  }
+
+  return activeChatAudioToken;
+}
 
 const RealAudioBubble: React.FC<{
   messageId: string;
@@ -323,8 +360,14 @@ const RealAudioBubble: React.FC<{
   const draggingRef = useRef(false);
   const playingRef = useRef(false);
   const stallTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+  const retryCleanupRef = useRef<(() => void) | null>(null);
+  const playTokenRef = useRef(0);
   const retriedOnceRef = useRef(false);
   const pendingSrcRef = useRef<string | undefined>(undefined);
+  const bubbleKeyRef = useRef(
+    `voice_${messageId}_${Math.random().toString(36).slice(2, 8)}`
+  );
 
   // Stabilize activeSrc so an async data: -> blob: upgrade never aborts active first-click playback
   const [activeSrc, setActiveSrc] = useState<string | undefined>(mediaUrl);
@@ -343,22 +386,64 @@ const RealAudioBubble: React.FC<{
       : 0;
   const progressPct = progressRatio * 100;
 
-  const clearStallTimer = () => {
+  const clearPendingTimers = () => {
     if (stallTimerRef.current !== null) {
       window.clearTimeout(stallTimerRef.current);
       stallTimerRef.current = null;
     }
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (retryCleanupRef.current) {
+      retryCleanupRef.current();
+      retryCleanupRef.current = null;
+    }
   };
+
+  const forceStopLocal = () => {
+    clearPendingTimers();
+    playTokenRef.current = 0;
+    playingRef.current = false;
+    setPlaying(false);
+    const el = audioRef.current;
+    if (el && !el.paused) {
+      try {
+        el.pause();
+      } catch {
+        // Ignore
+      }
+    }
+  };
+
+  // Register this bubble in the exclusive audio playback coordinator
+  useEffect(() => {
+    const key = bubbleKeyRef.current;
+    registeredAudioStoppers.set(key, forceStopLocal);
+    return () => {
+      registeredAudioStoppers.delete(key);
+      clearPendingTimers();
+      const el = audioRef.current;
+      if (el) {
+        if (activeChatAudioElement === el) {
+          activeChatAudioElement = null;
+        }
+        try {
+          el.pause();
+        } catch {
+          // Ignore
+        }
+      }
+    };
+  }, []);
 
   // Reset player state ONLY when messageId changes
   useEffect(() => {
-    clearStallTimer();
+    forceStopLocal();
     retriedOnceRef.current = false;
     pendingSrcRef.current = undefined;
-    playingRef.current = false;
     setActiveSrc(mediaUrl);
     setCurrentSec(0);
-    setPlaying(false);
     setDurationSec(parseAudioDurationLabel(duration));
   }, [messageId]);
 
@@ -396,20 +481,6 @@ const RealAudioBubble: React.FC<{
     }
   }, [activeSrc]);
 
-  // Cleanup timer and global reference on unmount
-  useEffect(() => {
-    return () => {
-      clearStallTimer();
-      const el = audioRef.current;
-      if (el) {
-        if (activeChatAudioElement === el) {
-          activeChatAudioElement = null;
-        }
-        el.pause();
-      }
-    };
-  }, []);
-
   useEffect(() => {
     if (!playing) return undefined;
     let rafId = 0;
@@ -427,15 +498,22 @@ const RealAudioBubble: React.FC<{
     return () => window.cancelAnimationFrame(rafId);
   }, [playing]);
 
-  const reloadAndPlayOnce = (el: HTMLAudioElement, resumeSec: number) => {
+  const reloadAndPlayOnce = (el: HTMLAudioElement, resumeSec: number, token: number) => {
     if (retriedOnceRef.current) return;
+    if (token !== activeChatAudioToken || activeChatAudioElement !== el) return;
     retriedOnceRef.current = true;
-    clearStallTimer();
+    clearPendingTimers();
 
     const attemptResume = () => {
-      el.removeEventListener('canplay', attemptResume);
-      el.removeEventListener('loadeddata', attemptResume);
-      if (!playingRef.current && activeChatAudioElement !== el) return;
+      cleanupListeners();
+      // Abort immediately if the user paused or started another audio while reloading
+      if (
+        token !== activeChatAudioToken ||
+        playTokenRef.current !== token ||
+        activeChatAudioElement !== el
+      ) {
+        return;
+      }
       try {
         el.muted = false;
         el.volume = 1;
@@ -449,11 +527,24 @@ const RealAudioBubble: React.FC<{
         // Ignore seek errors before seekable range is ready
       }
       void el.play().catch(() => {
-        playingRef.current = false;
-        setPlaying(false);
+        if (playTokenRef.current === token) {
+          playingRef.current = false;
+          setPlaying(false);
+        }
       });
     };
 
+    const cleanupListeners = () => {
+      el.removeEventListener('canplay', attemptResume);
+      el.removeEventListener('loadeddata', attemptResume);
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      retryCleanupRef.current = null;
+    };
+
+    retryCleanupRef.current = cleanupListeners;
     el.addEventListener('canplay', attemptResume, { once: true });
     el.addEventListener('loadeddata', attemptResume, { once: true });
     try {
@@ -462,8 +553,14 @@ const RealAudioBubble: React.FC<{
       // Ignore
     }
     // Safety fallback if browser already fired loadeddata synchronously
-    window.setTimeout(() => {
-      if (el.readyState >= 2 && el.paused && activeChatAudioElement === el) {
+    retryTimerRef.current = window.setTimeout(() => {
+      if (
+        el.readyState >= 2 &&
+        el.paused &&
+        token === activeChatAudioToken &&
+        playTokenRef.current === token &&
+        activeChatAudioElement === el
+      ) {
         attemptResume();
       }
     }, 250);
@@ -477,25 +574,17 @@ const RealAudioBubble: React.FC<{
     unlockCallAudio();
 
     if (playing || !el.paused) {
-      clearStallTimer();
-      el.pause();
-      playingRef.current = false;
-      setPlaying(false);
+      activeChatAudioToken += 1;
+      forceStopLocal();
       if (activeChatAudioElement === el) {
         activeChatAudioElement = null;
       }
       return;
     }
 
-    // Pause any other audio bubble currently playing to avoid mobile audio focus conflict
-    if (activeChatAudioElement && activeChatAudioElement !== el) {
-      try {
-        activeChatAudioElement.pause();
-      } catch {
-        // Ignore
-      }
-    }
-    activeChatAudioElement = el;
+    // Exclusively stop ALL other chat audios and videos so only one plays at a time
+    const myToken = stopAllChatMediaExcept(el, bubbleKeyRef.current);
+    playTokenRef.current = myToken;
     retriedOnceRef.current = false;
 
     el.muted = false;
@@ -527,23 +616,36 @@ const RealAudioBubble: React.FC<{
     if (playPromise && typeof playPromise.then === 'function') {
       playPromise
         .then(() => {
+          // If user already tapped another audio while this play() promise was resolving, immediately pause!
+          if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) {
+            try {
+              el.pause();
+            } catch {
+              // Ignore
+            }
+            return;
+          }
           playingRef.current = true;
           setPlaying(true);
           // First-play silent stall watchdog: if Chrome/mobile reports playing but readyState < 2
           // or currentTime doesn't advance within 450ms, automatically reload & replay once
-          clearStallTimer();
+          if (stallTimerRef.current !== null) {
+            window.clearTimeout(stallTimerRef.current);
+          }
           stallTimerRef.current = window.setTimeout(() => {
+            if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
             if (!audioRef.current || audioRef.current !== el) return;
             if (el.paused || el.ended) return;
             const progressed = Math.abs(el.currentTime - startSec) > 0.02;
             if (!progressed || el.readyState < 2) {
-              reloadAndPlayOnce(el, startSec);
+              reloadAndPlayOnce(el, startSec, myToken);
             }
           }, 450);
         })
         .catch(() => {
+          if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
           // First play() rejected (common on cold first tap while decoding blob) -> reload & auto-retry once
-          reloadAndPlayOnce(el, startSec);
+          reloadAndPlayOnce(el, startSec, myToken);
         });
     }
   };
@@ -633,6 +735,7 @@ const RealAudioBubble: React.FC<{
       {activeSrc && (
         <audio
           ref={audioRef}
+          data-chatfi-voice="1"
           src={activeSrc}
           preload="auto"
           playsInline
@@ -644,12 +747,20 @@ const RealAudioBubble: React.FC<{
             const d = e.currentTarget.duration;
             if (Number.isFinite(d) && d > 0) setDurationSec(d);
           }}
-          onPlay={() => {
+          onPlay={(e) => {
+            const el = e.currentTarget;
+            if (activeChatAudioElement !== el) {
+              const tok = stopAllChatMediaExcept(el, bubbleKeyRef.current);
+              playTokenRef.current = tok;
+            }
             playingRef.current = true;
             setPlaying(true);
           }}
           onPause={() => {
-            clearStallTimer();
+            if (stallTimerRef.current !== null) {
+              window.clearTimeout(stallTimerRef.current);
+              stallTimerRef.current = null;
+            }
             playingRef.current = false;
             setPlaying(false);
             if (pendingSrcRef.current && pendingSrcRef.current !== activeSrc) {
@@ -659,7 +770,8 @@ const RealAudioBubble: React.FC<{
             }
           }}
           onEnded={() => {
-            clearStallTimer();
+            clearPendingTimers();
+            playTokenRef.current = 0;
             playingRef.current = false;
             setPlaying(false);
             setCurrentSec(0);
@@ -685,17 +797,25 @@ const RealAudioBubble: React.FC<{
             if (Number.isFinite(el.duration) && el.duration > 0) {
               setDurationSec(el.duration);
             }
-            if (el.currentTime > 0.02) {
-              clearStallTimer();
+            if (el.currentTime > 0.02 && stallTimerRef.current !== null) {
+              window.clearTimeout(stallTimerRef.current);
+              stallTimerRef.current = null;
             }
             setCurrentSec(el.currentTime);
           }}
           onError={() => {
             const el = audioRef.current;
-            if (el && activeChatAudioElement === el && !retriedOnceRef.current) {
-              reloadAndPlayOnce(el, currentSec);
+            const tok = playTokenRef.current;
+            if (
+              el &&
+              tok > 0 &&
+              tok === activeChatAudioToken &&
+              activeChatAudioElement === el &&
+              !retriedOnceRef.current
+            ) {
+              reloadAndPlayOnce(el, currentSec, tok);
             } else {
-              clearStallTimer();
+              clearPendingTimers();
               playingRef.current = false;
               setPlaying(false);
             }
@@ -1329,6 +1449,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const startRealRecording = async () => {
     if (recording || sending) return;
+    stopAllChatMediaExcept(null);
     setMediaError('');
     setShowEmojiPicker(false);
     isStoppingRecordingRef.current = false;
@@ -2153,10 +2274,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       {resolvedUrl ? (
                         <div className="relative overflow-hidden rounded-xl bg-black">
                           <video
+                            data-chatfi-media="1"
                             src={resolvedUrl}
                             controls
                             playsInline
                             preload="metadata"
+                            onPlay={(e) => stopAllChatMediaExcept(e.currentTarget)}
                             className="max-h-72 w-full rounded-xl bg-black object-contain"
                           />
                           {(msg.videoDuration || msg.mediaSizeBytes) && (
@@ -2663,9 +2786,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
           <div className="flex min-h-0 flex-1 items-center justify-center p-3">
             <video
+              data-chatfi-media="1"
               src={pendingVideo.previewUrl}
               controls
               playsInline
+              onPlay={(e) => stopAllChatMediaExcept(e.currentTarget)}
               className="max-h-full max-w-full rounded-xl bg-black"
             />
           </div>

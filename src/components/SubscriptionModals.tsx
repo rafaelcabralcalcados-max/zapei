@@ -50,7 +50,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
       return;
     }
     if (!cpfAlreadyVerified && !isValidCpf(cpfInput)) {
-      setErrorMsg('Informe um CPF válido (11 dígitos) para liberar a atuação como Fabricante ou Revendedor.');
+      setErrorMsg('Informe um CPF válido (11 dígitos) para liberar a atuação como Anunciante ou Revendedor.');
       return;
     }
 
@@ -92,7 +92,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
         </div>
 
         <h2 className="mt-4 text-lg font-bold text-slate-900">
-          {isFactory ? 'Ativar Sou Fabricante' : 'Ativar Sou Revendedor'}
+          {isFactory ? 'Ativar Sou Anunciante / Fabricante' : 'Ativar Sou Revendedor'}
         </h2>
         <p className="mt-1 text-sm text-slate-600">
           {alreadyOnPlan ? (
@@ -111,7 +111,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
               htmlFor="zapei-business-name"
               className="block text-xs font-bold text-slate-800"
             >
-              {isFactory ? 'Nome da sua empresa / fábrica' : 'Nome da sua vitrine / loja'}
+              {isFactory ? 'Nome do seu negócio / anunciante' : 'Nome da sua vitrine / loja'}
             </label>
             <input
               id="zapei-business-name"
@@ -122,7 +122,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
               maxLength={80}
               value={businessName}
               onChange={(e) => setBusinessName(e.target.value)}
-              placeholder={isFactory ? 'Ex: Calçados Silva' : 'Ex: Loja Ana Moda'}
+              placeholder={isFactory ? 'Ex: Loja Central ou João Motos' : 'Ex: Vitrine Ana'}
               className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
             />
           </div>
@@ -149,7 +149,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
                 className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 font-mono text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
               />
               <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                Obrigatório para Fabricantes e Revendedores. Validado de forma criptografada (SHA-256)
+                Obrigatório para Anunciantes e Revendedores. Validado de forma criptografada (SHA-256)
                 e nunca exibido publicamente na sua vitrine.
               </p>
             </div>
@@ -183,7 +183,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0E7A34]" />
           <span>
             {isFactory
-              ? 'Seu painel já abre pronto para postar produtos com foto, preço e grade.'
+              ? 'Seu painel já abre pronto para anunciar itens de qualquer categoria com foto, preço e detalhes sob medida.'
               : 'Seu painel já abre pronto para conectar fornecedores pelo telefone e vender com sua marca.'}
           </span>
         </div>
@@ -269,7 +269,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
             </span>
           </div>
           <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-xs text-slate-500">Plano Mensal (Fabricante/Revendedor)</span>
+            <span className="text-xs text-slate-500">Plano Mensal (Anunciante / Revendedor)</span>
             <span className="font-mono text-base font-bold text-slate-900 tabular-nums">
               R$ 59,90/mês
             </span>

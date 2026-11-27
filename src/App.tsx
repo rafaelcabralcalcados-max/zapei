@@ -79,6 +79,7 @@ import {
   updateRealConnection,
   updateRealOrder,
   updateRealPayment,
+  updateRealProduct,
   updateRealProductStock,
   updateRealSubOrder,
   updateUserPresenceHeartbeat,
@@ -2227,7 +2228,7 @@ export default function App() {
       setActiveTab('commercial');
       showToast(
         trialPromptRole === 'manufacturer'
-          ? `Fábrica "${cleanedName}" ativada! Você já pode cadastrar seus produtos.`
+          ? `Perfil de Anunciante "${cleanedName}" ativado! Você já pode publicar seus anúncios.`
           : `Vitrine "${cleanedName}" ativada! Você já pode conectar seus fornecedores.`
       );
     },
@@ -3291,7 +3292,7 @@ export default function App() {
       ? [
           {
             id: 'commercial' as MainTab,
-            label: profile.commercialMode === 'manufacturer' ? 'Fábrica' : 'Vitrine',
+            label: profile.commercialMode === 'manufacturer' ? 'Anúncios' : 'Vitrine',
             icon: profile.commercialMode === 'manufacturer' ? Factory : Briefcase,
             badge: pendingFactoryResellerCount > 0 ? pendingFactoryResellerCount : undefined,
           },
@@ -3390,7 +3391,7 @@ export default function App() {
             <span className="block text-base font-extrabold tracking-tight">ChatFi</span>
             <span className="block truncate text-[11px] text-emerald-200/80">
               {profile.commercialMode === 'manufacturer'
-                ? 'Fabricante'
+                ? 'Anunciante / Fabricante'
                 : profile.commercialMode === 'reseller'
                   ? 'Revendedor'
                   : 'Mensageiro Grátis'}
@@ -4214,6 +4215,9 @@ export default function App() {
                   factoryName: profile.factoryName || profile.name,
                 });
               }}
+              onUpdateProduct={(productId, params) =>
+                updateRealProduct(productId, params)
+              }
               onUpdateStock={(productId, stockBoxes, isSoldOutToday) =>
                 updateRealProductStock(productId, stockBoxes, isSoldOutToday)
               }
