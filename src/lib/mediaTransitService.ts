@@ -127,43 +127,16 @@ export async function sendMediaWithTransitBridge(
   let storedTransitPath: string | undefined = undefined;
   let usedStorageTransit = false;
 
-  // FAST PATH 1: Voice messages & compact images <= 340 KB.
+  // FAST PATH 1: Voice messages, photos & short clips <= 340 KB.
   // Encode Data URL in parallel with local IndexedDB save (~10ms) and send directly
-  // in Firestore without stalling 4-10s waiting on Firebase Storage upload/retry.
+  // in Firestore without stalling waiting on extra upload round-trips.
   const canUseInstantInline =
     !isPdfFile &&
-    (mediaType === 'audio' || mediaType === 'image') &&
+    (mediaType === 'audio' || mediaType === 'image' || mediaType === 'video') &&
     blob.size <= INLINE_FALLBACK_MAX_BYTES;
 
-  let localObjectUrl: string;
-  if (canUseInstantInline) {
-    const [savedUrl, inlineDataUrl] = await Promise.all([
-      saveLocalMedia({
-        messageId,
-        chatId,
-        peerUid: recipientId,
-        peerName: recipientName,
-        senderId: myUid,
-        mediaType,
-        mimeType,
-        blob,
-        sizeBytes: blob.size,
-        durationLabel,
-        caption,
-        fileName,
-        savedAtMs: Date.now(),
-      }),
-      blobToDataUrl(blob),
-    ]);
-    localObjectUrl = savedUrl;
-    if (inlineDataUrl.length <= 495000) {
-      downloadUrl = inlineDataUrl;
-      storedTransitPath = undefined;
-      usedStorageTransit = false;
-    }
-  } else {
-    // Save permanent copy immediately in the sender's local IndexedDB
-    localObjectUrl = await saveLocalMedia({
+  const saveLocalTask = () =>
+    saveLocalMedia({
       messageId,
       chatId,
       peerUid: recipientId,
@@ -178,40 +151,68 @@ export async function sendMediaWithTransitBridge(
       fileName,
       savedAtMs: Date.now(),
     });
-  }
 
-  // FAST PATH 2: Larger audios, videos, PDFs, or > 495k base64 -> fast same-origin transit endpoint FIRST
-  if (!downloadUrl) {
+  const uploadToSameOriginTransit = async (): Promise<string> => {
     const activeUser = authUser || auth.currentUser;
-    if (activeUser) {
-      try {
-        const token = await activeUser.getIdToken();
-        const res = await withTimeout(
-          fetch(
-            `/api/media/transit/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}`,
-            {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': mimeType,
-              },
-              body: blob,
-            }
-          ),
-          mediaType === 'video' ? 45000 : 12000,
-          'Same-origin transit upload timeout'
-        );
-        if (res.ok) {
-          const payload = (await res.json()) as { url?: string };
-          if (payload.url) {
-            downloadUrl = payload.url;
-            storedTransitPath = undefined;
-            usedStorageTransit = true;
+    if (!activeUser) return '';
+    try {
+      const token = await activeUser.getIdToken();
+      const res = await withTimeout(
+        fetch(
+          `/api/media/transit/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': mimeType,
+            },
+            body: blob,
           }
-        }
-      } catch (serverErr) {
-        console.warn('[Zapei Media Transit] Same-origin transit fallback triggered:', serverErr);
+        ),
+        mediaType === 'video' ? 45000 : 12000,
+        'Same-origin transit upload timeout'
+      );
+      if (res.ok) {
+        const payload = (await res.json()) as { url?: string };
+        if (payload.url) return payload.url;
       }
+    } catch (serverErr) {
+      console.warn('[Zapei Media Transit] Same-origin transit fallback triggered:', serverErr);
+    }
+    return '';
+  };
+
+  let localObjectUrl: string;
+  if (canUseInstantInline) {
+    const [savedUrl, inlineDataUrl] = await Promise.all([
+      saveLocalTask(),
+      blobToDataUrl(blob),
+    ]);
+    localObjectUrl = savedUrl;
+    if (inlineDataUrl.length <= 495000) {
+      downloadUrl = inlineDataUrl;
+      storedTransitPath = undefined;
+      usedStorageTransit = false;
+    } else {
+      const serverUrl = await uploadToSameOriginTransit();
+      if (serverUrl) {
+        downloadUrl = serverUrl;
+        storedTransitPath = undefined;
+        usedStorageTransit = true;
+      }
+    }
+  } else {
+    // FAST PATH 2: Larger videos, PDFs & large photos -> run local IndexedDB save AND
+    // same-origin transit upload IN PARALLEL so big files don't wait twice!
+    const [savedUrl, serverUrl] = await Promise.all([
+      saveLocalTask(),
+      uploadToSameOriginTransit(),
+    ]);
+    localObjectUrl = savedUrl;
+    if (serverUrl) {
+      downloadUrl = serverUrl;
+      storedTransitPath = undefined;
+      usedStorageTransit = true;
     }
   }
 
@@ -252,23 +253,31 @@ export async function sendMediaWithTransitBridge(
   }
 
   // Step 3: Create message document in Firestore with mediaDelivered: false
+  const stripQuoteHeader = (raw?: string): string => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed.startsWith('» ')) return trimmed;
+    const nl = trimmed.indexOf('\n');
+    return nl === -1 ? trimmed : trimmed.slice(nl + 1).trim();
+  };
+
   const textLabel = isPdfFile
     ? caption?.trim() || fileName?.trim() || 'Documento.pdf'
     : mediaType === 'image'
       ? caption?.trim() || 'Foto'
       : mediaType === 'video'
         ? caption?.trim() || (durationLabel ? `Vídeo (${durationLabel})` : 'Vídeo')
-        : `Mensagem de voz (${durationLabel || '0:00'})`;
+        : caption?.trim() || `Mensagem de voz (${durationLabel || '0:00'})`;
 
+  const cleanCaptionForPush = stripQuoteHeader(caption);
   const pushPreviewText = isPdfFile
-    ? `PDF: ${caption?.trim() || fileName?.trim() || 'Documento.pdf'}`
+    ? `PDF: ${cleanCaptionForPush || fileName?.trim() || 'Documento.pdf'}`
     : mediaType === 'image'
-      ? caption?.trim()
-        ? `Foto: ${caption.trim()}`
+      ? cleanCaptionForPush && cleanCaptionForPush !== 'Foto'
+        ? `Foto: ${cleanCaptionForPush}`
         : 'Enviou uma foto'
       : mediaType === 'video'
-        ? caption?.trim()
-          ? `Vídeo: ${caption.trim()}`
+        ? cleanCaptionForPush && !cleanCaptionForPush.startsWith('Vídeo')
+          ? `Vídeo: ${cleanCaptionForPush}`
           : 'Enviou um vídeo'
         : `Áudio (${durationLabel || '0:00'})`;
 

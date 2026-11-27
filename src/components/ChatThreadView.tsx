@@ -102,7 +102,7 @@ interface ChatThreadViewProps {
   pendingCount?: number;
   onBack?: () => void;
   onSendText: (text: string) => Promise<void>;
-  onSendAudio: (blob: Blob, durationLabel: string) => Promise<void>;
+  onSendAudio: (blob: Blob, durationLabel: string, caption?: string) => Promise<void>;
   onSendImage: (blob: Blob, caption: string) => Promise<void>;
   onSendVideo: (blob: Blob, durationLabel: string, caption: string) => Promise<void>;
   onSendPdf?: (blob: Blob, fileName: string) => Promise<void>;
@@ -265,15 +265,20 @@ function parseQuotedMessage(text: string): ParsedQuotedText | null {
 }
 
 function getReplySnippet(msg: ChatMessage): string {
+  const parsed = parseQuotedMessage(msg.text || '');
+  const cleanBody = (parsed ? parsed.body : msg.text || '').trim();
   if (isPdfMessage(msg)) {
-    return `📄 ${msg.text || 'Documento.pdf'}`.slice(0, 72);
+    return `📄 ${cleanBody || 'Documento.pdf'}`.slice(0, 72);
   }
   if (msg.type === 'image') {
-    const cleanCaption = msg.text && msg.text !== 'Foto' ? ` — ${msg.text}` : '';
+    const cleanCaption = cleanBody && cleanBody !== 'Foto' ? ` — ${cleanBody}` : '';
     return `📷 Foto${cleanCaption}`.slice(0, 72);
   }
   if (msg.type === 'video') {
-    const cleanCaption = msg.text && msg.text !== 'Vídeo' ? ` — ${msg.text}` : '';
+    const cleanCaption =
+      cleanBody && cleanBody !== 'Vídeo' && !cleanBody.startsWith('Vídeo (')
+        ? ` — ${cleanBody}`
+        : '';
     return `🎬 Vídeo${cleanCaption}`.slice(0, 72);
   }
   if (msg.type === 'audio') {
@@ -282,9 +287,7 @@ function getReplySnippet(msg: ChatMessage): string {
   if (msg.type === 'order_card') {
     return `📦 Pedido ${msg.orderCode || ''}`.trim();
   }
-  const parsed = parseQuotedMessage(msg.text);
-  const raw = parsed ? parsed.body : msg.text;
-  return raw.replace(/\s+/g, ' ').trim().slice(0, 72);
+  return cleanBody.replace(/\s+/g, ' ').trim().slice(0, 72);
 }
 
 function formatAudioSeconds(seconds: number): string {
@@ -709,9 +712,21 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     caption: string;
   } | null>(null);
   const [replyingTo, setReplyingTo] = useState<{
+    messageId: string;
     senderName: string;
     snippet: string;
   } | null>(null);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const swipeStateRef = useRef<{
+    msgId: string;
+    startX: number;
+    startY: number;
+    dragging: boolean;
+    cancelled: boolean;
+    offsetX: number;
+  } | null>(null);
+  const [swipingMsg, setSwipingMsg] = useState<{ msgId: string; offsetX: number } | null>(null);
   const [actionSheetMsg, setActionSheetMsg] = useState<ChatMessage | null>(null);
   const [forwardMsg, setForwardMsg] = useState<ChatMessage | null>(null);
   const [forwardSearch, setForwardSearch] = useState('');
@@ -1520,13 +1535,106 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   };
 
   const handleStartReply = (msg: ChatMessage) => {
-    const senderName = msg.senderId === myUid ? 'Você' : peer.name;
+    const senderName = msg.senderId === myUid ? myName : peer.name;
     setReplyingTo({
+      messageId: msg.id,
       senderName,
       snippet: getReplySnippet(msg),
     });
     setActionSheetMsg(null);
     window.setTimeout(() => composerInputRef.current?.focus(), 60);
+  };
+
+  const formatQuotePrefix = (body: string): string => {
+    if (!replyingTo) return body;
+    return `» ${replyingTo.senderName}: ${replyingTo.snippet}\n${body}`;
+  };
+
+  const handleJumpToQuotedMessage = (currentIdx: number, quote: ParsedQuotedText) => {
+    const targetSnippet = quote.quoteSnippet.trim();
+    let matchedMsg: ChatMessage | null = null;
+    for (let i = currentIdx - 1; i >= 0; i -= 1) {
+      const candidate = renderedMessages[i];
+      const candSnippet = getReplySnippet(candidate).trim();
+      const candBody = (parseQuotedMessage(candidate.text || '')?.body || candidate.text || '').trim();
+      if (
+        candSnippet === targetSnippet ||
+        candBody === targetSnippet ||
+        (targetSnippet.length >= 6 &&
+          (candSnippet.startsWith(targetSnippet) || candBody.startsWith(targetSnippet)))
+      ) {
+        matchedMsg = candidate;
+        break;
+      }
+    }
+    if (!matchedMsg) return;
+    if (typeof document !== 'undefined') {
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(matchedMsg.id)
+          : matchedMsg.id.replace(/"/g, '\\"');
+      const el = document.querySelector(`[data-chat-msg-id="${escaped}"]`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    setHighlightedMsgId(matchedMsg.id);
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedMsgId(null);
+      highlightTimerRef.current = null;
+    }, 1800);
+  };
+
+  const handleRowTouchStart = (msg: ChatMessage, e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('[role="slider"], input, textarea')) return;
+    const touch = e.touches[0];
+    swipeStateRef.current = {
+      msgId: msg.id,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      dragging: false,
+      cancelled: false,
+      offsetX: 0,
+    };
+  };
+
+  const handleRowTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    const st = swipeStateRef.current;
+    if (!st || st.cancelled || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - st.startX;
+    const dy = touch.clientY - st.startY;
+    if (!st.dragging) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+        st.cancelled = true;
+        return;
+      }
+      if (dx > 14 && dx > Math.abs(dy) * 1.35) {
+        st.dragging = true;
+      } else {
+        return;
+      }
+    }
+    const clamped = Math.max(0, Math.min(64, (dx - 10) * 0.7));
+    st.offsetX = clamped;
+    setSwipingMsg({ msgId: st.msgId, offsetX: clamped });
+  };
+
+  const handleRowTouchEnd = (msg: ChatMessage) => {
+    const st = swipeStateRef.current;
+    swipeStateRef.current = null;
+    setSwipingMsg(null);
+    if (st && st.dragging && st.offsetX >= 38) {
+      try {
+        navigator.vibrate?.(12);
+      } catch {
+        // Ignore unsupported vibration
+      }
+      handleStartReply(msg);
+    }
   };
 
   const handleOpenForward = (msg: ChatMessage) => {
@@ -1737,6 +1845,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       return;
     }
 
+    const activeReply = replyingTo;
+    const baseAudioText = `Mensagem de voz (${durationLabel})`;
+    const audioTextWithQuote = activeReply
+      ? `» ${activeReply.senderName}: ${activeReply.snippet}\n${baseAudioText}`
+      : baseAudioText;
+    if (activeReply) setReplyingTo(null);
+
     // Show the voice message bubble immediately (0ms perceived latency)
     const tempId = `opt_audio_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const previewUrl = URL.createObjectURL(blob);
@@ -1751,7 +1866,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       senderId: myUid,
       senderName: myName,
       type: 'audio',
-      text: `Mensagem de voz (${durationLabel})`,
+      text: audioTextWithQuote,
       mediaUrl: previewUrl,
       audioDuration: durationLabel,
       mediaSizeBytes: blob.size,
@@ -1763,7 +1878,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setOptimisticAudios((prev) => [...prev, optimisticMsg]);
     setSending(true);
     try {
-      await onSendAudio(blob, durationLabel);
+      await onSendAudio(blob, durationLabel, activeReply ? audioTextWithQuote : undefined);
     } catch (err) {
       setMediaError(
         err instanceof Error ? err.message : 'Erro ao enviar mensagem de voz.'
@@ -1870,14 +1985,22 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       );
       return;
     }
-    const durationLabel = await extractVideoDurationLabel(file);
+    // Open the preview modal immediately (0ms) without blocking on iOS off-DOM metadata probes
     const previewUrl = URL.createObjectURL(file);
     setPendingVideo({
       blob: file,
       previewUrl,
-      durationLabel,
+      durationLabel: '',
       sizeBytes: file.size,
       caption: '',
+    });
+    void extractVideoDurationLabel(file).then((label) => {
+      if (!label) return;
+      setPendingVideo((prev) =>
+        prev && prev.previewUrl === previewUrl && !prev.durationLabel
+          ? { ...prev, durationLabel: label }
+          : prev
+      );
     });
   };
 
@@ -1893,10 +2016,38 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
         ? file
         : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
     const fileName = (file.name || 'Documento.pdf').trim().slice(0, 120);
-    if (onSendPdf) {
-      await onSendPdf(pdfBlob, fileName);
-    } else {
-      await onSendImage(pdfBlob, fileName);
+    const tempId = `opt_pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const tempUrl = URL.createObjectURL(pdfBlob);
+    const nowTime = new Date().toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const optimisticPdf: ChatMessage = {
+      id: tempId,
+      chatId: activeChatId,
+      senderId: myUid,
+      senderName: myName,
+      type: 'image',
+      text: fileName,
+      mediaUrl: tempUrl,
+      mediaSizeBytes: pdfBlob.size,
+      mediaMimeType: 'application/pdf',
+      mediaDelivered: false,
+      deliveryStatus: 'sending',
+      timestamp: nowTime,
+    };
+    setOptimisticAudios((prev) => [...prev, optimisticPdf]);
+    try {
+      if (onSendPdf) {
+        await onSendPdf(pdfBlob, fileName);
+      } else {
+        await onSendImage(pdfBlob, fileName);
+      }
+    } finally {
+      window.setTimeout(() => {
+        setOptimisticAudios((prev) => prev.filter((m) => m.id !== tempId));
+        URL.revokeObjectURL(tempUrl);
+      }, 220);
     }
   };
 
@@ -1928,7 +2079,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       const { blob } = await compressImageFileToBlob(
         file,
         MAX_IMAGE_WIDTH,
-        IMAGE_JPEG_QUALITY
+        IMAGE_JPEG_QUALITY,
+        325 * 1024
       );
       const previewUrl = URL.createObjectURL(blob);
       setPendingPhoto({
@@ -1996,33 +2148,88 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
 
   const handleConfirmSendPendingPhoto = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pendingPhoto || sending) return;
+    if (!pendingPhoto) return;
     const { blob, previewUrl, caption } = pendingPhoto;
+    const baseCaption = caption.trim() || 'Foto';
+    const finalCaption = formatQuotePrefix(baseCaption);
     setPendingPhoto(null);
-    URL.revokeObjectURL(previewUrl);
-    setSending(true);
+    if (replyingTo) setReplyingTo(null);
+
+    // Render photo immediately (0ms) in the chat thread while sending in background
+    const tempId = `opt_img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const nowTime = new Date().toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const optimisticImg: ChatMessage = {
+      id: tempId,
+      chatId: activeChatId,
+      senderId: myUid,
+      senderName: myName,
+      type: 'image',
+      text: finalCaption,
+      mediaUrl: previewUrl,
+      mediaSizeBytes: blob.size,
+      mediaMimeType: blob.type || 'image/jpeg',
+      mediaDelivered: false,
+      deliveryStatus: 'sending',
+      timestamp: nowTime,
+    };
+    setOptimisticAudios((prev) => [...prev, optimisticImg]);
+
     try {
-      await onSendImage(blob, caption.trim() || 'Foto');
+      await onSendImage(blob, finalCaption);
     } catch (err) {
       setMediaError(err instanceof Error ? err.message : 'Erro ao enviar foto.');
     } finally {
-      setSending(false);
+      window.setTimeout(() => {
+        setOptimisticAudios((prev) => prev.filter((m) => m.id !== tempId));
+        URL.revokeObjectURL(previewUrl);
+      }, 220);
     }
   };
 
   const handleConfirmSendPendingVideo = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pendingVideo || sending) return;
+    if (!pendingVideo) return;
     const { blob, previewUrl, durationLabel, caption } = pendingVideo;
+    const baseCaption = caption.trim() || (durationLabel ? `Vídeo (${durationLabel})` : 'Vídeo');
+    const finalCaption = formatQuotePrefix(baseCaption);
     setPendingVideo(null);
-    URL.revokeObjectURL(previewUrl);
-    setSending(true);
+    if (replyingTo) setReplyingTo(null);
+
+    // Render video immediately (0ms) in the chat thread while uploading in parallel in background
+    const tempId = `opt_vid_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const nowTime = new Date().toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const optimisticVid: ChatMessage = {
+      id: tempId,
+      chatId: activeChatId,
+      senderId: myUid,
+      senderName: myName,
+      type: 'video',
+      text: finalCaption,
+      mediaUrl: previewUrl,
+      videoDuration: durationLabel || undefined,
+      mediaSizeBytes: blob.size,
+      mediaMimeType: blob.type || 'video/mp4',
+      mediaDelivered: false,
+      deliveryStatus: 'sending',
+      timestamp: nowTime,
+    };
+    setOptimisticAudios((prev) => [...prev, optimisticVid]);
+
     try {
-      await onSendVideo(blob, durationLabel, caption.trim() || '');
+      await onSendVideo(blob, durationLabel, finalCaption);
     } catch (err) {
       setMediaError(err instanceof Error ? err.message : 'Erro ao enviar vídeo.');
     } finally {
-      setSending(false);
+      window.setTimeout(() => {
+        setOptimisticAudios((prev) => prev.filter((m) => m.id !== tempId));
+        URL.revokeObjectURL(previewUrl);
+      }, 260);
     }
   };
 
@@ -2177,19 +2384,19 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </p>
           </div>
         ) : (
-          renderedMessages.map((msg) => {
+          renderedMessages.map((msg, msgIdx) => {
             const isMine = msg.senderId === myUid;
-            const parsedQuote =
-              msg.type === 'text' ? parseQuotedMessage(msg.text) : null;
+            const parsedQuote = parseQuotedMessage(msg.text || '');
+            const cleanBodyText = parsedQuote ? parsedQuote.body : msg.text;
             const resolvedState = resolvedMedia[msg.id];
             const resolvedUrl = getResolvedMediaUrl(msg);
             const hasRealCaption =
               (msg.type === 'image' || msg.type === 'video') &&
-              Boolean(msg.text) &&
-              msg.text.trim() !== 'Foto' &&
-              msg.text.trim() !== 'Vídeo' &&
-              !msg.text.trim().startsWith('Vídeo (') &&
-              !/^[\w-]+\.(jpe?g|png|webp|heic|gif|mp4|mov|webm)$/i.test(msg.text.trim());
+              Boolean(cleanBodyText) &&
+              cleanBodyText.trim() !== 'Foto' &&
+              cleanBodyText.trim() !== 'Vídeo' &&
+              !cleanBodyText.trim().startsWith('Vídeo (') &&
+              !/^[\w-]+\.(jpe?g|png|webp|heic|gif|mp4|mov|webm)$/i.test(cleanBodyText.trim());
 
             const mediaStatusPlaceholder = (kindLabel: string) => {
               const st = resolvedState?.status;
@@ -2245,15 +2452,49 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             };
 
             const isAudioListened = msg.type === 'audio' && listenedAudioIds.has(msg.id);
+            const isActiveReplyTarget = replyingTo?.messageId === msg.id;
+            const isJumpHighlighted = highlightedMsgId === msg.id;
+            const swipeOffset = swipingMsg?.msgId === msg.id ? swipingMsg.offsetX : 0;
+            const quoteDisplaySender = parsedQuote
+              ? parsedQuote.quoteSender === myName || parsedQuote.quoteSender === 'Você'
+                ? 'Você'
+                : parsedQuote.quoteSender
+              : '';
 
             return (
               <div
                 key={msg.id}
                 data-chat-msg-id={msg.id}
-                className={`group flex ${isMine ? 'justify-end' : 'justify-start'}`}
+                onTouchStart={(e) => handleRowTouchStart(msg, e)}
+                onTouchMove={handleRowTouchMove}
+                onTouchEnd={() => handleRowTouchEnd(msg)}
+                onTouchCancel={() => {
+                  swipeStateRef.current = null;
+                  setSwipingMsg(null);
+                }}
+                className={`group relative flex items-center ${isMine ? 'justify-end' : 'justify-start'}`}
               >
+                {/* Swipe-right Reply indicator (WhatsApp mobile feel) */}
+                {swipeOffset > 4 && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-1 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-[#0E7A34] text-white shadow-md transition-transform"
+                    style={{
+                      opacity: Math.min(1, swipeOffset / 36),
+                      transform: `scale(${swipeOffset >= 38 ? 1.08 : 0.85})`,
+                    }}
+                  >
+                    <Reply className="h-4 w-4" />
+                  </div>
+                )}
+
                 <div
-                  className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl transition-colors sm:max-w-[70%] ${
+                  style={
+                    swipeOffset > 0
+                      ? { transform: `translateX(${swipeOffset}px)`, transition: 'none' }
+                      : { transition: 'transform 180ms ease-out' }
+                  }
+                  className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl transition-all sm:max-w-[70%] ${
                     msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2.5'
                   } ${
                     isMine
@@ -2261,6 +2502,12 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       : isAudioListened
                         ? 'rounded-bl-sm border border-sky-200/95 bg-sky-50/95 text-slate-800 shadow-[0_1px_4px_rgba(2,132,199,0.10)]'
                         : 'rounded-bl-sm border border-slate-200/80 bg-white text-slate-800 shadow-[0_1px_4px_rgba(15,23,42,0.07)]'
+                  } ${
+                    isJumpHighlighted
+                      ? 'ring-2 ring-[#0E7A34] ring-offset-2 ring-offset-transparent shadow-lg'
+                      : isActiveReplyTarget
+                        ? 'ring-2 ring-[#0E7A34]/75 ring-offset-1 ring-offset-transparent'
+                        : ''
                   }`}
                 >
                   {/* WhatsApp-style Message Options Trigger */}
@@ -2281,6 +2528,34 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   >
                     <ChevronDown className="h-4 w-4" />
                   </button>
+
+                  {/* Universal WhatsApp-style Quoted Message Card (works for Text, Audio, Photo, Video & PDF) */}
+                  {parsedQuote && (
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToQuotedMessage(msgIdx, parsedQuote)}
+                      className={`mb-2 block w-full min-w-[155px] rounded-xl border-l-[3.5px] py-1.5 pl-2.5 pr-8 text-left transition active:scale-[0.99] ${
+                        isMine
+                          ? 'border-emerald-200 bg-black/22 text-white hover:bg-black/30'
+                          : 'border-[#0E7A34] bg-[#0E7A34]/[0.08] text-slate-700 hover:bg-[#0E7A34]/[0.13]'
+                      }`}
+                    >
+                      <p
+                        className={`truncate text-[12px] font-bold leading-tight ${
+                          isMine ? 'text-emerald-200' : 'text-[#0E7A34]'
+                        }`}
+                      >
+                        {quoteDisplaySender}
+                      </p>
+                      <p
+                        className={`mt-0.5 line-clamp-2 text-[12px] leading-snug ${
+                          isMine ? 'text-white/90' : 'text-slate-600'
+                        }`}
+                      >
+                        {parsedQuote.quoteSnippet}
+                      </p>
+                    </button>
+                  )}
 
                   {msg.type === 'audio' ? (
                     <div className="pr-6">
@@ -2433,19 +2708,25 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                               setLightboxMsg(msg);
                             }
                           }}
-                          className="block w-full overflow-hidden rounded-xl bg-black/10"
+                          className="relative block w-full overflow-hidden rounded-xl bg-black/10"
                         >
                           <img
                             src={resolvedUrl}
-                            alt={hasRealCaption ? msg.text : 'Foto enviada'}
+                            alt={hasRealCaption ? cleanBodyText : 'Foto enviada'}
                             className="max-h-72 w-full rounded-xl object-cover"
                           />
+                          {msg.deliveryStatus === 'sending' && (
+                            <div className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-black/65 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-xs">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              <span>Enviando...</span>
+                            </div>
+                          )}
                         </button>
                       ) : (
                         <div className="pr-7">{mediaStatusPlaceholder('Foto')}</div>
                       )}
                       {hasRealCaption && (
-                        <p className="px-1.5 text-sm leading-snug">{msg.text}</p>
+                        <p className="px-1.5 text-sm leading-snug">{cleanBodyText}</p>
                       )}
                       {/* Instant WhatsApp-style Save / Share / Forward buttons right on every photo */}
                       {resolvedUrl && (
@@ -2527,12 +2808,18 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                               )}
                             </div>
                           )}
+                          {msg.deliveryStatus === 'sending' && (
+                            <div className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-xs">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              <span>Enviando vídeo...</span>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="pr-7">{mediaStatusPlaceholder('Vídeo')}</div>
                       )}
                       {hasRealCaption && (
-                        <p className="px-1.5 text-sm leading-snug">{msg.text}</p>
+                        <p className="px-1.5 text-sm leading-snug">{cleanBodyText}</p>
                       )}
                       {resolvedUrl && (
                         <div
@@ -2641,33 +2928,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       </div>
                       <p className="mt-1.5 text-xs leading-relaxed">{msg.text}</p>
                     </div>
-                  ) : parsedQuote ? (
-                    <div className="pr-6">
-                      <div
-                        className={`mb-1.5 rounded-lg border-l-4 px-2.5 py-1.5 text-xs ${
-                          isMine
-                            ? 'border-emerald-300 bg-black/20 text-emerald-50'
-                            : 'border-[#0E7A34] bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        <p
-                          className={`font-bold ${
-                            isMine ? 'text-emerald-200' : 'text-[#0E7A34]'
-                          }`}
-                        >
-                          {parsedQuote.quoteSender}
-                        </p>
-                        <p className="line-clamp-2 opacity-90">
-                          {parsedQuote.quoteSnippet}
-                        </p>
-                      </div>
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {parsedQuote.body}
-                      </p>
-                    </div>
                   ) : (
                     <p className="whitespace-pre-wrap pr-6 text-sm leading-relaxed">
-                      {msg.text}
+                      {cleanBodyText}
                     </p>
                   )}
 
@@ -2739,9 +3002,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       {/* WhatsApp-style Reply Preview Bar */}
       {replyingTo && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="min-w-0 flex-1 border-l-4 border-[#0E7A34] pl-2.5">
+          <div className="min-w-0 flex-1 rounded-r-lg border-l-[3.5px] border-[#0E7A34] bg-[#0E7A34]/[0.06] py-1 pl-2.5 pr-2">
             <p className="truncate text-xs font-bold text-[#0E7A34]">
-              Respondendo a {replyingTo.senderName}
+              {replyingTo.senderName === myName ? 'Você' : replyingTo.senderName}
             </p>
             <p className="truncate text-xs text-slate-600">{replyingTo.snippet}</p>
           </div>
@@ -3057,6 +3320,19 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               src={pendingVideo.previewUrl}
               controls
               playsInline
+              onLoadedMetadata={(e) => {
+                const secs = Number.isFinite(e.currentTarget.duration)
+                  ? Math.max(0, Math.round(e.currentTarget.duration))
+                  : 0;
+                if (secs > 0) {
+                  const mins = Math.floor(secs / 60);
+                  const rem = secs % 60;
+                  const label = `${mins}:${rem.toString().padStart(2, '0')}`;
+                  setPendingVideo((prev) =>
+                    prev && !prev.durationLabel ? { ...prev, durationLabel: label } : prev
+                  );
+                }
+              }}
               onPlay={(e) => stopAllChatMediaExcept(e.currentTarget)}
               className="max-h-full max-w-full rounded-xl bg-black"
             />

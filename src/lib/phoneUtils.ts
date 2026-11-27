@@ -278,8 +278,15 @@ export async function compressImageFileToMaxBytes(
 export async function compressImageFileToBlob(
   file: File,
   maxWidth = 1280,
-  quality = 0.8
+  quality = 0.8,
+  targetMaxBytes?: number
 ): Promise<{ blob: Blob; width: number; height: number; mimeType: string }> {
+  const encodeCanvas = (
+    canvas: HTMLCanvasElement,
+    q: number
+  ): Promise<Blob | null> =>
+    new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', q));
+
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
     const img = new Image();
@@ -289,36 +296,66 @@ export async function compressImageFileToBlob(
     };
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
-      let { width, height } = img;
-      if (width > maxWidth || height > maxWidth) {
-        if (width >= height) {
-          height = Math.max(1, Math.round((height * maxWidth) / width));
-          width = maxWidth;
-        } else {
-          width = Math.max(1, Math.round((width * maxWidth) / height));
-          height = maxWidth;
-        }
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Não foi possível processar a imagem.'));
-        return;
-      }
-      ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob(
-        (blob) => {
+      void (async () => {
+        try {
+          let { width, height } = img;
+          if (width > maxWidth || height > maxWidth) {
+            if (width >= height) {
+              height = Math.max(1, Math.round((height * maxWidth) / width));
+              width = maxWidth;
+            } else {
+              width = Math.max(1, Math.round((width * maxWidth) / height));
+              height = maxWidth;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('Não foi possível processar a imagem.'));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+
+          let blob = await encodeCanvas(canvas, quality);
           if (!blob) {
             reject(new Error('Falha ao comprimir a imagem.'));
             return;
           }
+
+          // When targetMaxBytes is set (e.g. chat photos), adaptively tighten JPEG quality/scale
+          // so 99% of phone photos stay sharp HD AND hit the 10ms instant direct-delivery fast path.
+          if (targetMaxBytes && blob.size > targetMaxBytes) {
+            const tighter = await encodeCanvas(canvas, Math.min(quality, 0.66));
+            if (tighter && tighter.size < blob.size) {
+              blob = tighter;
+            }
+          }
+          if (targetMaxBytes && blob.size > targetMaxBytes && Math.max(width, height) > 960) {
+            const scale = 960 / Math.max(width, height);
+            const scaledW = Math.max(1, Math.round(width * scale));
+            const scaledH = Math.max(1, Math.round(height * scale));
+            const smallCanvas = document.createElement('canvas');
+            smallCanvas.width = scaledW;
+            smallCanvas.height = scaledH;
+            const smallCtx = smallCanvas.getContext('2d');
+            if (smallCtx) {
+              smallCtx.drawImage(canvas, 0, 0, scaledW, scaledH);
+              const scaledBlob = await encodeCanvas(smallCanvas, 0.64);
+              if (scaledBlob && scaledBlob.size < blob.size) {
+                blob = scaledBlob;
+                width = scaledW;
+                height = scaledH;
+              }
+            }
+          }
+
           resolve({ blob, width, height, mimeType: 'image/jpeg' });
-        },
-        'image/jpeg',
-        quality
-      );
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error('Falha ao comprimir a imagem.'));
+        }
+      })();
     };
     img.src = objectUrl;
   });
@@ -343,33 +380,38 @@ export function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 /**
- * Reads the duration of a local video File/Blob as a short label (e.g. "0:24").
+ * Reads the duration of a local video File/Blob as a short label (e.g. "0:24"),
+ * with an iOS-safe 900ms timeout so picking a video never blocks the UI.
  */
 export async function extractVideoDurationLabel(file: Blob): Promise<string> {
   return new Promise((resolve) => {
+    let settled = false;
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
     video.preload = 'metadata';
-    const cleanup = () => {
+    video.muted = true;
+    video.playsInline = true;
+    const finish = (label: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
       URL.revokeObjectURL(url);
       video.removeAttribute('src');
       video.load();
+      resolve(label);
     };
+    const timer = window.setTimeout(() => finish(''), 900);
     video.onloadedmetadata = () => {
       const secs = Number.isFinite(video.duration) ? Math.max(0, Math.round(video.duration)) : 0;
-      cleanup();
       if (secs <= 0) {
-        resolve('');
+        finish('');
         return;
       }
       const mins = Math.floor(secs / 60);
       const rem = secs % 60;
-      resolve(`${mins}:${rem.toString().padStart(2, '0')}`);
+      finish(`${mins}:${rem.toString().padStart(2, '0')}`);
     };
-    video.onerror = () => {
-      cleanup();
-      resolve('');
-    };
+    video.onerror = () => finish('');
     video.src = url;
   });
 }

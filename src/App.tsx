@@ -3698,7 +3698,10 @@ export default function App() {
                         const avatarBg =
                           matchedContact?.avatarBg || dir?.avatarColor || '#0E7A34';
                         const isSelected = selectedPeer?.uid === thread.otherUid;
-                        const lastText = thread.lastMessage || 'Conversa iniciada';
+                        const rawLastText = thread.lastMessage || 'Conversa iniciada';
+                        const lastText = rawLastText.startsWith('» ') && rawLastText.includes('\n')
+                          ? rawLastText.slice(rawLastText.indexOf('\n') + 1).trim() || rawLastText
+                          : rawLastText;
                         const isVoicePreview = /^(mensagem de voz|áudio|audio)\b/i.test(lastText.trim());
                         const isPdfPreview = /\.pdf\b|^pdf\b/i.test(lastText.trim());
 
@@ -3944,6 +3947,10 @@ export default function App() {
                         : null
                     }
                     onSendText={async (text) => {
+                      const cleanPushPreview =
+                        text.startsWith('» ') && text.includes('\n')
+                          ? text.slice(text.indexOf('\n') + 1).trim() || text
+                          : text;
                       const { queuedOffline } = await sendOrQueueMessage(
                         {
                           senderId: profile.uid,
@@ -3952,7 +3959,7 @@ export default function App() {
                           recipientName: selectedPeer.name,
                           type: 'text',
                           text,
-                          pushPreviewText: text,
+                          pushPreviewText: cleanPushPreview,
                           pushMessageType: 'text',
                         },
                         authUser
@@ -3961,7 +3968,9 @@ export default function App() {
                         showToast('Salva na fila — será enviada assim que o sinal voltar.');
                       }
                     }}
-                    onSendAudio={async (audioBlob, audioDuration) => {
+                    onSendAudio={async (audioBlob, audioDuration, replyCaption) => {
+                      const audioText =
+                        replyCaption?.trim() || `Mensagem de voz (${audioDuration})`;
                       if (!isOnline) {
                         if (audioBlob.size <= 330 * 1024) {
                           const dataUrl = await blobToDataUrl(audioBlob);
@@ -3972,7 +3981,7 @@ export default function App() {
                               recipientId: selectedPeer.uid,
                               recipientName: selectedPeer.name,
                               type: 'audio',
-                              text: `Mensagem de voz (${audioDuration})`,
+                              text: audioText,
                               mediaUrl: dataUrl,
                               audioDuration,
                               pushPreviewText: `Áudio (${audioDuration})`,
@@ -3994,6 +4003,7 @@ export default function App() {
                         blob: audioBlob,
                         mimeType: audioBlob.type || 'audio/webm',
                         durationLabel: audioDuration,
+                        caption: replyCaption || undefined,
                         authUser,
                       });
                     }}
