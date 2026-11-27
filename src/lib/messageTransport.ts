@@ -224,6 +224,13 @@ async function removeOutboxPacket(packetId: string): Promise<void> {
   notifyOutboxListeners();
 }
 
+export async function removeOutboxPackets(packetIds: string[]): Promise<void> {
+  if (packetIds.length === 0) return;
+  for (const id of packetIds) {
+    await removeOutboxPacket(id);
+  }
+}
+
 // --- ACTIVE TRANSPORT ADAPTERS ---
 
 const cloudFirebaseAdapter: MessageTransportAdapter = {

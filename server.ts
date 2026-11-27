@@ -2938,6 +2938,145 @@ async function startServer(): Promise<void> {
     }
   );
 
+  // 7d. Chat message deletions ("Apagar para mim" & "Apagar para todos") persisted cleanly on disk
+  const chatDeletionsPath = path.join(os.tmpdir(), 'chatfi-chat-deletions.json');
+  interface DeletedForAllRecord {
+    chatId: string;
+    messageId: string;
+    senderId: string;
+    deletedAtMs: number;
+  }
+  interface ChatDeletionsStore {
+    deletedForMeByUid: Record<string, string[]>;
+    deletedForAllByKey: Record<string, DeletedForAllRecord>;
+  }
+  const loadChatDeletionsStore = (): ChatDeletionsStore => {
+    try {
+      if (fs.existsSync(chatDeletionsPath)) {
+        const raw = JSON.parse(fs.readFileSync(chatDeletionsPath, 'utf-8')) as Partial<ChatDeletionsStore>;
+        return {
+          deletedForMeByUid:
+            raw && typeof raw.deletedForMeByUid === 'object' && raw.deletedForMeByUid
+              ? raw.deletedForMeByUid
+              : {},
+          deletedForAllByKey:
+            raw && typeof raw.deletedForAllByKey === 'object' && raw.deletedForAllByKey
+              ? raw.deletedForAllByKey
+              : {},
+        };
+      }
+    } catch {
+      // ignore corrupted store
+    }
+    return { deletedForMeByUid: {}, deletedForAllByKey: {} };
+  };
+  const chatDeletionsStore = loadChatDeletionsStore();
+  const saveChatDeletionsStore = (): void => {
+    try {
+      fs.writeFileSync(chatDeletionsPath, JSON.stringify(chatDeletionsStore), { mode: 0o600 });
+    } catch {
+      // ignore disk write error
+    }
+  };
+  const isChatParticipantId = (chatId: string, uid: string): boolean => {
+    if (!chatId || !uid || !/^[a-zA-Z0-9_-]{3,260}$/.test(chatId)) return false;
+    const parts = chatId.split('__');
+    return parts.length === 2 && (parts[0] === uid || parts[1] === uid);
+  };
+
+  app.get(
+    '/api/chats/deleted-state',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const deletedForMeIds = Array.isArray(chatDeletionsStore.deletedForMeByUid[actorUid])
+        ? chatDeletionsStore.deletedForMeByUid[actorUid]
+        : [];
+      const deletedForAll = Object.values(chatDeletionsStore.deletedForAllByKey).filter((rec) =>
+        isChatParticipantId(rec.chatId, actorUid)
+      );
+      res.json({ ok: true, deletedForMeIds, deletedForAll });
+    }
+  );
+
+  app.post(
+    '/api/chats/delete-for-me',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const rawIds = Array.isArray((req.body as { messageIds?: unknown })?.messageIds)
+        ? ((req.body as { messageIds: unknown[] }).messageIds as unknown[])
+        : [];
+      const cleanIds = rawIds
+        .filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id))
+        .slice(0, 200);
+      if (cleanIds.length === 0) {
+        res.status(400).json({ error: 'Nenhuma mensagem válida informada.' });
+        return;
+      }
+      const existing = new Set(chatDeletionsStore.deletedForMeByUid[actorUid] || []);
+      for (const id of cleanIds) existing.add(id);
+      chatDeletionsStore.deletedForMeByUid[actorUid] = Array.from(existing).slice(-5000);
+      saveChatDeletionsStore();
+      res.json({ ok: true, count: cleanIds.length });
+    }
+  );
+
+  app.post(
+    '/api/chats/delete-for-all',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res: Response) => {
+      const actorUid = req.verifiedUid!;
+      const idToken = req.idToken || '';
+      const body = (req.body || {}) as { chatId?: unknown; messageIds?: unknown };
+      const chatId = typeof body.chatId === 'string' ? body.chatId.trim() : '';
+      if (!isChatParticipantId(chatId, actorUid)) {
+        res.status(403).json({ error: 'Conversa inválida ou sem permissão.' });
+        return;
+      }
+      const rawIds = Array.isArray(body.messageIds) ? (body.messageIds as unknown[]) : [];
+      const cleanIds = rawIds
+        .filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id))
+        .slice(0, 100);
+      if (cleanIds.length === 0) {
+        res.status(400).json({ error: 'Nenhuma mensagem válida informada.' });
+        return;
+      }
+
+      const deletedIds: string[] = [];
+      const nowMs = Date.now();
+      for (const messageId of cleanIds) {
+        // Verify sender ownership against Firestore when message exists there
+        if (idToken) {
+          const msgDoc = await firestoreRestGetDoc(
+            `chats/${encodeURIComponent(chatId)}/messages`,
+            messageId,
+            idToken
+          ).catch(() => null);
+          if (msgDoc && String(msgDoc.senderId || '') !== actorUid) {
+            continue;
+          }
+        }
+        const key = `${chatId}__${messageId}`;
+        chatDeletionsStore.deletedForAllByKey[key] = {
+          chatId,
+          messageId,
+          senderId: actorUid,
+          deletedAtMs: nowMs,
+        };
+        deletedIds.push(messageId);
+      }
+
+      if (deletedIds.length === 0) {
+        res.status(403).json({ error: 'Você só pode apagar para todos as mensagens que enviou.' });
+        return;
+      }
+
+      saveChatDeletionsStore();
+      res.json({ ok: true, deletedIds, deletedAtMs: nowMs });
+    }
+  );
+
   // Background 60s sweeper: expires unpaid Asaas charges older than 2 hours
   const sweepExpiredAsaasReservations = async (): Promise<void> => {
     const now = Date.now();

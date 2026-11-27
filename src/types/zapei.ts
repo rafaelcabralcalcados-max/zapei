@@ -114,6 +114,8 @@ export interface ChatMessage {
   deliveryStatus?: 'pending' | 'sending' | 'sent' | 'delivered';
   viaMesh?: boolean;
   hops?: number;
+  deletedForAll?: boolean;
+  deletedAtMs?: number;
 }
 
 export interface CallSessionRecord {

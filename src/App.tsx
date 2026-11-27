@@ -32,9 +32,11 @@ import {
   createSupportTicket,
   db,
   deleteCallHistoryRecord,
+  deleteChatMessagesForAll,
   deletePhonebookContact,
   disconnectUserDevice,
   ensureCurrentDeviceRegisteredSilently,
+  fetchDeletedMessagesState,
   fetchPublicUserStorefront,
   fetchUserProfileOnce,
   getDeterministicChatId,
@@ -43,6 +45,7 @@ import {
   lookupRegisteredUserByPhone,
   markContactInvited,
   markOrderCompletedByParticipant,
+  persistDeletedForMeOnServer,
   registerOrCheckCurrentDevice,
   registerOrUpdateUserProfile,
   rejectDeviceAuthRequest,
@@ -120,11 +123,12 @@ import {
   installConnectivitySyncListeners,
   isDeviceOnline,
   packetToChatMessage,
+  removeOutboxPackets,
   sendOrQueueMessage,
   subscribeOutbox,
   type ZapeiMessagePacket,
 } from './lib/messageTransport';
-import { getLocalMedia } from './lib/localMediaCache';
+import { deleteLocalMediaItems, getLocalMedia } from './lib/localMediaCache';
 import {
   IMAGE_JPEG_QUALITY,
   MAX_IMAGE_WIDTH,
@@ -326,6 +330,8 @@ export default function App() {
   // Active Chat Thread & Messages
   const [selectedPeer, setSelectedPeer] = useState<ActiveChatPeer | null>(null);
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+  const [deletedForMeIds, setDeletedForMeIds] = useState<Set<string>>(() => new Set());
+  const [deletedForAllMap, setDeletedForAllMap] = useState<Map<string, number>>(() => new Map());
 
   // Real WebRTC Call State
   const [activeCall, setActiveCall] = useState<ActiveCallUIState | null>(null);
@@ -496,6 +502,8 @@ export default function App() {
         checkedDeviceUidRef.current = null;
         setContacts([]);
         setChats([]);
+        setDeletedForMeIds(new Set());
+        setDeletedForAllMap(new Map());
         setCalls([]);
         setProducts([]);
         setConnections([]);
@@ -882,7 +890,52 @@ export default function App() {
       });
     });
 
-    return () => unsubs.forEach((u) => u());
+    const deletedMeKey = `chatfi_deleted_for_me_v1_${uid}`;
+    try {
+      const rawDel = localStorage.getItem(deletedMeKey);
+      if (rawDel) {
+        const parsedDel = JSON.parse(rawDel) as unknown;
+        if (Array.isArray(parsedDel)) {
+          setDeletedForMeIds(new Set(parsedDel.filter((v): v is string => typeof v === 'string')));
+        }
+      }
+    } catch {
+      // ignore invalid deletion cache
+    }
+    const syncServerDeletions = () => {
+      const curUser = authUserRef.current;
+      if (!curUser) return;
+      void fetchDeletedMessagesState(curUser).then(({ deletedForMeIds: srvMe, deletedForAll }) => {
+        if (srvMe.length > 0) {
+          setDeletedForMeIds((prev) => {
+            const next = new Set(prev);
+            for (const id of srvMe) next.add(id);
+            try {
+              localStorage.setItem(deletedMeKey, JSON.stringify(Array.from(next).slice(-5000)));
+            } catch {
+              // ignore storage quota
+            }
+            return next;
+          });
+        }
+        if (deletedForAll.length > 0) {
+          setDeletedForAllMap((prev) => {
+            const next = new Map(prev);
+            for (const entry of deletedForAll) {
+              next.set(`${entry.chatId}__${entry.messageId}`, entry.deletedAtMs);
+            }
+            return next;
+          });
+        }
+      });
+    };
+    syncServerDeletions();
+    const deletionPollId = window.setInterval(syncServerDeletions, 8000);
+
+    return () => {
+      window.clearInterval(deletionPollId);
+      unsubs.forEach((u) => u());
+    };
   }, [authUid, profileUid, deviceAuthState]);
 
   const isSupportAdmin = isSupportAdminEmail(profile?.email || authUser?.email);
@@ -3098,6 +3151,7 @@ export default function App() {
       map.set(c.id, c);
     }
     for (const pkt of myOutboxPackets) {
+      if (deletedForMeIds.has(pkt.id)) continue;
       const existing = map.get(pkt.chatId);
       if (existing) {
         if (pkt.timestamp >= existing.updatedAtMs) {
@@ -3129,22 +3183,50 @@ export default function App() {
       }
     }
     return Array.from(map.values()).sort((a, b) => b.updatedAtMs - a.updatedAtMs);
-  }, [chats, myOutboxPackets, profile]);
+  }, [chats, myOutboxPackets, profile, deletedForMeIds]);
 
-  // Merge Firestore active chat messages with any pending offline outbox messages for this peer
+  // Merge Firestore active chat messages with any pending offline outbox messages,
+  // applying "Apagar para mim" exclusions and "Apagar para todos" tombstones.
   const mergedActiveMessages = useMemo(() => {
-    if (!profile || !selectedPeer) return activeMessages;
+    if (!profile || !selectedPeer) return [];
     const activeChatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
     const pendingForChat = pendingOutboxByChatId.get(activeChatId);
-    if (!pendingForChat || pendingForChat.length === 0) return activeMessages;
 
-    const existingIds = new Set(activeMessages.map((m) => m.id));
-    const extras = pendingForChat
-      .filter((pkt) => !existingIds.has(pkt.id))
-      .map(packetToChatMessage);
-    if (extras.length === 0) return activeMessages;
-    return [...activeMessages, ...extras];
-  }, [activeMessages, pendingOutboxByChatId, profile, selectedPeer]);
+    let combined = activeMessages;
+    if (pendingForChat && pendingForChat.length > 0) {
+      const existingIds = new Set(activeMessages.map((m) => m.id));
+      const extras = pendingForChat
+        .filter((pkt) => !existingIds.has(pkt.id))
+        .map(packetToChatMessage);
+      if (extras.length > 0) {
+        combined = [...activeMessages, ...extras];
+      }
+    }
+
+    return combined
+      .filter((m) => !deletedForMeIds.has(m.id))
+      .map((m) => {
+        const srvDeletedAt = deletedForAllMap.get(`${activeChatId}__${m.id}`);
+        if (!m.deletedForAll && srvDeletedAt === undefined) return m;
+        return {
+          ...m,
+          deletedForAll: true,
+          deletedAtMs: m.deletedAtMs || srvDeletedAt,
+          text: 'Mensagem apagada',
+          mediaUrl: undefined,
+          mediaTransitPath: undefined,
+          audioDuration: undefined,
+          videoDuration: undefined,
+        };
+      });
+  }, [
+    activeMessages,
+    pendingOutboxByChatId,
+    profile,
+    selectedPeer,
+    deletedForMeIds,
+    deletedForAllMap,
+  ]);
 
   const filteredChats = useMemo(() => {
     if (!normalizedChatQuery) return mergedChats;
@@ -4260,6 +4342,80 @@ export default function App() {
                         queuedOffline
                           ? `Salvo na fila para ${target.name} (aguardando rede).`
                           : `Encaminhado para ${target.name}!`
+                      );
+                    }}
+                    onDeleteMessagesForMe={async (messageIds) => {
+                      const clean = Array.from(new Set(messageIds.filter(Boolean)));
+                      if (clean.length === 0) return;
+                      const deletedMeKey = `chatfi_deleted_for_me_v1_${profile.uid}`;
+                      setDeletedForMeIds((prev) => {
+                        const next = new Set(prev);
+                        for (const id of clean) next.add(id);
+                        try {
+                          localStorage.setItem(
+                            deletedMeKey,
+                            JSON.stringify(Array.from(next).slice(-5000))
+                          );
+                        } catch {
+                          // ignore storage quota
+                        }
+                        return next;
+                      });
+                      await removeOutboxPackets(clean).catch(() => {});
+                      await deleteLocalMediaItems(clean).catch(() => {});
+                      if (authUser) {
+                        void persistDeletedForMeOnServer(authUser, clean);
+                      }
+                      showToast(
+                        clean.length === 1
+                          ? 'Mensagem apagada para você.'
+                          : `${clean.length} mensagens apagadas para você.`
+                      );
+                    }}
+                    onDeleteMessagesForAll={async (msgsToDelete) => {
+                      const chatId = getDeterministicChatId(profile.uid, selectedPeer.uid);
+                      const mineTargets = msgsToDelete.filter(
+                        (m) => m.senderId === profile.uid && !m.deletedForAll
+                      );
+                      if (mineTargets.length === 0) return;
+                      const nowMs = Date.now();
+
+                      const outboxIds = mineTargets
+                        .filter((m) => m.deliveryStatus === 'pending' || m.deliveryStatus === 'sending')
+                        .map((m) => m.id);
+                      if (outboxIds.length > 0) {
+                        await removeOutboxPackets(outboxIds).catch(() => {});
+                      }
+
+                      const cloudTargets = mineTargets.filter(
+                        (m) => m.deliveryStatus !== 'pending' && m.deliveryStatus !== 'sending'
+                      );
+                      setDeletedForAllMap((prev) => {
+                        const next = new Map(prev);
+                        for (const m of cloudTargets) {
+                          next.set(`${chatId}__${m.id}`, nowMs);
+                        }
+                        return next;
+                      });
+                      await deleteLocalMediaItems(mineTargets.map((m) => m.id)).catch(() => {});
+
+                      if (cloudTargets.length > 0) {
+                        const lastVisible = mergedActiveMessages[mergedActiveMessages.length - 1];
+                        const isLatest = Boolean(
+                          lastVisible && cloudTargets.some((m) => m.id === lastVisible.id)
+                        );
+                        await deleteChatMessagesForAll({
+                          chatId,
+                          messages: cloudTargets,
+                          myUid: profile.uid,
+                          authUser,
+                          isLatestInThread: isLatest,
+                        });
+                      }
+                      showToast(
+                        mineTargets.length === 1
+                          ? 'Mensagem apagada para todos.'
+                          : `${mineTargets.length} mensagens apagadas para todos.`
                       );
                     }}
                     onStartCall={(type) => void handleStartCall(selectedPeer, type)}

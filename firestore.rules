@@ -412,7 +412,8 @@ service cloud.firestore {
           'chatId', 'userA', 'userB', 'senderId', 'senderName', 'type', 'text',
           'mediaUrl', 'audioDuration', 'videoDuration', 'mediaTransitPath',
           'mediaDelivered', 'mediaSizeBytes', 'mediaMimeType', 'mediaExpiresAtMs',
-          'orderId', 'orderCode', 'orderSummary', 'orderTotal', 'orderStatusLabel', 'createdAt'
+          'orderId', 'orderCode', 'orderSummary', 'orderTotal', 'orderStatusLabel',
+          'deletedForAll', 'deletedAtMs', 'createdAt'
         ])
         && data.chatId == chatId
         && isValidId(data.userA)
@@ -434,6 +435,8 @@ service cloud.firestore {
         && (!('orderSummary' in data) || (data.orderSummary is string && data.orderSummary.size() <= 240))
         && (!('orderTotal' in data) || (data.orderTotal is number && data.orderTotal >= 0))
         && (!('orderStatusLabel' in data) || (data.orderStatusLabel is string && data.orderStatusLabel.size() <= 120))
+        && (!('deletedForAll' in data) || data.deletedForAll is bool)
+        && (!('deletedAtMs' in data) || (data.deletedAtMs is number && data.deletedAtMs >= 0))
         && data.createdAt is timestamp;
     }
 
@@ -1214,18 +1217,33 @@ service cloud.firestore {
         allow update: if isVerified() && isValidId(chatId) && isValidId(messageId)
           && isValidChatMessage(incoming(), chatId)
           && (existing().userA == request.auth.uid || existing().userB == request.auth.uid)
-          && existing().senderId != request.auth.uid
-          && existing().mediaDelivered == false
-          && incoming().mediaDelivered == true
-          && incoming().chatId == existing().chatId
-          && incoming().userA == existing().userA
-          && incoming().userB == existing().userB
-          && incoming().senderId == existing().senderId
-          && incoming().senderName == existing().senderName
-          && incoming().type == existing().type
-          && incoming().text == existing().text
-          && incoming().createdAt == existing().createdAt
-          && incoming().diff(existing()).affectedKeys().hasOnly(['mediaDelivered', 'mediaUrl']);
+          && (
+            (existing().senderId != request.auth.uid
+              && existing().mediaDelivered == false
+              && incoming().mediaDelivered == true
+              && incoming().chatId == existing().chatId
+              && incoming().userA == existing().userA
+              && incoming().userB == existing().userB
+              && incoming().senderId == existing().senderId
+              && incoming().senderName == existing().senderName
+              && incoming().type == existing().type
+              && incoming().text == existing().text
+              && incoming().createdAt == existing().createdAt
+              && incoming().diff(existing()).affectedKeys().hasOnly(['mediaDelivered', 'mediaUrl'])) ||
+            (existing().senderId == request.auth.uid
+              && (!('deletedForAll' in existing()) || existing().deletedForAll == false)
+              && incoming().deletedForAll == true
+              && incoming().chatId == existing().chatId
+              && incoming().userA == existing().userA
+              && incoming().userB == existing().userB
+              && incoming().senderId == existing().senderId
+              && incoming().senderName == existing().senderName
+              && incoming().type == existing().type
+              && incoming().text == 'Mensagem apagada'
+              && incoming().createdAt == existing().createdAt
+              && (!('mediaUrl' in incoming()) || incoming().mediaUrl == '')
+              && incoming().diff(existing()).affectedKeys().hasOnly(['deletedForAll', 'deletedAtMs', 'text', 'mediaUrl', 'mediaTransitPath', 'audioDuration', 'videoDuration']))
+          );
         allow delete: if false;
       }
     }

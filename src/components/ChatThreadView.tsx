@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  Ban,
   Camera,
   Check,
   CheckCheck,
+  CheckSquare,
   ChevronDown,
   Clock,
   Copy,
@@ -159,6 +161,8 @@ interface ChatThreadViewProps {
   onSendVideo: (blob: Blob, durationLabel: string, caption: string) => Promise<void>;
   onSendPdf?: (blob: Blob, fileName: string) => Promise<void>;
   onForwardMessage?: (target: ForwardTarget, msg: ChatMessage) => Promise<void>;
+  onDeleteMessagesForMe?: (messageIds: string[]) => Promise<void> | void;
+  onDeleteMessagesForAll?: (messages: ChatMessage[]) => Promise<void> | void;
   onNotify?: (message: string) => void;
   onStartCall: (type: 'audio' | 'video') => void;
   onOpenStorefront: () => void;
@@ -737,6 +741,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   onSendVideo,
   onSendPdf,
   onForwardMessage,
+  onDeleteMessagesForMe,
+  onDeleteMessagesForAll,
   onNotify,
   onStartCall,
   onOpenStorefront,
@@ -834,6 +840,13 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   } | null>(null);
   const [swipingMsg, setSwipingMsg] = useState<{ msgId: string; offsetX: number } | null>(null);
   const [actionSheetMsg, setActionSheetMsg] = useState<ChatMessage | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMsgIds, setSelectedMsgIds] = useState<Set<string>>(() => new Set());
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{
+    messages: ChatMessage[];
+    allowForAll: boolean;
+  } | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
   const [forwardMsg, setForwardMsg] = useState<ChatMessage | null>(null);
   const [forwardSearch, setForwardSearch] = useState('');
   const [forwardingUid, setForwardingUid] = useState<string | null>(null);
@@ -851,8 +864,17 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const composerInputRef = useRef<HTMLInputElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const messagesContentRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const activePrintCleanupRef = useRef<(() => void) | null>(null);
+  const isNearBottomRef = useRef<boolean>(true);
+  const programmaticScrollUntilRef = useRef<number>(0);
+  const lastPeerUidRef = useRef<string | null>(null);
+  const prevMessageCountRef = useRef<number>(0);
+  const prevLastMsgIdRef = useRef<string | null>(null);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [pendingNewMessagesCount, setPendingNewMessagesCount] = useState(0);
 
   const activeChatId = useMemo(
     () => getDeterministicChatId(myUid, peer.uid),
@@ -872,16 +894,179 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     }
   };
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const container = messagesContainerRef.current;
+    isNearBottomRef.current = true;
+    programmaticScrollUntilRef.current = behavior === 'smooth' ? Date.now() + 650 : 0;
+    setShowScrollToBottom(false);
+    setPendingNewMessagesCount(0);
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior,
+      });
+    } else {
+      endRef.current?.scrollIntoView({ behavior });
+    }
+  }, []);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom <= 100;
+    if (nearBottom) {
+      programmaticScrollUntilRef.current = 0;
+      isNearBottomRef.current = true;
+      setShowScrollToBottom(false);
+      setPendingNewMessagesCount(0);
+      return;
+    }
+    if (Date.now() < programmaticScrollUntilRef.current) {
+      return;
+    }
+    isNearBottomRef.current = false;
+    setShowScrollToBottom(true);
+  }, []);
+
+  const cancelProgrammaticScroll = useCallback(() => {
+    programmaticScrollUntilRef.current = 0;
+  }, []);
+
+  // Keep bottom pinned when media/cards finish sizing while user is already at the bottom
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [renderedMessages.length, peer.uid]);
+    const contentEl = messagesContentRef.current;
+    if (!contentEl || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      if (!isNearBottomRef.current) return;
+      const container = messagesContainerRef.current;
+      if (!container) return;
+      container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [peer.uid]);
+
+  useEffect(() => {
+    const count = renderedMessages.length;
+    const lastMsg = count > 0 ? renderedMessages[count - 1] : null;
+    const lastMsgId = lastMsg ? lastMsg.id : null;
+    const peerChanged = lastPeerUidRef.current !== peer.uid;
+
+    if (peerChanged) {
+      lastPeerUidRef.current = peer.uid;
+      prevMessageCountRef.current = count;
+      prevLastMsgIdRef.current = lastMsgId;
+      isNearBottomRef.current = true;
+      programmaticScrollUntilRef.current = 0;
+      setShowScrollToBottom(false);
+      setPendingNewMessagesCount(0);
+      const rafId = window.requestAnimationFrame(() => {
+        scrollToBottom('auto');
+      });
+      return () => window.cancelAnimationFrame(rafId);
+    }
+
+    const prevCount = prevMessageCountRef.current;
+    const prevLastId = prevLastMsgIdRef.current;
+    const hasNewMessages = count > prevCount || (lastMsgId !== null && lastMsgId !== prevLastId);
+
+    prevMessageCountRef.current = count;
+    prevLastMsgIdRef.current = lastMsgId;
+
+    if (!hasNewMessages) return undefined;
+
+    const wasEmpty = prevCount === 0;
+    const sentByMe = Boolean(lastMsg && lastMsg.senderId === myUid);
+
+    if (wasEmpty || sentByMe || isNearBottomRef.current) {
+      const rafId = window.requestAnimationFrame(() => {
+        scrollToBottom(wasEmpty ? 'auto' : 'smooth');
+      });
+      return () => window.cancelAnimationFrame(rafId);
+    }
+
+    // User is scrolled up looking at older messages: preserve their exact scroll position
+    // and count incoming messages on the quick-scroll down arrow.
+    const addedMessages =
+      count > prevCount ? renderedMessages.slice(prevCount) : lastMsg ? [lastMsg] : [];
+    const incomingAddedCount = addedMessages.filter((m) => m.senderId !== myUid).length;
+    if (incomingAddedCount > 0) {
+      setPendingNewMessagesCount((prev) => prev + incomingAddedCount);
+    }
+    setShowScrollToBottom(true);
+    return undefined;
+  }, [renderedMessages, peer.uid, myUid, scrollToBottom]);
 
   useEffect(() => {
     setReplyingTo(null);
     setShowEmojiPicker(false);
     setActionSheetMsg(null);
+    setSelectionMode(false);
+    setSelectedMsgIds(new Set());
+    setDeleteConfirmTarget(null);
     setOptimisticAudios([]);
   }, [peer.uid]);
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedMsgIds(new Set());
+  }, []);
+
+  const enterSelectionMode = useCallback((initialMsgId?: string) => {
+    setActionSheetMsg(null);
+    setSelectionMode(true);
+    setSelectedMsgIds(initialMsgId ? new Set([initialMsgId]) : new Set());
+  }, []);
+
+  const toggleSelectMessage = useCallback((messageId: string) => {
+    setSelectedMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
+  const openDeleteConfirmForMessages = useCallback(
+    (targetMsgs: ChatMessage[]) => {
+      if (targetMsgs.length === 0) return;
+      const allowForAll =
+        Boolean(onDeleteMessagesForAll) &&
+        targetMsgs.every((m) => m.senderId === myUid && !m.deletedForAll);
+      setActionSheetMsg(null);
+      setDeleteConfirmTarget({ messages: targetMsgs, allowForAll });
+    },
+    [myUid, onDeleteMessagesForAll]
+  );
+
+  const handleConfirmDeleteForMe = async () => {
+    if (!deleteConfirmTarget || !onDeleteMessagesForMe || deletingBusy) return;
+    setDeletingBusy(true);
+    try {
+      const ids = deleteConfirmTarget.messages.map((m) => m.id);
+      await onDeleteMessagesForMe(ids);
+      setDeleteConfirmTarget(null);
+      if (selectionMode) exitSelectionMode();
+    } finally {
+      setDeletingBusy(false);
+    }
+  };
+
+  const handleConfirmDeleteForAll = async () => {
+    if (!deleteConfirmTarget || !onDeleteMessagesForAll || deletingBusy) return;
+    setDeletingBusy(true);
+    try {
+      await onDeleteMessagesForAll(deleteConfirmTarget.messages);
+      setDeleteConfirmTarget(null);
+      if (selectionMode) exitSelectionMode();
+    } finally {
+      setDeletingBusy(false);
+    }
+  };
 
   // React immediately if user deletes media in Settings -> Armazenamento e Dados
   useEffect(() => {
@@ -2276,6 +2461,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     BACK_PRIORITY.MODAL
   );
   useSystemBackHandler(
+    Boolean(deleteConfirmTarget),
+    () => setDeleteConfirmTarget(null),
+    BACK_PRIORITY.MODAL + 2
+  );
+  useSystemBackHandler(
+    selectionMode,
+    exitSelectionMode,
+    BACK_PRIORITY.DRAWER
+  );
+  useSystemBackHandler(
     Boolean(forwardMsg),
     () => setForwardMsg(null),
     BACK_PRIORITY.MODAL + 1
@@ -2383,123 +2578,201 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
   return (
     <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-[#EDF3EF]">
       <div className="safe-top-strip w-full shrink-0 md:hidden" aria-hidden="true" />
-      {/* Top Chat Header — ChatFi Deep Emerald Wave */}
-      <header className="chatfi-header-wave flex shrink-0 items-center justify-between gap-2 border-b border-emerald-950/30 px-2.5 py-2.5 text-white shadow-sm sm:px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          {onBack && (
+      {/* Top Chat Header — Selection Mode Bar or ChatFi Deep Emerald Wave */}
+      {selectionMode ? (
+        <header className="chatfi-header-wave flex shrink-0 items-center justify-between gap-2 border-b border-emerald-950/30 px-2.5 py-2.5 text-white shadow-sm sm:px-4">
+          <div className="flex min-w-0 items-center gap-2.5">
             <button
               type="button"
-              onClick={onBack}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15 md:hidden"
-              aria-label="Voltar para conversas"
+              onClick={exitSelectionMode}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
+              aria-label="Cancelar seleção"
+              title="Cancelar seleção"
             >
-              <ArrowLeft className="h-5 w-5" />
+              <X className="h-5 w-5" />
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() =>
-              onPreviewAvatar?.({
-                name: peer.name,
-                initials: peer.initials,
-                avatarBg: peer.avatarBg,
-                avatarUrl: peer.avatarUrl,
-                phone: peer.phone || peer.virtualLine,
-                virtualLine: peer.virtualLine,
-                subtitle: peerPresenceDisplay.isPresence
-                  ? peerPresenceDisplay.label
-                  : peer.storefrontName,
-                ratingAverage: peer.ratingAverage,
-                ratingCount: peer.ratingCount,
-              })
-            }
-            title="Ver foto de perfil"
-            aria-label={`Ampliar foto de ${peer.name}`}
-            className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-95 active:scale-95 focus:outline-none focus:ring-2 focus:ring-white/50"
-          >
-            {peer.avatarUrl ? (
-              <img
-                src={peer.avatarUrl}
-                alt={peer.name}
-                className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-2 ring-white/35"
-              />
-            ) : (
-              <div
-                className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/30"
-                style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
-              >
-                {peer.initials}
-              </div>
-            )}
-            {peerPresenceDisplay.isOnline && (
-              <span
-                className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#22C55E] ring-2 ring-[#064A21]"
-                aria-label="Online"
-              />
-            )}
-          </button>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="truncate text-sm font-bold text-white sm:text-base">
-                {peer.name}
-              </h2>
-              <StarRatingBadge
-                average={peer.ratingAverage}
-                count={peer.ratingCount}
-                variant="inline"
-                tone="dark"
-              />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-white">
+                {selectedMsgIds.size === 0
+                  ? 'Selecionar mensagens'
+                  : selectedMsgIds.size === 1
+                    ? '1 mensagem selecionada'
+                    : `${selectedMsgIds.size} mensagens selecionadas`}
+              </p>
+              <p className="truncate text-[11px] text-emerald-100/85">
+                Toque nas mensagens para marcar ou desmarcar
+              </p>
             </div>
-            <p
-              className={`truncate text-xs ${
-                peerPresenceDisplay.isOnline
-                  ? 'font-semibold text-emerald-200'
-                  : 'text-emerald-100/80'
-              }`}
-            >
-              {peerPresenceDisplay.isOnline
-                ? peer.hasStorefront && peer.storefrontName
-                  ? `online · ${peer.storefrontName}`
-                  : 'online'
-                : peerPresenceDisplay.isPresence
-                  ? peerPresenceDisplay.label
-                  : peer.hasStorefront
-                    ? peer.storefrontName || 'Vitrine comercial ativa'
-                    : peerPresenceDisplay.label}
-            </p>
           </div>
-        </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          {peer.hasStorefront && (
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
-              onClick={onOpenStorefront}
-              title="Abrir vitrine"
-              className="flex h-9 items-center gap-1.5 rounded-full bg-[#16A34A] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-white/25 transition hover:bg-[#15803D] sm:h-10 sm:px-3.5"
+              onClick={() => {
+                if (
+                  renderedMessages.length > 0 &&
+                  selectedMsgIds.size === renderedMessages.length
+                ) {
+                  setSelectedMsgIds(new Set());
+                } else {
+                  setSelectedMsgIds(new Set(renderedMessages.map((m) => m.id)));
+                }
+              }}
+              className="flex h-9 items-center gap-1.5 rounded-full border border-white/25 bg-white/10 px-3 text-xs font-semibold text-white transition hover:bg-white/20"
             >
-              <Store className="h-4 w-4 shrink-0" />
-              <span className="hidden sm:inline">Vitrine</span>
+              <CheckSquare className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden sm:inline">
+                {renderedMessages.length > 0 &&
+                selectedMsgIds.size === renderedMessages.length
+                  ? 'Limpar'
+                  : 'Todas'}
+              </span>
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => onStartCall('audio')}
-            title="Ligação de voz"
-            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
-          >
-            <Phone className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onStartCall('video')}
-            title="Chamada de vídeo"
-            className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
-          >
-            <Video className="h-4 w-4" />
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              disabled={selectedMsgIds.size === 0}
+              onClick={() => {
+                const chosen = renderedMessages.filter((m) => selectedMsgIds.has(m.id));
+                openDeleteConfirmForMessages(chosen);
+              }}
+              aria-label="Apagar mensagens selecionadas"
+              title="Apagar selecionadas"
+              className="flex h-9 items-center gap-1.5 rounded-full bg-red-600 px-3.5 text-xs font-bold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-45 sm:h-10"
+            >
+              <Trash2 className="h-4 w-4 shrink-0" />
+              <span>Apagar</span>
+            </button>
+          </div>
+        </header>
+      ) : (
+        <header className="chatfi-header-wave flex shrink-0 items-center justify-between gap-2 border-b border-emerald-950/30 px-2.5 py-2.5 text-white shadow-sm sm:px-4">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15 md:hidden"
+                aria-label="Voltar para conversas"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() =>
+                onPreviewAvatar?.({
+                  name: peer.name,
+                  initials: peer.initials,
+                  avatarBg: peer.avatarBg,
+                  avatarUrl: peer.avatarUrl,
+                  phone: peer.phone || peer.virtualLine,
+                  virtualLine: peer.virtualLine,
+                  subtitle: peerPresenceDisplay.isPresence
+                    ? peerPresenceDisplay.label
+                    : peer.storefrontName,
+                  ratingAverage: peer.ratingAverage,
+                  ratingCount: peer.ratingCount,
+                })
+              }
+              title="Ver foto de perfil"
+              aria-label={`Ampliar foto de ${peer.name}`}
+              className="relative shrink-0 rounded-full cursor-pointer transition hover:opacity-95 active:scale-95 focus:outline-none focus:ring-2 focus:ring-white/50"
+            >
+              {peer.avatarUrl ? (
+                <img
+                  src={peer.avatarUrl}
+                  alt={peer.name}
+                  className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-full object-cover ring-2 ring-white/35"
+                />
+              ) : (
+                <div
+                  className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ring-2 ring-white/30"
+                  style={{ backgroundColor: peer.avatarBg || '#0E7A34' }}
+                >
+                  {peer.initials}
+                </div>
+              )}
+              {peerPresenceDisplay.isOnline && (
+                <span
+                  className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-[#22C55E] ring-2 ring-[#064A21]"
+                  aria-label="Online"
+                />
+              )}
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-sm font-bold text-white sm:text-base">
+                  {peer.name}
+                </h2>
+                <StarRatingBadge
+                  average={peer.ratingAverage}
+                  count={peer.ratingCount}
+                  variant="inline"
+                  tone="dark"
+                />
+              </div>
+              <p
+                className={`truncate text-xs ${
+                  peerPresenceDisplay.isOnline
+                    ? 'font-semibold text-emerald-200'
+                    : 'text-emerald-100/80'
+                }`}
+              >
+                {peerPresenceDisplay.isOnline
+                  ? peer.hasStorefront && peer.storefrontName
+                    ? `online · ${peer.storefrontName}`
+                    : 'online'
+                  : peerPresenceDisplay.isPresence
+                    ? peerPresenceDisplay.label
+                    : peer.hasStorefront
+                      ? peer.storefrontName || 'Vitrine comercial ativa'
+                      : peerPresenceDisplay.label}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            {peer.hasStorefront && (
+              <button
+                type="button"
+                onClick={onOpenStorefront}
+                title="Abrir vitrine"
+                className="flex h-9 items-center gap-1.5 rounded-full bg-[#16A34A] px-3 text-xs font-semibold text-white shadow-sm ring-1 ring-white/25 transition hover:bg-[#15803D] sm:h-10 sm:px-3.5"
+              >
+                <Store className="h-4 w-4 shrink-0" />
+                <span className="hidden sm:inline">Vitrine</span>
+              </button>
+            )}
+            {(onDeleteMessagesForMe || onDeleteMessagesForAll) && renderedMessages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => enterSelectionMode()}
+                title="Selecionar mensagens para apagar"
+                aria-label="Selecionar mensagens para apagar"
+                className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+              >
+                <CheckSquare className="h-4 w-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onStartCall('audio')}
+              title="Ligação de voz"
+              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+            >
+              <Phone className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onStartCall('video')}
+              title="Chamada de vídeo"
+              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur-xs transition hover:bg-white/20"
+            >
+              <Video className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+      )}
 
       {/* Discreet Offline Mode Banner inside open chat */}
       {isOffline && (
@@ -2520,8 +2793,16 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       )}
 
       {/* Messages Stream with Bespoke ChatFi Messenger Wallpaper */}
-      <div className="chatfi-chat-wallpaper flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5 space-y-2.5">
-        {renderedMessages.length === 0 ? (
+      <div className="relative flex flex-1 min-h-0 flex-col">
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleMessagesScroll}
+          onWheel={cancelProgrammaticScroll}
+          onTouchStart={cancelProgrammaticScroll}
+          className="chatfi-chat-wallpaper flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2.5 py-3.5 sm:px-5"
+        >
+          <div ref={messagesContentRef} className="space-y-2.5">
+            {renderedMessages.length === 0 ? (
           <div className="mx-auto mt-10 max-w-sm rounded-2xl border border-emerald-900/10 bg-white/92 p-5 text-center shadow-sm backdrop-blur-xs">
             <p className="text-sm font-semibold text-slate-800">
               Conversa iniciada com {peer.name}
@@ -2628,6 +2909,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               : '';
             const msgDateLabel = formatMessageShortDate(msgMs);
 
+            const isSelected = selectionMode && selectedMsgIds.has(msg.id);
+            const isDeletedForAll = Boolean(msg.deletedForAll);
+
             return (
               <React.Fragment key={msg.id}>
                 {showDayDivider && (
@@ -2639,15 +2923,40 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 )}
                 <div
                   data-chat-msg-id={msg.id}
-                  onTouchStart={(e) => handleRowTouchStart(msg, e)}
-                  onTouchMove={handleRowTouchMove}
-                  onTouchEnd={() => handleRowTouchEnd(msg)}
+                  onClick={
+                    selectionMode
+                      ? () => toggleSelectMessage(msg.id)
+                      : undefined
+                  }
+                  onTouchStart={
+                    selectionMode ? undefined : (e) => handleRowTouchStart(msg, e)
+                  }
+                  onTouchMove={selectionMode ? undefined : handleRowTouchMove}
+                  onTouchEnd={selectionMode ? undefined : () => handleRowTouchEnd(msg)}
                   onTouchCancel={() => {
                     swipeStateRef.current = null;
                     setSwipingMsg(null);
                   }}
-                  className={`group relative flex items-center ${isMine ? 'justify-end' : 'justify-start'}`}
+                  className={`group relative flex items-center gap-2 ${
+                    selectionMode ? 'cursor-pointer rounded-xl px-1.5 py-1 transition' : ''
+                  } ${
+                    isSelected ? 'bg-[#0E7A34]/12' : selectionMode ? 'hover:bg-black/[0.03]' : ''
+                  } ${isMine ? 'justify-end' : 'justify-start'}`}
                 >
+                  {selectionMode && (
+                    <span
+                      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 transition ${
+                        isMine ? 'order-first mr-auto' : ''
+                      } ${
+                        isSelected
+                          ? 'border-[#0E7A34] bg-[#0E7A34] text-white'
+                          : 'border-slate-400 bg-white/90'
+                      }`}
+                    >
+                      {isSelected && <Check className="h-3 w-3 stroke-[3]" />}
+                    </span>
+                  )}
+
                 {/* Swipe-right Reply indicator (WhatsApp mobile feel) */}
                 {swipeOffset > 4 && (
                   <div
@@ -2669,11 +2978,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                       : { transition: 'transform 180ms ease-out' }
                   }
                   className={`relative max-w-[86%] min-w-0 overflow-hidden break-words rounded-2xl transition-all sm:max-w-[70%] ${
-                    msg.type === 'image' || msg.type === 'video' ? 'p-1.5' : 'px-3.5 py-2.5'
+                    selectionMode ? 'pointer-events-none' : ''
+                  } ${
+                    !isDeletedForAll && (msg.type === 'image' || msg.type === 'video')
+                      ? 'p-1.5'
+                      : 'px-3.5 py-2.5'
                   } ${
                     isMine
                       ? 'rounded-br-sm bg-gradient-to-br from-[#0F8238] to-[#0B632A] text-white shadow-[0_2px_8px_rgba(11,99,42,0.22)]'
-                      : isAudioListened
+                      : isAudioListened && !isDeletedForAll
                         ? 'rounded-bl-sm border border-sky-200/95 bg-sky-50/95 text-slate-800 shadow-[0_1px_4px_rgba(2,132,199,0.10)]'
                         : 'rounded-bl-sm border border-slate-200/80 bg-white text-slate-800 shadow-[0_1px_4px_rgba(15,23,42,0.07)]'
                   } ${
@@ -2685,26 +2998,31 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   }`}
                 >
                   {/* WhatsApp-style Message Options Trigger */}
-                  <button
-                    type="button"
-                    onClick={() => setActionSheetMsg(msg)}
-                    aria-label="Opções da mensagem"
-                    title="Opções da mensagem"
-                    className={`absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full transition ${
-                      msg.type === 'image' || msg.type === 'video'
-                        ? 'bg-black/50 text-white hover:bg-black/70'
-                        : isMine
-                          ? 'bg-[#0B632A]/75 text-emerald-100 hover:bg-white/20 hover:text-white'
-                          : isAudioListened
-                            ? 'bg-sky-50/90 text-sky-600/80 hover:bg-sky-100 hover:text-sky-800'
-                            : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
-                    }`}
-                  >
-                    <ChevronDown className="h-4 w-4" />
-                  </button>
+                  {!selectionMode && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionSheetMsg(msg);
+                      }}
+                      aria-label="Opções da mensagem"
+                      title="Opções da mensagem"
+                      className={`absolute right-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full transition ${
+                        !isDeletedForAll && (msg.type === 'image' || msg.type === 'video')
+                          ? 'bg-black/50 text-white hover:bg-black/70'
+                          : isMine
+                            ? 'bg-[#0B632A]/75 text-emerald-100 hover:bg-white/20 hover:text-white'
+                            : isAudioListened && !isDeletedForAll
+                              ? 'bg-sky-50/90 text-sky-600/80 hover:bg-sky-100 hover:text-sky-800'
+                              : 'bg-white/90 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                      }`}
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                    </button>
+                  )}
 
                   {/* Universal WhatsApp-style Quoted Message Card (works for Text, Audio, Photo, Video & PDF) */}
-                  {parsedQuote && (
+                  {!isDeletedForAll && parsedQuote && (
                     <button
                       type="button"
                       onClick={() => handleJumpToQuotedMessage(msgIdx, parsedQuote)}
@@ -2731,7 +3049,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     </button>
                   )}
 
-                  {msg.type === 'audio' ? (
+                  {isDeletedForAll ? (
+                    <div
+                      className={`flex items-center gap-2 pr-6 text-[13px] italic ${
+                        isMine ? 'text-emerald-100/85' : 'text-slate-500'
+                      }`}
+                    >
+                      <Ban className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                      <span>
+                        {isMine
+                          ? 'Você apagou esta mensagem'
+                          : 'Esta mensagem foi apagada'}
+                      </span>
+                    </div>
+                  ) : msg.type === 'audio' ? (
                     <div className="pr-6">
                       {resolvedUrl ? (
                         <RealAudioBubble
@@ -3167,7 +3498,27 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             );
           })
         )}
-        <div ref={endRef} />
+            <div ref={endRef} />
+          </div>
+        </div>
+
+        {/* Floating Quick Scroll-to-Bottom Button (appears when reading older messages) */}
+        {showScrollToBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom('smooth')}
+            aria-label="Rolar para o final da conversa"
+            title="Ir para as mensagens mais recentes"
+            className="absolute bottom-3.5 right-3.5 sm:right-5 z-20 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200/90 bg-white/95 text-slate-700 shadow-lg backdrop-blur-md transition hover:bg-slate-50 active:scale-95 dark:border-slate-700 dark:bg-[#1f2c34]/95 dark:text-slate-100 dark:hover:bg-[#273640]"
+          >
+            <ChevronDown className="h-5 w-5" />
+            {pendingNewMessagesCount > 0 && (
+              <span className="absolute -top-2 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#0E7A34] px-1.5 text-[10px] font-bold text-white shadow-sm ring-2 ring-white dark:ring-[#1f2c34]">
+                {pendingNewMessagesCount > 99 ? '99+' : pendingNewMessagesCount}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Media Error Banner */}
@@ -3805,7 +4156,11 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
               <div className="min-w-0">
                 <p className="text-xs font-bold text-slate-900">Opções da mensagem</p>
                 <p className="truncate text-[11px] text-slate-500">
-                  {getReplySnippet(actionSheetMsg)}
+                  {actionSheetMsg.deletedForAll
+                    ? actionSheetMsg.senderId === myUid
+                      ? 'Você apagou esta mensagem'
+                      : 'Esta mensagem foi apagada'
+                    : getReplySnippet(actionSheetMsg)}
                 </p>
               </div>
               <button
@@ -3818,16 +4173,19 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             </div>
 
             <div className="divide-y divide-slate-100">
-              <button
-                type="button"
-                onClick={() => handleStartReply(actionSheetMsg)}
-                className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
-              >
-                <Reply className="h-4 w-4 text-[#0E7A34]" />
-                <span>Responder</span>
-              </button>
+              {!actionSheetMsg.deletedForAll && (
+                <button
+                  type="button"
+                  onClick={() => handleStartReply(actionSheetMsg)}
+                  className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                >
+                  <Reply className="h-4 w-4 text-[#0E7A34]" />
+                  <span>Responder</span>
+                </button>
+              )}
 
-              {onForwardMessage &&
+              {!actionSheetMsg.deletedForAll &&
+                onForwardMessage &&
                 (actionSheetMsg.type === 'text' ||
                   ((actionSheetMsg.type === 'image' ||
                     actionSheetMsg.type === 'audio' ||
@@ -3843,7 +4201,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   </button>
                 )}
 
-              {actionSheetMsg.type === 'image' &&
+              {!actionSheetMsg.deletedForAll &&
+                actionSheetMsg.type === 'image' &&
                 isPdfMessage(actionSheetMsg, resolvedMedia[actionSheetMsg.id]?.mimeType) &&
                 getResolvedMediaUrl(actionSheetMsg) && (
                   <>
@@ -3908,7 +4267,8 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   </>
                 )}
 
-              {actionSheetMsg.type === 'image' &&
+              {!actionSheetMsg.deletedForAll &&
+                actionSheetMsg.type === 'image' &&
                 !isPdfMessage(actionSheetMsg, resolvedMedia[actionSheetMsg.id]?.mimeType) &&
                 getResolvedMediaUrl(actionSheetMsg) && (
                 <>
@@ -3940,7 +4300,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 </>
               )}
 
-              {actionSheetMsg.type === 'video' && getResolvedMediaUrl(actionSheetMsg) && (
+              {!actionSheetMsg.deletedForAll &&
+                actionSheetMsg.type === 'video' &&
+                getResolvedMediaUrl(actionSheetMsg) && (
                 <>
                   <button
                     type="button"
@@ -3970,7 +4332,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 </>
               )}
 
-              {actionSheetMsg.type === 'audio' && getResolvedMediaUrl(actionSheetMsg) && (
+              {!actionSheetMsg.deletedForAll &&
+                actionSheetMsg.type === 'audio' &&
+                getResolvedMediaUrl(actionSheetMsg) && (
                 <>
                   <button
                     type="button"
@@ -3999,7 +4363,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                 </>
               )}
 
-              {actionSheetMsg.type === 'text' && (
+              {!actionSheetMsg.deletedForAll && actionSheetMsg.type === 'text' && (
                 <>
                   <button
                     type="button"
@@ -4027,6 +4391,101 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                   </button>
                 </>
               )}
+
+              {(onDeleteMessagesForMe || onDeleteMessagesForAll) && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => enterSelectionMode(actionSheetMsg.id)}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <CheckSquare className="h-4 w-4 text-[#0E7A34]" />
+                    <span>Selecionar várias</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openDeleteConfirmForMessages([actionSheetMsg])}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-semibold text-red-600 hover:bg-red-50"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-600" />
+                    <span>Apagar mensagem</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp-Style Delete Confirmation Modal ("Apagar para mim" / "Apagar para todos") */}
+      {deleteConfirmTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4"
+          onClick={() => !deletingBusy && setDeleteConfirmTarget(null)}
+        >
+          <div
+            className="w-full max-w-sm overflow-hidden rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-red-50 text-red-600">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-bold text-slate-900">
+                  {deleteConfirmTarget.messages.length === 1
+                    ? 'Apagar mensagem?'
+                    : `Apagar ${deleteConfirmTarget.messages.length} mensagens?`}
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  {deleteConfirmTarget.allowForAll
+                    ? 'Escolha se deseja remover apenas para você ou apagar para todos na conversa.'
+                    : 'Essas mensagens serão removidas apenas da sua visualização neste aparelho.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-col gap-2">
+              {deleteConfirmTarget.allowForAll && onDeleteMessagesForAll && (
+                <button
+                  type="button"
+                  disabled={deletingBusy}
+                  onClick={() => void handleConfirmDeleteForAll()}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-bold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-60"
+                >
+                  {deletingBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                  <span>
+                    {deleteConfirmTarget.messages.length === 1
+                      ? 'Apagar para todos'
+                      : `Apagar para todos (${deleteConfirmTarget.messages.length})`}
+                  </span>
+                </button>
+              )}
+
+              {onDeleteMessagesForMe && (
+                <button
+                  type="button"
+                  disabled={deletingBusy}
+                  onClick={() => void handleConfirmDeleteForMe()}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                >
+                  {deletingBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                  <span>
+                    {deleteConfirmTarget.messages.length === 1
+                      ? 'Apagar para mim'
+                      : `Apagar para mim (${deleteConfirmTarget.messages.length})`}
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={deletingBusy}
+                onClick={() => setDeleteConfirmTarget(null)}
+                className="flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
             </div>
           </div>
         </div>

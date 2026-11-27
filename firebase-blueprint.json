@@ -352,6 +352,8 @@
         "orderSummary": { "type": "string", "maxLength": 240 },
         "orderTotal": { "type": "number" },
         "orderStatusLabel": { "type": "string", "maxLength": 120 },
+        "deletedForAll": { "type": "boolean" },
+        "deletedAtMs": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["chatId", "userA", "userB", "senderId", "senderName", "type", "text", "createdAt"]

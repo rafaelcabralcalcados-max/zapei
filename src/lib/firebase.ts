@@ -41,7 +41,7 @@ import {
   type Firestore,
   type Timestamp,
 } from 'firebase/firestore';
-import { getStorage, type FirebaseStorage } from 'firebase/storage';
+import { deleteObject, getStorage, ref, type FirebaseStorage } from 'firebase/storage';
 import appletConfig from '../../firebase-applet-config.json';
 import type {
   CallSessionRecord,
@@ -1573,6 +1573,8 @@ export function subscribeChatMessages(
         orderSummary: d.orderSummary ? String(d.orderSummary) : undefined,
         orderTotal: typeof d.orderTotal === 'number' ? d.orderTotal : undefined,
         orderStatusLabel: d.orderStatusLabel ? String(d.orderStatusLabel) : undefined,
+        deletedForAll: Boolean(d.deletedForAll),
+        deletedAtMs: typeof d.deletedAtMs === 'number' ? Number(d.deletedAtMs) : undefined,
       },
     };
   };
@@ -1745,6 +1747,136 @@ export async function markChatMessageMediaDelivered(
   } catch {
     // Ignore if already delivered or offline
   }
+}
+
+export interface ServerDeletedForAllEntry {
+  chatId: string;
+  messageId: string;
+  senderId: string;
+  deletedAtMs: number;
+}
+
+export async function fetchDeletedMessagesState(authUser: User): Promise<{
+  deletedForMeIds: string[];
+  deletedForAll: ServerDeletedForAllEntry[];
+}> {
+  try {
+    const token = await authUser.getIdToken();
+    const res = await fetch('/api/chats/deleted-state', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { deletedForMeIds: [], deletedForAll: [] };
+    const data = (await res.json()) as {
+      deletedForMeIds?: string[];
+      deletedForAll?: ServerDeletedForAllEntry[];
+    };
+    return {
+      deletedForMeIds: Array.isArray(data.deletedForMeIds) ? data.deletedForMeIds : [],
+      deletedForAll: Array.isArray(data.deletedForAll) ? data.deletedForAll : [],
+    };
+  } catch {
+    return { deletedForMeIds: [], deletedForAll: [] };
+  }
+}
+
+export async function persistDeletedForMeOnServer(
+  authUser: User,
+  messageIds: string[]
+): Promise<void> {
+  if (messageIds.length === 0) return;
+  try {
+    const token = await authUser.getIdToken();
+    await fetch('/api/chats/delete-for-me', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ messageIds }),
+    });
+  } catch {
+    // Local cache still guarantees deletion on this device
+  }
+}
+
+export async function deleteChatMessagesForAll(params: {
+  chatId: string;
+  messages: ChatMessage[];
+  myUid: string;
+  authUser: User | null;
+  isLatestInThread?: boolean;
+}): Promise<{ deletedIds: string[]; deletedAtMs: number }> {
+  const { chatId, messages, myUid, authUser, isLatestInThread } = params;
+  const targets = messages.filter((m) => m.senderId === myUid && !m.deletedForAll);
+  if (targets.length === 0) {
+    return { deletedIds: [], deletedAtMs: Date.now() };
+  }
+
+  const nowMs = Date.now();
+  const idToken = authUser ? await authUser.getIdToken().catch(() => '') : '';
+
+  // 1. Clean up any temporary cloud transit media (Firebase Storage or same-origin server)
+  await Promise.all(
+    targets.map(async (m) => {
+      if (m.mediaTransitPath) {
+        await deleteObject(ref(storage, m.mediaTransitPath)).catch(() => {});
+      }
+      if (m.mediaUrl && m.mediaUrl.startsWith('/api/media/transit/') && idToken) {
+        await fetch(m.mediaUrl, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${idToken}` },
+        }).catch(() => {});
+      }
+    })
+  );
+
+  // 2. Try updating Firestore message docs directly when security rules permit
+  const firestoreUpdates = await Promise.all(
+    targets.map(async (m) => {
+      try {
+        await updateDoc(doc(db, 'chats', chatId, 'messages', m.id), {
+          deletedForAll: true,
+          deletedAtMs: nowMs,
+          text: 'Mensagem apagada',
+          mediaUrl: '',
+          mediaTransitPath: '',
+          audioDuration: '',
+          videoDuration: '',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    })
+  );
+
+  // 3. Always record on server ledger as well (handles pending rules deployment seamlessly)
+  if (idToken) {
+    await fetch('/api/chats/delete-for-all', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        chatId,
+        messageIds: targets.map((m) => m.id),
+      }),
+    }).catch(() => {});
+  }
+
+  // 4. Refresh thread preview if the latest message was erased for everyone
+  if (isLatestInThread || firestoreUpdates.some(Boolean)) {
+    await updateDoc(doc(db, 'chats', chatId), {
+      lastMessage: 'Mensagem apagada',
+      updatedAt: serverTimestamp(),
+    }).catch(() => {});
+  }
+
+  return {
+    deletedIds: targets.map((m) => m.id),
+    deletedAtMs: nowMs,
+  };
 }
 
 // --- REAL CALL HISTORY & INCOMING CALLS SUBSCRIPTION ---
