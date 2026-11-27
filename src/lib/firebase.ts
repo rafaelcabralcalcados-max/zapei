@@ -2074,6 +2074,8 @@ export async function createRealFactoryConnection(params: {
   const cleanStorefrontName = (
     params.resellerStorefrontName.trim() || cleanResellerName
   ).slice(0, 80);
+  const cleanFactoryName = (params.factory.displayName.trim() || 'Fabricante ChatFi').slice(0, 100);
+  const safeDeliveryValue = Math.max(0, Number(params.factory.deliveryPolicy.value) || 0);
 
   try {
     const existingSnap = await getDoc(connRef);
@@ -2100,12 +2102,12 @@ export async function createRealFactoryConnection(params: {
       resellerName: cleanResellerName,
       resellerStorefrontName: cleanStorefrontName,
       factoryId: params.factory.uid,
-      factoryName: params.factory.displayName.slice(0, 100),
+      factoryName: cleanFactoryName,
       approvalStatus: 'pending',
       deliveryPolicyType: params.factory.deliveryPolicy.type,
-      deliveryPolicyValue: params.factory.deliveryPolicy.value,
-      deliveryPolicyPickup: params.factory.deliveryPolicy.allowCounterPickup,
-      deliveryPolicyLabel: params.factory.deliveryPolicy.label.slice(0, 160),
+      deliveryPolicyValue: safeDeliveryValue,
+      deliveryPolicyPickup: Boolean(params.factory.deliveryPolicy.allowCounterPickup),
+      deliveryPolicyLabel: (params.factory.deliveryPolicy.label || 'Mínimo 1 caixa').slice(0, 160),
       reviewPhotos: true,
       paused: false,
       margins: DEFAULT_CATEGORY_MARGINS,
@@ -2149,9 +2151,16 @@ export async function updateRealConnection(
     rejectedProductIds: string[];
   }>
 ): Promise<void> {
+  const sanitized: Record<string, unknown> = { ...updates };
+  if (typeof updates.resellerName === 'string') {
+    sanitized.resellerName = updates.resellerName.trim().slice(0, 80);
+  }
+  if (typeof updates.resellerStorefrontName === 'string') {
+    sanitized.resellerStorefrontName = updates.resellerStorefrontName.trim().slice(0, 80);
+  }
   try {
     await updateDoc(doc(db, 'connections', connectionId), {
-      ...updates,
+      ...sanitized,
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

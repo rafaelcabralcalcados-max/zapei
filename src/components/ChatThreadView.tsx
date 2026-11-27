@@ -62,6 +62,7 @@ import {
   getContactPresenceDisplay,
   type PresenceSnapshot,
 } from '../lib/presenceUtils';
+import { unlockCallAudio } from '../lib/webrtcService';
 import type { AvatarPreviewTarget } from './AvatarLightboxModal';
 import { PdfViewerCanvas, renderPdfToPrintHtml } from './PdfViewerCanvas';
 import { StarRatingBadge } from './StarRatingBadge';
@@ -309,14 +310,24 @@ const WAVEFORM_BARS = [
   44, 72, 56, 82, 48, 66, 38, 70, 54, 60, 42, 50, 34, 44,
 ];
 
+let activeChatAudioElement: HTMLAudioElement | null = null;
+
 const RealAudioBubble: React.FC<{
+  messageId: string;
   mediaUrl?: string;
   duration?: string;
   isMine: boolean;
-}> = ({ mediaUrl, duration, isMine }) => {
+}> = ({ messageId, mediaUrl, duration, isMine }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
+  const playingRef = useRef(false);
+  const stallTimerRef = useRef<number | null>(null);
+  const retriedOnceRef = useRef(false);
+  const pendingSrcRef = useRef<string | undefined>(undefined);
+
+  // Stabilize activeSrc so an async data: -> blob: upgrade never aborts active first-click playback
+  const [activeSrc, setActiveSrc] = useState<string | undefined>(mediaUrl);
   const [playing, setPlaying] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [currentSec, setCurrentSec] = useState(0);
@@ -332,11 +343,72 @@ const RealAudioBubble: React.FC<{
       : 0;
   const progressPct = progressRatio * 100;
 
+  const clearStallTimer = () => {
+    if (stallTimerRef.current !== null) {
+      window.clearTimeout(stallTimerRef.current);
+      stallTimerRef.current = null;
+    }
+  };
+
+  // Reset player state ONLY when messageId changes
   useEffect(() => {
+    clearStallTimer();
+    retriedOnceRef.current = false;
+    pendingSrcRef.current = undefined;
+    playingRef.current = false;
+    setActiveSrc(mediaUrl);
     setCurrentSec(0);
     setPlaying(false);
     setDurationSec(parseAudioDurationLabel(duration));
-  }, [mediaUrl, duration]);
+  }, [messageId]);
+
+  // Keep fallback duration synced without interrupting playback
+  useEffect(() => {
+    const parsed = parseAudioDurationLabel(duration);
+    if (parsed > 0) {
+      setDurationSec((prev) => (Number.isFinite(prev) && prev > 0 ? prev : parsed));
+    }
+  }, [duration]);
+
+  // Upgrade mediaUrl safely: apply immediately if not currently playing; defer until pause/end if playing
+  useEffect(() => {
+    if (!mediaUrl || mediaUrl === activeSrc) return;
+    if (playingRef.current) {
+      pendingSrcRef.current = mediaUrl;
+    } else {
+      pendingSrcRef.current = undefined;
+      setActiveSrc(mediaUrl);
+    }
+  }, [mediaUrl, activeSrc]);
+
+  // Eagerly warm up local blob/data audio element on mount/src change so first tap has readyState >= 2
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || !activeSrc) return;
+    el.muted = false;
+    el.volume = 1;
+    if (el.readyState === 0) {
+      try {
+        el.load();
+      } catch {
+        // Ignore load errors on detached elements
+      }
+    }
+  }, [activeSrc]);
+
+  // Cleanup timer and global reference on unmount
+  useEffect(() => {
+    return () => {
+      clearStallTimer();
+      const el = audioRef.current;
+      if (el) {
+        if (activeChatAudioElement === el) {
+          activeChatAudioElement = null;
+        }
+        el.pause();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!playing) return undefined;
@@ -355,18 +427,124 @@ const RealAudioBubble: React.FC<{
     return () => window.cancelAnimationFrame(rafId);
   }, [playing]);
 
+  const reloadAndPlayOnce = (el: HTMLAudioElement, resumeSec: number) => {
+    if (retriedOnceRef.current) return;
+    retriedOnceRef.current = true;
+    clearStallTimer();
+
+    const attemptResume = () => {
+      el.removeEventListener('canplay', attemptResume);
+      el.removeEventListener('loadeddata', attemptResume);
+      if (!playingRef.current && activeChatAudioElement !== el) return;
+      try {
+        el.muted = false;
+        el.volume = 1;
+        el.playbackRate = speed;
+        if (resumeSec > 0.05 && Number.isFinite(el.duration) && resumeSec < el.duration) {
+          el.currentTime = resumeSec;
+        } else {
+          el.currentTime = 0;
+        }
+      } catch {
+        // Ignore seek errors before seekable range is ready
+      }
+      void el.play().catch(() => {
+        playingRef.current = false;
+        setPlaying(false);
+      });
+    };
+
+    el.addEventListener('canplay', attemptResume, { once: true });
+    el.addEventListener('loadeddata', attemptResume, { once: true });
+    try {
+      el.load();
+    } catch {
+      // Ignore
+    }
+    // Safety fallback if browser already fired loadeddata synchronously
+    window.setTimeout(() => {
+      if (el.readyState >= 2 && el.paused && activeChatAudioElement === el) {
+        attemptResume();
+      }
+    }, 250);
+  };
+
   const togglePlay = () => {
     const el = audioRef.current;
-    if (!el) return;
-    el.playbackRate = speed;
-    if (playing) {
+    if (!el || !activeSrc) return;
+
+    // Wake mobile/desktop audio hardware synchronously inside the user tap gesture
+    unlockCallAudio();
+
+    if (playing || !el.paused) {
+      clearStallTimer();
       el.pause();
-    } else {
-      if (effectiveDuration > 0 && el.currentTime >= effectiveDuration - 0.05) {
-        el.currentTime = 0;
-        setCurrentSec(0);
+      playingRef.current = false;
+      setPlaying(false);
+      if (activeChatAudioElement === el) {
+        activeChatAudioElement = null;
       }
-      void el.play().catch(() => {});
+      return;
+    }
+
+    // Pause any other audio bubble currently playing to avoid mobile audio focus conflict
+    if (activeChatAudioElement && activeChatAudioElement !== el) {
+      try {
+        activeChatAudioElement.pause();
+      } catch {
+        // Ignore
+      }
+    }
+    activeChatAudioElement = el;
+    retriedOnceRef.current = false;
+
+    el.muted = false;
+    el.volume = 1;
+    el.playbackRate = speed;
+
+    const knownDuration =
+      Number.isFinite(el.duration) && el.duration > 0 ? el.duration : effectiveDuration;
+    if (el.ended || (knownDuration > 0 && el.currentTime >= knownDuration - 0.08)) {
+      try {
+        el.currentTime = 0;
+      } catch {
+        // Ignore if not seekable yet
+      }
+      setCurrentSec(0);
+    }
+
+    if (el.error || el.readyState === 0) {
+      try {
+        el.load();
+      } catch {
+        // Ignore
+      }
+    }
+
+    const startSec = el.currentTime || 0;
+    const playPromise = el.play();
+
+    if (playPromise && typeof playPromise.then === 'function') {
+      playPromise
+        .then(() => {
+          playingRef.current = true;
+          setPlaying(true);
+          // First-play silent stall watchdog: if Chrome/mobile reports playing but readyState < 2
+          // or currentTime doesn't advance within 450ms, automatically reload & replay once
+          clearStallTimer();
+          stallTimerRef.current = window.setTimeout(() => {
+            if (!audioRef.current || audioRef.current !== el) return;
+            if (el.paused || el.ended) return;
+            const progressed = Math.abs(el.currentTime - startSec) > 0.02;
+            if (!progressed || el.readyState < 2) {
+              reloadAndPlayOnce(el, startSec);
+            }
+          }, 450);
+        })
+        .catch(() => {
+          // First play() rejected (common on cold first tap while decoding blob) -> reload & auto-retry once
+          reloadAndPlayOnce(el, startSec);
+        });
     }
   };
 
@@ -398,7 +576,7 @@ const RealAudioBubble: React.FC<{
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!mediaUrl) return;
+    if (!activeSrc) return;
     e.preventDefault();
     draggingRef.current = true;
     setDragging(true);
@@ -452,11 +630,12 @@ const RealAudioBubble: React.FC<{
 
   return (
     <div className="flex min-w-[236px] sm:min-w-[260px] items-center gap-2.5 py-0.5 select-none">
-      {mediaUrl && (
+      {activeSrc && (
         <audio
           ref={audioRef}
-          src={mediaUrl}
-          preload="metadata"
+          src={activeSrc}
+          preload="auto"
+          playsInline
           onLoadedMetadata={(e) => {
             const d = e.currentTarget.duration;
             if (Number.isFinite(d) && d > 0) setDurationSec(d);
@@ -465,13 +644,39 @@ const RealAudioBubble: React.FC<{
             const d = e.currentTarget.duration;
             if (Number.isFinite(d) && d > 0) setDurationSec(d);
           }}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
+          onPlay={() => {
+            playingRef.current = true;
+            setPlaying(true);
+          }}
+          onPause={() => {
+            clearStallTimer();
+            playingRef.current = false;
+            setPlaying(false);
+            if (pendingSrcRef.current && pendingSrcRef.current !== activeSrc) {
+              const nextSrc = pendingSrcRef.current;
+              pendingSrcRef.current = undefined;
+              setActiveSrc(nextSrc);
+            }
+          }}
           onEnded={() => {
+            clearStallTimer();
+            playingRef.current = false;
             setPlaying(false);
             setCurrentSec(0);
             if (audioRef.current) {
-              audioRef.current.currentTime = 0;
+              if (activeChatAudioElement === audioRef.current) {
+                activeChatAudioElement = null;
+              }
+              try {
+                audioRef.current.currentTime = 0;
+              } catch {
+                // Ignore
+              }
+            }
+            if (pendingSrcRef.current && pendingSrcRef.current !== activeSrc) {
+              const nextSrc = pendingSrcRef.current;
+              pendingSrcRef.current = undefined;
+              setActiveSrc(nextSrc);
             }
           }}
           onTimeUpdate={(e) => {
@@ -480,15 +685,28 @@ const RealAudioBubble: React.FC<{
             if (Number.isFinite(el.duration) && el.duration > 0) {
               setDurationSec(el.duration);
             }
+            if (el.currentTime > 0.02) {
+              clearStallTimer();
+            }
             setCurrentSec(el.currentTime);
           }}
-          className="hidden"
+          onError={() => {
+            const el = audioRef.current;
+            if (el && activeChatAudioElement === el && !retriedOnceRef.current) {
+              reloadAndPlayOnce(el, currentSec);
+            } else {
+              clearStallTimer();
+              playingRef.current = false;
+              setPlaying(false);
+            }
+          }}
+          className="sr-only"
         />
       )}
       <button
         type="button"
         onClick={togglePlay}
-        disabled={!mediaUrl}
+        disabled={!activeSrc}
         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-40 ${
           isMine
             ? 'bg-white/20 text-white hover:bg-white/30'
@@ -1726,6 +1944,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     <div className="pr-6">
                       {resolvedUrl ? (
                         <RealAudioBubble
+                          messageId={msg.id}
                           mediaUrl={resolvedUrl}
                           duration={msg.audioDuration}
                           isMine={isMine}

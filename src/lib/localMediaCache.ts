@@ -151,10 +151,24 @@ export function isMediaManuallyDeletedLocally(messageId: string): boolean {
 /**
  * Returns a cached Object URL for instant zero-network rendering in <img>, <audio>, or <video>.
  */
-export function getOrCreateMediaObjectUrl(messageId: string, blob: Blob): string {
+export function getOrCreateMediaObjectUrl(
+  messageId: string,
+  blob: Blob,
+  preferredMimeType?: string
+): string {
   const existing = objectUrlMap.get(messageId);
   if (existing) return existing;
-  const created = URL.createObjectURL(blob);
+  const effectiveType =
+    blob.type && blob.type !== 'application/octet-stream'
+      ? blob.type
+      : preferredMimeType && preferredMimeType !== 'application/octet-stream'
+        ? preferredMimeType
+        : '';
+  const typedBlob =
+    effectiveType && blob.type !== effectiveType
+      ? new Blob([blob], { type: effectiveType })
+      : blob;
+  const created = URL.createObjectURL(typedBlob);
   objectUrlMap.set(messageId, created);
   return created;
 }
@@ -163,15 +177,33 @@ export function getOrCreateMediaObjectUrl(messageId: string, blob: Blob): string
  * Persists a sent or received media file permanently in the device's IndexedDB.
  */
 export async function saveLocalMedia(record: LocalMediaRecord): Promise<string> {
+  const fallbackMime =
+    record.mediaType === 'audio'
+      ? 'audio/webm'
+      : record.mediaType === 'video'
+        ? 'video/mp4'
+        : 'image/jpeg';
+  const resolvedMime =
+    (record.mimeType && record.mimeType !== 'application/octet-stream' ? record.mimeType : '') ||
+    (record.blob.type && record.blob.type !== 'application/octet-stream' ? record.blob.type : '') ||
+    fallbackMime;
+  const typedBlob =
+    record.blob.type === resolvedMime ? record.blob : new Blob([record.blob], { type: resolvedMime });
+
   const normalizedRecord: LocalMediaRecord = {
     ...record,
-    sizeBytes: record.sizeBytes || record.blob.size || 0,
-    mimeType: record.mimeType || record.blob.type || 'application/octet-stream',
+    blob: typedBlob,
+    sizeBytes: record.sizeBytes || typedBlob.size || 0,
+    mimeType: resolvedMime,
     savedAtMs: record.savedAtMs || Date.now(),
   };
 
   // Create object URL immediately for instant UI display
-  const objectUrl = getOrCreateMediaObjectUrl(normalizedRecord.messageId, normalizedRecord.blob);
+  const objectUrl = getOrCreateMediaObjectUrl(
+    normalizedRecord.messageId,
+    normalizedRecord.blob,
+    normalizedRecord.mimeType
+  );
 
   // If previously marked deleted (e.g. re-saved), unmark
   const deletedSet = readManuallyDeletedSet();
@@ -252,8 +284,14 @@ export async function getLocalMediaObjectUrlsForChat(
   const result = new Map<string, { url: string; record: LocalMediaRecord }>();
   for (const item of items) {
     if (item.blob) {
+      const fallbackMime =
+        item.mediaType === 'audio'
+          ? 'audio/webm'
+          : item.mediaType === 'video'
+            ? 'video/mp4'
+            : 'image/jpeg';
       result.set(item.messageId, {
-        url: getOrCreateMediaObjectUrl(item.messageId, item.blob),
+        url: getOrCreateMediaObjectUrl(item.messageId, item.blob, item.mimeType || fallbackMime),
         record: item,
       });
     }

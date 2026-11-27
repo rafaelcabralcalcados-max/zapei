@@ -890,9 +890,12 @@ service cloud.firestore {
     match /connections/{connectionId} {
       allow get: if isSignedIn() && isValidId(connectionId)
         && (
-          existing().resellerId == request.auth.uid ||
-          existing().factoryId == request.auth.uid ||
-          existing().approvalStatus == 'approved'
+          (resource == null && connectionId.matches('^conn_' + request.auth.uid + '_[a-zA-Z0-9_\\-]+$')) ||
+          (resource != null && (
+            existing().resellerId == request.auth.uid ||
+            existing().factoryId == request.auth.uid ||
+            existing().approvalStatus == 'approved'
+          ))
         );
       allow list: if isSignedIn()
         && (

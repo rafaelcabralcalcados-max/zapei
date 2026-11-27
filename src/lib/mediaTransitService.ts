@@ -340,11 +340,19 @@ export async function receiveAndDeliverTransitMedia(params: {
   // Fast path 1: Already cached permanently in this device's IndexedDB
   const cached = await getLocalMedia(msg.id);
   if (cached?.blob) {
+    const fallbackMime =
+      mediaType === 'audio' ? 'audio/webm' : mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+    const effectiveMime =
+      (cached.mimeType && cached.mimeType !== 'application/octet-stream' ? cached.mimeType : '') ||
+      (msg.mediaMimeType && msg.mediaMimeType !== 'application/octet-stream'
+        ? msg.mediaMimeType
+        : '') ||
+      fallbackMime;
     return {
       status: 'ready',
-      url: getOrCreateMediaObjectUrl(msg.id, cached.blob),
+      url: getOrCreateMediaObjectUrl(msg.id, cached.blob, effectiveMime),
       sizeBytes: cached.sizeBytes || cached.blob.size,
-      mimeType: cached.mimeType,
+      mimeType: effectiveMime,
     };
   }
 
@@ -373,6 +381,14 @@ export async function receiveAndDeliverTransitMedia(params: {
       try {
         const blob = await downloadTransitBlob(msg);
         if (!blob) return { status: 'deleted_locally' };
+        const fallbackMime =
+          mediaType === 'audio' ? 'audio/webm' : mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+        const effectiveMime =
+          (msg.mediaMimeType && msg.mediaMimeType !== 'application/octet-stream'
+            ? msg.mediaMimeType
+            : '') ||
+          (blob.type && blob.type !== 'application/octet-stream' ? blob.type : '') ||
+          fallbackMime;
         const url = await saveLocalMedia({
           messageId: msg.id,
           chatId: msg.chatId,
@@ -380,14 +396,14 @@ export async function receiveAndDeliverTransitMedia(params: {
           peerName,
           senderId: msg.senderId,
           mediaType,
-          mimeType: msg.mediaMimeType || blob.type || 'application/octet-stream',
+          mimeType: effectiveMime,
           blob,
           sizeBytes: blob.size,
           durationLabel: msg.audioDuration || msg.videoDuration,
           caption: msg.text,
           savedAtMs: Date.now(),
         });
-        return { status: 'ready', url, sizeBytes: blob.size, mimeType: blob.type };
+        return { status: 'ready', url, sizeBytes: blob.size, mimeType: effectiveMime };
       } catch {
         return { status: 'deleted_locally' };
       }
@@ -418,6 +434,14 @@ export async function receiveAndDeliverTransitMedia(params: {
       }
 
       // 1) Save permanently in recipient's local IndexedDB
+      const fallbackMime =
+        mediaType === 'audio' ? 'audio/webm' : mediaType === 'video' ? 'video/mp4' : 'image/jpeg';
+      const effectiveMime =
+        (msg.mediaMimeType && msg.mediaMimeType !== 'application/octet-stream'
+          ? msg.mediaMimeType
+          : '') ||
+        (blob.type && blob.type !== 'application/octet-stream' ? blob.type : '') ||
+        fallbackMime;
       const url = await saveLocalMedia({
         messageId: msg.id,
         chatId: msg.chatId,
@@ -425,7 +449,7 @@ export async function receiveAndDeliverTransitMedia(params: {
         peerName,
         senderId: msg.senderId,
         mediaType,
-        mimeType: msg.mediaMimeType || blob.type || 'application/octet-stream',
+        mimeType: effectiveMime,
         blob,
         sizeBytes: blob.size,
         durationLabel: msg.audioDuration || msg.videoDuration,
