@@ -2,7 +2,10 @@ import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { initAppearancePrefs } from './lib/appearancePrefs';
 import './index.css';
+
+initAppearancePrefs();
 
 if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
   const hadController = Boolean(navigator.serviceWorker.controller);

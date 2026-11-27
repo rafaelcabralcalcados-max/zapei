@@ -7,10 +7,12 @@ import {
   Loader2,
   MessageSquare,
   Mic,
+  Moon,
   Phone,
   Search,
   Settings,
   Store,
+  Sun,
   Users,
   WifiOff,
   X,
@@ -139,6 +141,12 @@ import {
   type PolicyConsentRecord,
 } from './lib/policyConsent';
 import { formatBRL, getInitials } from './lib/gradeParser';
+import {
+  APPEARANCE_EVENT,
+  readAppearancePrefs,
+  toggleThemeMode,
+  type ThemeMode,
+} from './lib/appearancePrefs';
 import { calculateOrderSplit } from './lib/splitCalculator';
 import {
   canCancelUnpaidOrder,
@@ -334,6 +342,19 @@ export default function App() {
   const [policyCheckedUid, setPolicyCheckedUid] = useState<string | null>(null);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState<AvatarPreviewTarget | null>(null);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readAppearancePrefs().theme);
+
+  useEffect(() => {
+    const syncAppearance = () => {
+      setThemeMode(readAppearancePrefs().theme);
+    };
+    window.addEventListener(APPEARANCE_EVENT, syncAppearance);
+    window.addEventListener('storage', syncAppearance);
+    return () => {
+      window.removeEventListener(APPEARANCE_EVENT, syncAppearance);
+      window.removeEventListener('storage', syncAppearance);
+    };
+  }, []);
 
   // WhatsApp-style in-app incoming message notification banner & live chime trackers
   const [incomingMsgBanner, setIncomingMsgBanner] = useState<{
@@ -3384,20 +3405,35 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="flex items-center justify-center lg:justify-start gap-3 px-4 py-4 border-t border-white/10">
-          <ChatFiLogo className="h-10 w-10 shrink-0 rounded-xl shadow-sm ring-1 ring-white/15" />
-          <div className="hidden lg:block min-w-0">
-            <span className="block text-base font-extrabold tracking-tight text-white">
-              Chat<span className="text-[#4ADE80]">Fi</span>
-            </span>
-            <span className="block truncate text-[11px] text-emerald-100/80">
-              {profile.commercialMode === 'manufacturer'
-                ? 'Anunciante / Fabricante'
-                : profile.commercialMode === 'reseller'
-                  ? 'Revendedor'
-                  : 'Conectando pessoas!'}
-            </span>
+        <div className="flex flex-col lg:flex-row items-center justify-center lg:justify-between gap-3 px-3 lg:px-4 py-4 border-t border-white/10">
+          <div className="flex items-center justify-center lg:justify-start gap-3 min-w-0">
+            <ChatFiLogo className="h-10 w-10 shrink-0 rounded-xl shadow-sm ring-1 ring-white/15" />
+            <div className="hidden lg:block min-w-0">
+              <span className="block text-base font-extrabold tracking-tight text-white">
+                Chat<span className="text-[#4ADE80]">Fi</span>
+              </span>
+              <span className="block truncate text-[11px] text-emerald-100/80">
+                {profile.commercialMode === 'manufacturer'
+                  ? 'Anunciante / Fabricante'
+                  : profile.commercialMode === 'reseller'
+                    ? 'Revendedor'
+                    : 'Conectando pessoas!'}
+              </span>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={() => toggleThemeMode()}
+            title={themeMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+            aria-label={themeMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white transition hover:bg-white/20 active:scale-95"
+          >
+            {themeMode === 'dark' ? (
+              <Sun className="h-4 w-4 text-amber-300" />
+            ) : (
+              <Moon className="h-4 w-4 text-emerald-100" />
+            )}
+          </button>
         </div>
       </aside>
 
@@ -3418,6 +3454,19 @@ export default function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => toggleThemeMode()}
+                title={themeMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+                aria-label={themeMode === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white transition hover:bg-white/20 active:scale-95"
+              >
+                {themeMode === 'dark' ? (
+                  <Sun className="h-4 w-4 text-amber-300" />
+                ) : (
+                  <Moon className="h-4 w-4 text-emerald-100" />
+                )}
+              </button>
               <PWAInstallButton compact />
             </div>
           </header>

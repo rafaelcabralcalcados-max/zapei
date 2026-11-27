@@ -18,6 +18,7 @@ import {
 import type { PolicyConsentRecord } from '../lib/policyConsent';
 import { sanitizeStatusMessage } from '../lib/presenceUtils';
 import type { CommercialMode, ConnectedDevice, UserProfile } from '../types/zapei';
+import { AppearanceSettingsCard } from './AppearanceSettingsCard';
 import { ConnectedDevicesCard } from './ConnectedDevicesCard';
 import { CustomSoundsCard } from './CustomSoundsCard';
 import { PrivacyAndPermissionsCard } from './PrivacyAndPermissionsCard';
@@ -221,6 +222,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       </section>
+
+      {/* Appearance: Light/Dark Theme & Custom Chat Wallpaper */}
+      <AppearanceSettingsCard onNotify={onNotify} />
 
       {/* WhatsApp-Style Presence Privacy Controls (Online & Visto por último) */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">

@@ -1557,33 +1557,79 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     setShowEmojiPicker(false);
     isStoppingRecordingRef.current = false;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+      const isIOSDevice =
+        /iPad|iPhone|iPod/i.test(ua) ||
+        (typeof navigator !== 'undefined' &&
+          navigator.platform === 'MacIntel' &&
+          navigator.maxTouchPoints > 1);
+
+      // Avoid echoCancellation during solo voice-note recording: on iOS Safari it forces
+      // telephony VoiceProcessingIO mode (narrowband muffled audio + earpiece speaker routing).
+      const preferredConstraints: MediaTrackConstraints = isIOSDevice
+        ? {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+            sampleRate: 48000,
+          }
+        : {
+            echoCancellation: false,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+            sampleRate: 48000,
+          };
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: preferredConstraints });
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false },
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+      }
+
       recordStreamRef.current = stream;
       audioChunksRef.current = [];
 
-      const candidateMimeTypes = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/ogg;codecs=opus',
-        'audio/mp4;codecs=mp4a.40.2',
-        'audio/mp4',
-        'audio/aac',
-      ];
+      const candidateMimeTypes = isIOSDevice
+        ? [
+            'audio/mp4;codecs=mp4a.40.2',
+            'audio/mp4',
+            'audio/aac',
+            'audio/webm;codecs=opus',
+            'audio/webm',
+          ]
+        : [
+            'audio/webm;codecs=opus',
+            'audio/ogg;codecs=opus',
+            'audio/webm',
+            'audio/mp4;codecs=mp4a.40.2',
+            'audio/mp4',
+            'audio/aac',
+          ];
       const mimeType =
         typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function'
           ? candidateMimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) ?? ''
           : '';
 
+      // AAC-LC (iOS MP4) needs 128 kbps to sound crisp; Opus sounds broadcast-clear at 64 kbps
+      const isAacOrMp4 = /mp4|aac/i.test(mimeType);
+      const targetBitrate = isAacOrMp4 ? 128000 : 64000;
+
       let recorder: MediaRecorder;
       if (mimeType) {
         try {
-          recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 24000 });
+          recorder = new MediaRecorder(stream, {
+            mimeType,
+            audioBitsPerSecond: targetBitrate,
+          });
         } catch {
           try {
             recorder = new MediaRecorder(stream, { mimeType });
@@ -1592,10 +1638,15 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           }
         }
       } else {
-        recorder = new MediaRecorder(stream);
+        try {
+          recorder = new MediaRecorder(stream, { audioBitsPerSecond: targetBitrate });
+        } catch {
+          recorder = new MediaRecorder(stream);
+        }
       }
 
-      selectedMimeTypeRef.current = recorder.mimeType || mimeType || 'audio/webm';
+      selectedMimeTypeRef.current =
+        recorder.mimeType || mimeType || (isIOSDevice ? 'audio/mp4' : 'audio/webm');
 
       recorder.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) {
@@ -1618,7 +1669,9 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start(500);
+      // Record as a single clean container without timeslice: avoids fragmented MP4/AAC
+      // clicks, pops, stuttering, and broken duration metadata on iOS Safari.
+      recorder.start();
       recordStartMsRef.current = Date.now();
       setRecording(true);
       setRecordSeconds(0);
@@ -1653,6 +1706,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     audioChunksRef.current = [];
     setRecording(false);
     setRecordSeconds(0);
+    unlockCallAudio();
   };
 
   const sendCapturedAudioBlob = async (blob: Blob, durationLabel: string) => {
@@ -1702,6 +1756,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       recordStreamRef.current = null;
       setRecording(false);
       setRecordSeconds(0);
+      unlockCallAudio();
       const chunks = audioChunksRef.current;
       audioChunksRef.current = [];
       const fallbackBlob = new Blob(chunks, {
@@ -1721,21 +1776,20 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       recordStreamRef.current = null;
       setRecording(false);
       setRecordSeconds(0);
+      unlockCallAudio();
 
-      const blob = new Blob(chunks, {
-        type: recorder.mimeType || selectedMimeTypeRef.current || 'audio/webm',
-      });
+      const resolvedType =
+        chunks[0]?.type || recorder.mimeType || selectedMimeTypeRef.current || 'audio/webm';
+      const blob =
+        chunks.length === 1 && chunks[0].type
+          ? chunks[0]
+          : new Blob(chunks, { type: resolvedType });
       await sendCapturedAudioBlob(blob, durationLabel);
     };
 
     try {
-      if (typeof recorder.requestData === 'function') {
-        try {
-          recorder.requestData();
-        } catch {
-          // Some browsers throw if requestData is called right before stop
-        }
-      }
+      // Do NOT call recorder.requestData() before stop(): stop() automatically flushes
+      // the complete, cleanly muxed audio file without corrupting trailing MP4/AAC frames.
       recorder.stop();
     } catch {
       mediaRecorderRef.current = null;
@@ -1744,6 +1798,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
       recordStreamRef.current = null;
       setRecording(false);
       setRecordSeconds(0);
+      unlockCallAudio();
       const chunks = audioChunksRef.current;
       audioChunksRef.current = [];
       const fallbackBlob = new Blob(chunks, {
