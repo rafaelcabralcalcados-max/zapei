@@ -854,6 +854,26 @@ async function startServer(): Promise<void> {
     res.json({ ok: true, ...firstResult });
   });
 
+  // Active foreground chat tracking (uid -> currently viewed peerId) so we don't send OS push alerts
+  // while the user is already actively chatting with that exact person on screen.
+  const activeChatByUid = new Map<string, { peerId: string; updatedAt: number }>();
+  const ACTIVE_CHAT_TTL_MS = 30_000;
+
+  app.post(
+    '/api/push/active-chat',
+    requireFirebaseAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const uid = req.verifiedUid!;
+      const rawPeerId = typeof req.body?.peerId === 'string' ? req.body.peerId.trim().slice(0, 128) : '';
+      if (rawPeerId) {
+        activeChatByUid.set(uid, { peerId: rawPeerId, updatedAt: Date.now() });
+      } else {
+        activeChatByUid.delete(uid);
+      }
+      res.json({ ok: true });
+    }
+  );
+
   // 5. Real background chat message push alert (unique messageId so every message chimes & vibrates)
   app.post(
     '/api/push/notify-message',
@@ -880,6 +900,18 @@ async function startServer(): Promise<void> {
       if (!recipientId || recipientId === senderId) {
         res.status(400).json({ error: 'Destinatário inválido.' });
         return;
+      }
+
+      // Suppress Web Push completely when recipient currently has this exact conversation open & visible
+      const activeChat = activeChatByUid.get(recipientId);
+      if (activeChat) {
+        const ageMs = Date.now() - activeChat.updatedAt;
+        if (ageMs > ACTIVE_CHAT_TTL_MS) {
+          activeChatByUid.delete(recipientId);
+        } else if (activeChat.peerId === senderId) {
+          res.json({ ok: true, sent: 0, removed: 0, skipped: 'active_chat_open' });
+          return;
+        }
       }
 
       const senderAvatarUrl = await resolveSenderAvatarForPush(

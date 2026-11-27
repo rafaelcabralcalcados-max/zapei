@@ -384,337 +384,57 @@ function persistListenedAudioIds(uid: string, ids: Set<string>): void {
 }
 
 const RealAudioBubble: React.FC<{
-  messageId: string;
   mediaUrl?: string;
   duration?: string;
   isMine: boolean;
   isListened?: boolean;
-  onMarkListened?: () => void;
-}> = ({ messageId, mediaUrl, duration, isMine, isListened = false, onMarkListened }) => {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  isPlaying: boolean;
+  currentSec: number;
+  measuredDurationSec?: number;
+  speed: 1 | 1.5 | 2;
+  onTogglePlay: () => void;
+  onSeek: (nextSec: number, isDraggingNow: boolean) => void;
+  onCycleSpeed: () => void;
+}> = ({
+  mediaUrl,
+  duration,
+  isMine,
+  isListened = false,
+  isPlaying,
+  currentSec,
+  measuredDurationSec,
+  speed,
+  onTogglePlay,
+  onSeek,
+  onCycleSpeed,
+}) => {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
-  const playingRef = useRef(false);
-  const stallTimerRef = useRef<number | null>(null);
-  const retryTimerRef = useRef<number | null>(null);
-  const retryCleanupRef = useRef<(() => void) | null>(null);
-  const playTokenRef = useRef(0);
-  const retriedOnceRef = useRef(false);
-  const pendingSrcRef = useRef<string | undefined>(undefined);
-  const bubbleKeyRef = useRef(
-    `voice_${messageId}_${Math.random().toString(36).slice(2, 8)}`
-  );
-
-  // Stabilize activeSrc so an async data: -> blob: upgrade never aborts active first-click playback
-  const [activeSrc, setActiveSrc] = useState<string | undefined>(mediaUrl);
-  const [playing, setPlaying] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [currentSec, setCurrentSec] = useState(0);
-  const [durationSec, setDurationSec] = useState(() => parseAudioDurationLabel(duration));
-  const [speed, setSpeed] = useState<1 | 1.5 | 2>(1);
 
   const fallbackSec = useMemo(() => parseAudioDurationLabel(duration), [duration]);
   const effectiveDuration =
-    Number.isFinite(durationSec) && durationSec > 0 ? durationSec : fallbackSec;
+    measuredDurationSec && Number.isFinite(measuredDurationSec) && measuredDurationSec > 0
+      ? measuredDurationSec
+      : fallbackSec;
   const progressRatio =
     effectiveDuration > 0
       ? Math.max(0, Math.min(1, currentSec / effectiveDuration))
       : 0;
   const progressPct = progressRatio * 100;
 
-  const clearPendingTimers = () => {
-    if (stallTimerRef.current !== null) {
-      window.clearTimeout(stallTimerRef.current);
-      stallTimerRef.current = null;
-    }
-    if (retryTimerRef.current !== null) {
-      window.clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-    if (retryCleanupRef.current) {
-      retryCleanupRef.current();
-      retryCleanupRef.current = null;
-    }
-  };
-
-  const forceStopLocal = () => {
-    clearPendingTimers();
-    playTokenRef.current = 0;
-    playingRef.current = false;
-    setPlaying(false);
-    const el = audioRef.current;
-    if (el && !el.paused) {
-      try {
-        el.pause();
-      } catch {
-        // Ignore
-      }
-    }
-  };
-
-  // Register this bubble in the exclusive audio playback coordinator
-  useEffect(() => {
-    const key = bubbleKeyRef.current;
-    registeredAudioStoppers.set(key, forceStopLocal);
-    return () => {
-      registeredAudioStoppers.delete(key);
-      clearPendingTimers();
-      const el = audioRef.current;
-      if (el) {
-        if (activeChatAudioElement === el) {
-          activeChatAudioElement = null;
-        }
-        try {
-          el.pause();
-        } catch {
-          // Ignore
-        }
-      }
-    };
-  }, []);
-
-  // Reset player state ONLY when messageId changes
-  useEffect(() => {
-    forceStopLocal();
-    retriedOnceRef.current = false;
-    pendingSrcRef.current = undefined;
-    setActiveSrc(mediaUrl);
-    setCurrentSec(0);
-    setDurationSec(parseAudioDurationLabel(duration));
-  }, [messageId]);
-
-  // Keep fallback duration synced without interrupting playback
-  useEffect(() => {
-    const parsed = parseAudioDurationLabel(duration);
-    if (parsed > 0) {
-      setDurationSec((prev) => (Number.isFinite(prev) && prev > 0 ? prev : parsed));
-    }
-  }, [duration]);
-
-  // Upgrade mediaUrl safely: apply immediately if not currently playing; defer until pause/end if playing
-  useEffect(() => {
-    if (!mediaUrl || mediaUrl === activeSrc) return;
-    if (playingRef.current) {
-      pendingSrcRef.current = mediaUrl;
-    } else {
-      pendingSrcRef.current = undefined;
-      setActiveSrc(mediaUrl);
-    }
-  }, [mediaUrl, activeSrc]);
-
-  // Eagerly warm up local blob/data audio element on mount/src change so first tap has readyState >= 2
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el || !activeSrc) return;
-    el.muted = false;
-    el.volume = 1;
-    if (el.readyState === 0) {
-      try {
-        el.load();
-      } catch {
-        // Ignore load errors on detached elements
-      }
-    }
-  }, [activeSrc]);
-
-  useEffect(() => {
-    if (!playing) return undefined;
-    let rafId = 0;
-    const tick = () => {
-      const el = audioRef.current;
-      if (el && !draggingRef.current) {
-        if (Number.isFinite(el.duration) && el.duration > 0) {
-          setDurationSec(el.duration);
-        }
-        setCurrentSec(el.currentTime);
-      }
-      rafId = window.requestAnimationFrame(tick);
-    };
-    rafId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(rafId);
-  }, [playing]);
-
-  const reloadAndPlayOnce = (el: HTMLAudioElement, resumeSec: number, token: number) => {
-    if (retriedOnceRef.current) return;
-    if (token !== activeChatAudioToken || activeChatAudioElement !== el) return;
-    retriedOnceRef.current = true;
-    clearPendingTimers();
-
-    const attemptResume = () => {
-      cleanupListeners();
-      // Abort immediately if the user paused or started another audio while reloading
-      if (
-        token !== activeChatAudioToken ||
-        playTokenRef.current !== token ||
-        activeChatAudioElement !== el
-      ) {
-        return;
-      }
-      try {
-        el.muted = false;
-        el.volume = 1;
-        el.playbackRate = speed;
-        if (resumeSec > 0.05 && Number.isFinite(el.duration) && resumeSec < el.duration) {
-          el.currentTime = resumeSec;
-        } else {
-          el.currentTime = 0;
-        }
-      } catch {
-        // Ignore seek errors before seekable range is ready
-      }
-      void el.play().catch(() => {
-        if (playTokenRef.current === token) {
-          playingRef.current = false;
-          setPlaying(false);
-        }
-      });
-    };
-
-    const cleanupListeners = () => {
-      el.removeEventListener('canplay', attemptResume);
-      el.removeEventListener('loadeddata', attemptResume);
-      if (retryTimerRef.current !== null) {
-        window.clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-      retryCleanupRef.current = null;
-    };
-
-    retryCleanupRef.current = cleanupListeners;
-    el.addEventListener('canplay', attemptResume, { once: true });
-    el.addEventListener('loadeddata', attemptResume, { once: true });
-    try {
-      el.load();
-    } catch {
-      // Ignore
-    }
-    // Safety fallback if browser already fired loadeddata synchronously
-    retryTimerRef.current = window.setTimeout(() => {
-      if (
-        el.readyState >= 2 &&
-        el.paused &&
-        token === activeChatAudioToken &&
-        playTokenRef.current === token &&
-        activeChatAudioElement === el
-      ) {
-        attemptResume();
-      }
-    }, 250);
-  };
-
-  const togglePlay = () => {
-    const el = audioRef.current;
-    if (!el || !activeSrc) return;
-
-    // Wake mobile/desktop audio hardware synchronously inside the user tap gesture
-    unlockCallAudio();
-
-    if (playing || !el.paused) {
-      activeChatAudioToken += 1;
-      forceStopLocal();
-      if (activeChatAudioElement === el) {
-        activeChatAudioElement = null;
-      }
-      return;
-    }
-
-    // Exclusively stop ALL other chat audios and videos so only one plays at a time
-    const myToken = stopAllChatMediaExcept(el, bubbleKeyRef.current);
-    playTokenRef.current = myToken;
-    retriedOnceRef.current = false;
-
-    el.muted = false;
-    el.volume = 1;
-    el.playbackRate = speed;
-
-    const knownDuration =
-      Number.isFinite(el.duration) && el.duration > 0 ? el.duration : effectiveDuration;
-    if (el.ended || (knownDuration > 0 && el.currentTime >= knownDuration - 0.08)) {
-      try {
-        el.currentTime = 0;
-      } catch {
-        // Ignore if not seekable yet
-      }
-      setCurrentSec(0);
-    }
-
-    if (el.error || el.readyState === 0) {
-      try {
-        el.load();
-      } catch {
-        // Ignore
-      }
-    }
-
-    const startSec = el.currentTime || 0;
-    const playPromise = el.play();
-
-    if (playPromise && typeof playPromise.then === 'function') {
-      playPromise
-        .then(() => {
-          // If user already tapped another audio while this play() promise was resolving, immediately pause!
-          if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) {
-            try {
-              el.pause();
-            } catch {
-              // Ignore
-            }
-            return;
-          }
-          playingRef.current = true;
-          setPlaying(true);
-          // First-play silent stall watchdog: if Chrome/mobile reports playing but readyState < 2
-          // or currentTime doesn't advance within 450ms, automatically reload & replay once
-          if (stallTimerRef.current !== null) {
-            window.clearTimeout(stallTimerRef.current);
-          }
-          stallTimerRef.current = window.setTimeout(() => {
-            if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
-            if (!audioRef.current || audioRef.current !== el) return;
-            if (el.paused || el.ended) return;
-            const progressed = Math.abs(el.currentTime - startSec) > 0.02;
-            if (!progressed || el.readyState < 2) {
-              reloadAndPlayOnce(el, startSec, myToken);
-            }
-          }, 450);
-        })
-        .catch(() => {
-          if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
-          // First play() rejected (common on cold first tap while decoding blob) -> reload & auto-retry once
-          reloadAndPlayOnce(el, startSec, myToken);
-        });
-    }
-  };
-
-  const cycleSpeed = () => {
-    const next: 1 | 1.5 | 2 = speed === 1 ? 1.5 : speed === 1.5 ? 2 : 1;
-    setSpeed(next);
-    if (audioRef.current) {
-      audioRef.current.playbackRate = next;
-    }
-  };
-
-  const seekToClientX = (clientX: number) => {
-    const el = audioRef.current;
+  const seekToClientX = (clientX: number, isDraggingNow: boolean) => {
     const track = trackRef.current;
-    if (!el || !track) return;
+    if (!track || effectiveDuration <= 0) return;
     const rect = track.getBoundingClientRect();
     if (rect.width <= 0) return;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const maxSec =
-      Number.isFinite(el.duration) && el.duration > 0 ? el.duration : effectiveDuration;
-    if (maxSec <= 0) return;
-    const nextSec = ratio * maxSec;
-    setCurrentSec(nextSec);
-    try {
-      el.currentTime = nextSec;
-    } catch {
-      // Ignore if media isn't seekable yet
-    }
+    const nextSec = ratio * effectiveDuration;
+    onSeek(nextSec, isDraggingNow);
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!activeSrc) return;
+    if (!mediaUrl) return;
     e.preventDefault();
     draggingRef.current = true;
     setDragging(true);
@@ -723,17 +443,17 @@ const RealAudioBubble: React.FC<{
     } catch {
       // Ignore unsupported capture
     }
-    seekToClientX(e.clientX);
+    seekToClientX(e.clientX, true);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    seekToClientX(e.clientX);
+    seekToClientX(e.clientX, true);
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    seekToClientX(e.clientX);
+    seekToClientX(e.clientX, false);
     draggingRef.current = false;
     setDragging(false);
     try {
@@ -746,19 +466,17 @@ const RealAudioBubble: React.FC<{
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const el = audioRef.current;
-    if (!el || effectiveDuration <= 0) return;
+    if (!mediaUrl || effectiveDuration <= 0) return;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
       const delta = e.key === 'ArrowRight' ? 3 : -3;
-      const next = Math.max(0, Math.min(effectiveDuration, el.currentTime + delta));
-      el.currentTime = next;
-      setCurrentSec(next);
+      const next = Math.max(0, Math.min(effectiveDuration, currentSec + delta));
+      onSeek(next, false);
     }
   };
 
   const displayTimeLabel =
-    playing || currentSec > 0 || dragging
+    isPlaying || currentSec > 0 || dragging
       ? `${formatAudioSeconds(currentSec)} / ${
           effectiveDuration > 0 ? formatAudioSeconds(effectiveDuration) : duration || '0:00'
         }`
@@ -768,106 +486,10 @@ const RealAudioBubble: React.FC<{
 
   return (
     <div className="flex min-w-[236px] sm:min-w-[260px] items-center gap-2.5 py-0.5 select-none">
-      {activeSrc && (
-        <audio
-          ref={audioRef}
-          data-chatfi-voice="1"
-          src={activeSrc}
-          preload="auto"
-          playsInline
-          onLoadedMetadata={(e) => {
-            const d = e.currentTarget.duration;
-            if (Number.isFinite(d) && d > 0) setDurationSec(d);
-          }}
-          onDurationChange={(e) => {
-            const d = e.currentTarget.duration;
-            if (Number.isFinite(d) && d > 0) setDurationSec(d);
-          }}
-          onPlay={(e) => {
-            const el = e.currentTarget;
-            if (activeChatAudioElement !== el) {
-              const tok = stopAllChatMediaExcept(el, bubbleKeyRef.current);
-              playTokenRef.current = tok;
-            }
-            playingRef.current = true;
-            setPlaying(true);
-            onMarkListened?.();
-          }}
-          onPause={() => {
-            if (stallTimerRef.current !== null) {
-              window.clearTimeout(stallTimerRef.current);
-              stallTimerRef.current = null;
-            }
-            playingRef.current = false;
-            setPlaying(false);
-            if (pendingSrcRef.current && pendingSrcRef.current !== activeSrc) {
-              const nextSrc = pendingSrcRef.current;
-              pendingSrcRef.current = undefined;
-              setActiveSrc(nextSrc);
-            }
-          }}
-          onEnded={() => {
-            clearPendingTimers();
-            playTokenRef.current = 0;
-            playingRef.current = false;
-            setPlaying(false);
-            setCurrentSec(0);
-            onMarkListened?.();
-            if (audioRef.current) {
-              if (activeChatAudioElement === audioRef.current) {
-                activeChatAudioElement = null;
-              }
-              try {
-                audioRef.current.currentTime = 0;
-              } catch {
-                // Ignore
-              }
-            }
-            if (pendingSrcRef.current && pendingSrcRef.current !== activeSrc) {
-              const nextSrc = pendingSrcRef.current;
-              pendingSrcRef.current = undefined;
-              setActiveSrc(nextSrc);
-            }
-          }}
-          onTimeUpdate={(e) => {
-            if (draggingRef.current) return;
-            const el = e.currentTarget;
-            if (Number.isFinite(el.duration) && el.duration > 0) {
-              setDurationSec(el.duration);
-            }
-            if (el.currentTime > 0.02 && stallTimerRef.current !== null) {
-              window.clearTimeout(stallTimerRef.current);
-              stallTimerRef.current = null;
-            }
-            if (el.currentTime > 0.15) {
-              onMarkListened?.();
-            }
-            setCurrentSec(el.currentTime);
-          }}
-          onError={() => {
-            const el = audioRef.current;
-            const tok = playTokenRef.current;
-            if (
-              el &&
-              tok > 0 &&
-              tok === activeChatAudioToken &&
-              activeChatAudioElement === el &&
-              !retriedOnceRef.current
-            ) {
-              reloadAndPlayOnce(el, currentSec, tok);
-            } else {
-              clearPendingTimers();
-              playingRef.current = false;
-              setPlaying(false);
-            }
-          }}
-          className="sr-only"
-        />
-      )}
       <button
         type="button"
-        onClick={togglePlay}
-        disabled={!activeSrc}
+        onClick={onTogglePlay}
+        disabled={!mediaUrl}
         className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-xs transition active:scale-95 disabled:opacity-40 ${
           isMine
             ? isListened
@@ -877,9 +499,9 @@ const RealAudioBubble: React.FC<{
               ? 'bg-[#0284C7] text-white shadow-sky-900/15 hover:bg-[#0369A1]'
               : 'bg-[#0E7A34] text-white shadow-emerald-900/15 hover:bg-[#0B5D27]'
         }`}
-        aria-label={playing ? 'Pausar áudio' : 'Reproduzir áudio'}
+        aria-label={isPlaying ? 'Pausar áudio' : 'Reproduzir áudio'}
       >
-        {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+        {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
       </button>
 
       <div className="min-w-0 flex-1">
@@ -972,7 +594,7 @@ const RealAudioBubble: React.FC<{
           </div>
           <button
             type="button"
-            onClick={cycleSpeed}
+            onClick={onCycleSpeed}
             className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold transition ${
               isMine
                 ? 'bg-white/20 text-white hover:bg-white/30'
@@ -1233,6 +855,394 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
     }
     return undefined;
   };
+
+  // --- SHARED BLESSED VOICE AUDIO ENGINE + SEAMLESS SEQUENTIAL PLAYBACK ---
+  // Reusing a single DOM-mounted <audio> element ensures iOS Safari PWA keeps autoplay permission
+  // alive when automatically advancing to the next voice message (including newly arrived ones).
+  const sharedVoiceAudioRef = useRef<HTMLAudioElement | null>(null);
+  const voiceEngineKeyRef = useRef(
+    `chat_voice_engine_${Math.random().toString(36).slice(2, 8)}`
+  );
+  const [activeVoiceId, setActiveVoiceId] = useState<string | null>(null);
+  const [isVoicePlaying, setIsVoicePlaying] = useState(false);
+  const [activeVoiceTimeSec, setActiveVoiceTimeSec] = useState(0);
+  const [voiceSpeed, setVoiceSpeed] = useState<1 | 1.5 | 2>(1);
+  const [voiceDurationsById, setVoiceDurationsById] = useState<Record<string, number>>({});
+  const [voiceSavedPositions, setVoiceSavedPositions] = useState<Record<string, number>>({});
+
+  const activeVoiceIdRef = useRef<string | null>(null);
+  const voiceSpeedRef = useRef<1 | 1.5 | 2>(1);
+  const voiceLoadedMsgIdRef = useRef<string | null>(null);
+  const voicePositionsRef = useRef<Map<string, number>>(new Map());
+  const voiceDraggingRef = useRef(false);
+  const voicePlayTokenRef = useRef(0);
+  const voiceRetriedOnceRef = useRef(false);
+  const voiceStallTimerRef = useRef<number | null>(null);
+  const voiceRetryTimerRef = useRef<number | null>(null);
+  const voiceRetryCleanupRef = useRef<(() => void) | null>(null);
+  const voicePendingSeekRef = useRef<number | null>(null);
+  const pendingAutoPlayRef = useRef<{ messageId: string; expiresAt: number } | null>(null);
+
+  const renderedMessagesRef = useRef<ChatMessage[]>(renderedMessages);
+  renderedMessagesRef.current = renderedMessages;
+  const resolvedMediaRef = useRef<Record<string, MediaResolveResult>>(resolvedMedia);
+  resolvedMediaRef.current = resolvedMedia;
+  const handleMarkAudioListenedRef = useRef(handleMarkAudioListened);
+  handleMarkAudioListenedRef.current = handleMarkAudioListened;
+
+  const resolveMediaUrlFromSnapshot = (
+    msg: ChatMessage,
+    mediaMap: Record<string, MediaResolveResult>
+  ): string | undefined => {
+    const resolved = mediaMap[msg.id];
+    if (resolved?.status === 'ready' && resolved.url) return resolved.url;
+    if (resolved?.status === 'deleted_locally' || resolved?.status === 'expired') {
+      return undefined;
+    }
+    if (
+      msg.mediaUrl &&
+      (msg.mediaUrl.startsWith('data:') || msg.mediaUrl.startsWith('blob:'))
+    ) {
+      return msg.mediaUrl;
+    }
+    return undefined;
+  };
+
+  const clearVoiceTimers = useCallback(() => {
+    if (voiceStallTimerRef.current !== null) {
+      window.clearTimeout(voiceStallTimerRef.current);
+      voiceStallTimerRef.current = null;
+    }
+    if (voiceRetryTimerRef.current !== null) {
+      window.clearTimeout(voiceRetryTimerRef.current);
+      voiceRetryTimerRef.current = null;
+    }
+    if (voiceRetryCleanupRef.current) {
+      voiceRetryCleanupRef.current();
+      voiceRetryCleanupRef.current = null;
+    }
+  }, []);
+
+  const stopSharedVoicePlayback = useCallback(
+    (resetActive = false) => {
+      clearVoiceTimers();
+      pendingAutoPlayRef.current = null;
+      voicePendingSeekRef.current = null;
+      voicePlayTokenRef.current = 0;
+      const el = sharedVoiceAudioRef.current;
+      const currentId = activeVoiceIdRef.current;
+      if (el) {
+        if (currentId && !resetActive && Number.isFinite(el.currentTime) && el.currentTime > 0) {
+          voicePositionsRef.current.set(currentId, el.currentTime);
+          setVoiceSavedPositions((prev) => ({ ...prev, [currentId]: el.currentTime }));
+        }
+        if (!el.paused) {
+          try {
+            el.pause();
+          } catch {
+            // Ignore
+          }
+        }
+        if (resetActive) {
+          try {
+            el.removeAttribute('src');
+            el.load();
+          } catch {
+            // Ignore
+          }
+        }
+      }
+      setIsVoicePlaying(false);
+      if (resetActive) {
+        activeVoiceIdRef.current = null;
+        voiceLoadedMsgIdRef.current = null;
+        setActiveVoiceId(null);
+        setActiveVoiceTimeSec(0);
+      }
+    },
+    [clearVoiceTimers]
+  );
+
+  // Register shared voice engine in global exclusive media coordinator
+  useEffect(() => {
+    const key = voiceEngineKeyRef.current;
+    registeredAudioStoppers.set(key, () => stopSharedVoicePlayback(false));
+    return () => {
+      registeredAudioStoppers.delete(key);
+      const el = sharedVoiceAudioRef.current;
+      stopSharedVoicePlayback(true);
+      if (el && activeChatAudioElement === el) {
+        activeChatAudioElement = null;
+      }
+    };
+  }, [stopSharedVoicePlayback]);
+
+  // Reset voice engine when switching chats
+  useEffect(() => {
+    stopSharedVoicePlayback(true);
+    voicePositionsRef.current.clear();
+    setVoiceSavedPositions({});
+    setVoiceDurationsById({});
+  }, [activeChatId, stopSharedVoicePlayback]);
+
+  // Smooth 60fps progress loop while voice message is playing
+  useEffect(() => {
+    if (!isVoicePlaying) return undefined;
+    let rafId = 0;
+    const tick = () => {
+      const el = sharedVoiceAudioRef.current;
+      const id = activeVoiceIdRef.current;
+      if (el && id && !voiceDraggingRef.current) {
+        if (Number.isFinite(el.duration) && el.duration > 0) {
+          setVoiceDurationsById((prev) =>
+            prev[id] === el.duration ? prev : { ...prev, [id]: el.duration }
+          );
+        }
+        setActiveVoiceTimeSec(el.currentTime);
+        voicePositionsRef.current.set(id, el.currentTime);
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isVoicePlaying]);
+
+  const reloadAndPlayVoiceOnce = useCallback(
+    (el: HTMLAudioElement, resumeSec: number, token: number) => {
+      if (voiceRetriedOnceRef.current) return;
+      if (token !== activeChatAudioToken || activeChatAudioElement !== el) return;
+      voiceRetriedOnceRef.current = true;
+      clearVoiceTimers();
+
+      const attemptResume = () => {
+        cleanupListeners();
+        if (
+          token !== activeChatAudioToken ||
+          voicePlayTokenRef.current !== token ||
+          activeChatAudioElement !== el
+        ) {
+          return;
+        }
+        try {
+          el.muted = false;
+          el.volume = 1;
+          el.playbackRate = voiceSpeedRef.current;
+          if (resumeSec > 0.05 && Number.isFinite(el.duration) && resumeSec < el.duration) {
+            el.currentTime = resumeSec;
+          } else {
+            el.currentTime = 0;
+          }
+        } catch {
+          // Ignore seek errors before seekable range is ready
+        }
+        void el.play().catch(() => {
+          if (voicePlayTokenRef.current === token) {
+            setIsVoicePlaying(false);
+          }
+        });
+      };
+
+      const cleanupListeners = () => {
+        el.removeEventListener('canplay', attemptResume);
+        el.removeEventListener('loadeddata', attemptResume);
+        if (voiceRetryTimerRef.current !== null) {
+          window.clearTimeout(voiceRetryTimerRef.current);
+          voiceRetryTimerRef.current = null;
+        }
+        voiceRetryCleanupRef.current = null;
+      };
+
+      voiceRetryCleanupRef.current = cleanupListeners;
+      el.addEventListener('canplay', attemptResume, { once: true });
+      el.addEventListener('loadeddata', attemptResume, { once: true });
+      try {
+        el.load();
+      } catch {
+        // Ignore
+      }
+      voiceRetryTimerRef.current = window.setTimeout(() => {
+        if (
+          el.readyState >= 2 &&
+          el.paused &&
+          token === activeChatAudioToken &&
+          voicePlayTokenRef.current === token &&
+          activeChatAudioElement === el
+        ) {
+          attemptResume();
+        }
+      }, 250);
+    },
+    [clearVoiceTimers]
+  );
+
+  const startVoiceMessagePlayback = useCallback(
+    (
+      messageId: string,
+      srcUrl: string,
+      options?: { fromStart?: boolean; autoScroll?: boolean }
+    ) => {
+      const el = sharedVoiceAudioRef.current;
+      if (!el || !srcUrl) return;
+
+      clearVoiceTimers();
+      pendingAutoPlayRef.current = null;
+
+      // Save previous message's pause timestamp when switching tracks
+      const prevId = activeVoiceIdRef.current;
+      if (prevId && prevId !== messageId && !el.ended && Number.isFinite(el.currentTime)) {
+        const saved = el.currentTime;
+        voicePositionsRef.current.set(prevId, saved);
+        setVoiceSavedPositions((prev) => ({ ...prev, [prevId]: saved }));
+      }
+
+      const myToken = stopAllChatMediaExcept(el, voiceEngineKeyRef.current);
+      voicePlayTokenRef.current = myToken;
+      voiceRetriedOnceRef.current = false;
+
+      const switchingTrack = voiceLoadedMsgIdRef.current !== messageId || !el.src;
+      activeVoiceIdRef.current = messageId;
+      setActiveVoiceId(messageId);
+
+      let startSec = options?.fromStart ? 0 : voicePositionsRef.current.get(messageId) || 0;
+      const knownDur = voiceDurationsById[messageId] || 0;
+      if (knownDur > 0 && startSec >= knownDur - 0.1) {
+        startSec = 0;
+      }
+
+      if (switchingTrack) {
+        voiceLoadedMsgIdRef.current = messageId;
+        voicePendingSeekRef.current = startSec > 0.05 ? startSec : null;
+        el.src = srcUrl;
+      } else if (options?.fromStart || el.ended || (Number.isFinite(el.duration) && el.duration > 0 && el.currentTime >= el.duration - 0.08)) {
+        startSec = 0;
+        voicePendingSeekRef.current = null;
+        try {
+          el.currentTime = 0;
+        } catch {
+          // Ignore
+        }
+      } else if (Math.abs(el.currentTime - startSec) > 0.25) {
+        try {
+          el.currentTime = startSec;
+        } catch {
+          voicePendingSeekRef.current = startSec;
+        }
+      }
+
+      el.muted = false;
+      el.volume = 1;
+      el.playbackRate = voiceSpeedRef.current;
+      setActiveVoiceTimeSec(startSec);
+      voicePositionsRef.current.set(messageId, startSec);
+
+      if (options?.autoScroll && typeof document !== 'undefined') {
+        const bubbleEl = document.querySelector(`[data-chat-msg-id="${CSS.escape(messageId)}"]`);
+        bubbleEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      const playPromise = el.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise
+          .then(() => {
+            if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) {
+              try {
+                el.pause();
+              } catch {
+                // Ignore
+              }
+              return;
+            }
+            setIsVoicePlaying(true);
+            handleMarkAudioListenedRef.current(messageId);
+
+            if (voiceStallTimerRef.current !== null) {
+              window.clearTimeout(voiceStallTimerRef.current);
+            }
+            voiceStallTimerRef.current = window.setTimeout(() => {
+              if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
+              if (!sharedVoiceAudioRef.current || sharedVoiceAudioRef.current !== el) return;
+              if (el.paused || el.ended) return;
+              const progressed = Math.abs(el.currentTime - startSec) > 0.02;
+              if (!progressed || el.readyState < 2) {
+                reloadAndPlayVoiceOnce(el, startSec, myToken);
+              }
+            }, 450);
+          })
+          .catch(() => {
+            if (myToken !== activeChatAudioToken || activeChatAudioElement !== el) return;
+            reloadAndPlayVoiceOnce(el, startSec, myToken);
+          });
+      }
+    },
+    [clearVoiceTimers, reloadAndPlayVoiceOnce, voiceDurationsById]
+  );
+
+  const handleToggleVoiceMessage = useCallback(
+    (messageId: string, srcUrl?: string) => {
+      if (!srcUrl) return;
+      unlockCallAudio();
+      const el = sharedVoiceAudioRef.current;
+      if (activeVoiceIdRef.current === messageId && el && !el.paused) {
+        activeChatAudioToken += 1;
+        stopSharedVoicePlayback(false);
+        if (activeChatAudioElement === el) {
+          activeChatAudioElement = null;
+        }
+        return;
+      }
+      startVoiceMessagePlayback(messageId, srcUrl, { fromStart: false });
+    },
+    [startVoiceMessagePlayback, stopSharedVoicePlayback]
+  );
+
+  const handleSeekVoiceMessage = useCallback(
+    (messageId: string, nextSec: number, isDraggingNow: boolean) => {
+      voiceDraggingRef.current = isDraggingNow;
+      voicePositionsRef.current.set(messageId, nextSec);
+      if (activeVoiceIdRef.current === messageId) {
+        setActiveVoiceTimeSec(nextSec);
+        const el = sharedVoiceAudioRef.current;
+        if (el) {
+          try {
+            el.currentTime = nextSec;
+          } catch {
+            voicePendingSeekRef.current = nextSec;
+          }
+        }
+      } else {
+        setVoiceSavedPositions((prev) => ({ ...prev, [messageId]: nextSec }));
+      }
+    },
+    []
+  );
+
+  const handleCycleVoiceSpeed = useCallback(() => {
+    const next: 1 | 1.5 | 2 =
+      voiceSpeedRef.current === 1 ? 1.5 : voiceSpeedRef.current === 1.5 ? 2 : 1;
+    voiceSpeedRef.current = next;
+    setVoiceSpeed(next);
+    if (sharedVoiceAudioRef.current) {
+      sharedVoiceAudioRef.current.playbackRate = next;
+    }
+  }, []);
+
+  // If the next sequential voice message just arrived and was still resolving locally when the previous audio ended,
+  // auto-start it immediately once its URL becomes ready.
+  useEffect(() => {
+    const pending = pendingAutoPlayRef.current;
+    if (!pending) return;
+    if (Date.now() > pending.expiresAt) {
+      pendingAutoPlayRef.current = null;
+      return;
+    }
+    const targetMsg = renderedMessages.find((m) => m.id === pending.messageId);
+    if (!targetMsg) return;
+    const readyUrl = resolveMediaUrlFromSnapshot(targetMsg, resolvedMedia);
+    if (readyUrl) {
+      pendingAutoPlayRef.current = null;
+      startVoiceMessagePlayback(targetMsg.id, readyUrl, { fromStart: true, autoScroll: true });
+    }
+  }, [resolvedMedia, renderedMessages, startVoiceMessagePlayback]);
 
   const filteredForwardTargets = useMemo(() => {
     const q = forwardSearch
@@ -2239,6 +2249,7 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
             return (
               <div
                 key={msg.id}
+                data-chat-msg-id={msg.id}
                 className={`group flex ${isMine ? 'justify-end' : 'justify-start'}`}
               >
                 <div
@@ -2275,12 +2286,23 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
                     <div className="pr-6">
                       {resolvedUrl ? (
                         <RealAudioBubble
-                          messageId={msg.id}
                           mediaUrl={resolvedUrl}
                           duration={msg.audioDuration}
                           isMine={isMine}
                           isListened={isAudioListened}
-                          onMarkListened={() => handleMarkAudioListened(msg.id)}
+                          isPlaying={isVoicePlaying && activeVoiceId === msg.id}
+                          currentSec={
+                            activeVoiceId === msg.id
+                              ? activeVoiceTimeSec
+                              : voiceSavedPositions[msg.id] || 0
+                          }
+                          measuredDurationSec={voiceDurationsById[msg.id]}
+                          speed={voiceSpeed}
+                          onTogglePlay={() => handleToggleVoiceMessage(msg.id, resolvedUrl)}
+                          onSeek={(nextSec, draggingNow) =>
+                            handleSeekVoiceMessage(msg.id, nextSec, draggingNow)
+                          }
+                          onCycleSpeed={handleCycleVoiceSpeed}
                         />
                       ) : (
                         mediaStatusPlaceholder('Áudio')
@@ -3634,6 +3656,157 @@ export const ChatThreadView: React.FC<ChatThreadViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Single shared blessed voice audio element for guaranteed sequential playback on iOS PWA & Android */}
+      <audio
+        ref={sharedVoiceAudioRef}
+        data-chatfi-voice="1"
+        preload="auto"
+        playsInline
+        onLoadedMetadata={(e) => {
+          const el = e.currentTarget;
+          const id = activeVoiceIdRef.current;
+          if (id && Number.isFinite(el.duration) && el.duration > 0) {
+            setVoiceDurationsById((prev) =>
+              prev[id] === el.duration ? prev : { ...prev, [id]: el.duration }
+            );
+          }
+          if (voicePendingSeekRef.current !== null) {
+            const target = voicePendingSeekRef.current;
+            voicePendingSeekRef.current = null;
+            if (Number.isFinite(el.duration) && target < el.duration) {
+              try {
+                el.currentTime = target;
+              } catch {
+                // Ignore
+              }
+            }
+          }
+        }}
+        onDurationChange={(e) => {
+          const el = e.currentTarget;
+          const id = activeVoiceIdRef.current;
+          if (id && Number.isFinite(el.duration) && el.duration > 0) {
+            setVoiceDurationsById((prev) =>
+              prev[id] === el.duration ? prev : { ...prev, [id]: el.duration }
+            );
+          }
+        }}
+        onPlay={(e) => {
+          const el = e.currentTarget;
+          if (activeChatAudioElement !== el) {
+            const tok = stopAllChatMediaExcept(el, voiceEngineKeyRef.current);
+            voicePlayTokenRef.current = tok;
+          }
+          setIsVoicePlaying(true);
+          if (activeVoiceIdRef.current) {
+            handleMarkAudioListenedRef.current(activeVoiceIdRef.current);
+          }
+        }}
+        onPause={() => {
+          if (voiceStallTimerRef.current !== null) {
+            window.clearTimeout(voiceStallTimerRef.current);
+            voiceStallTimerRef.current = null;
+          }
+          setIsVoicePlaying(false);
+        }}
+        onEnded={() => {
+          clearVoiceTimers();
+          const endedId = activeVoiceIdRef.current;
+          voicePlayTokenRef.current = 0;
+
+          if (endedId) {
+            handleMarkAudioListenedRef.current(endedId);
+            voicePositionsRef.current.set(endedId, 0);
+            setVoiceSavedPositions((prev) => ({ ...prev, [endedId]: 0 }));
+          }
+
+          // Check for the next sequential voice message from the same sender
+          const currentMsgs = renderedMessagesRef.current;
+          const endedIdx = endedId ? currentMsgs.findIndex((m) => m.id === endedId) : -1;
+          let nextAudioMsg: ChatMessage | null = null;
+          if (endedIdx !== -1) {
+            const endedMsg = currentMsgs[endedIdx];
+            for (let i = endedIdx + 1; i < currentMsgs.length; i += 1) {
+              const candidate = currentMsgs[i];
+              if (candidate.senderId !== endedMsg.senderId) break;
+              if (candidate.type === 'audio') {
+                nextAudioMsg = candidate;
+                break;
+              }
+            }
+          }
+
+          if (nextAudioMsg) {
+            const nextUrl = resolveMediaUrlFromSnapshot(nextAudioMsg, resolvedMediaRef.current);
+            if (nextUrl) {
+              // Immediately advance on the exact same blessed <audio> element (works natively on iOS Safari PWA)
+              startVoiceMessagePlayback(nextAudioMsg.id, nextUrl, {
+                fromStart: true,
+                autoScroll: true,
+              });
+              return;
+            }
+            // Audio just arrived and is still finishing local download: queue auto-play as soon as ready
+            pendingAutoPlayRef.current = {
+              messageId: nextAudioMsg.id,
+              expiresAt: Date.now() + 10_000,
+            };
+          }
+
+          setIsVoicePlaying(false);
+          setActiveVoiceTimeSec(0);
+          if (sharedVoiceAudioRef.current) {
+            if (activeChatAudioElement === sharedVoiceAudioRef.current) {
+              activeChatAudioElement = null;
+            }
+            try {
+              sharedVoiceAudioRef.current.currentTime = 0;
+            } catch {
+              // Ignore
+            }
+          }
+        }}
+        onTimeUpdate={(e) => {
+          if (voiceDraggingRef.current) return;
+          const el = e.currentTarget;
+          const id = activeVoiceIdRef.current;
+          if (id && Number.isFinite(el.duration) && el.duration > 0) {
+            setVoiceDurationsById((prev) =>
+              prev[id] === el.duration ? prev : { ...prev, [id]: el.duration }
+            );
+          }
+          if (el.currentTime > 0.02 && voiceStallTimerRef.current !== null) {
+            window.clearTimeout(voiceStallTimerRef.current);
+            voiceStallTimerRef.current = null;
+          }
+          if (id && el.currentTime > 0.15) {
+            handleMarkAudioListenedRef.current(id);
+          }
+          setActiveVoiceTimeSec(el.currentTime);
+        }}
+        onError={() => {
+          const el = sharedVoiceAudioRef.current;
+          const tok = voicePlayTokenRef.current;
+          if (
+            el &&
+            tok > 0 &&
+            tok === activeChatAudioToken &&
+            activeChatAudioElement === el &&
+            !voiceRetriedOnceRef.current
+          ) {
+            const resumeSec =
+              activeVoiceIdRef.current
+                ? voicePositionsRef.current.get(activeVoiceIdRef.current) || 0
+                : 0;
+            reloadAndPlayVoiceOnce(el, resumeSec, tok);
+          } else {
+            clearVoiceTimers();
+            setIsVoicePlaying(false);
+          }
+        }}
+        className="sr-only"
+      />
     </div>
   );
 };

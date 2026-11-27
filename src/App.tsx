@@ -111,6 +111,7 @@ import {
 } from './lib/webrtcService';
 import {
   enableRealBackgroundCallPush,
+  syncActiveChatPresence,
   syncExistingPushSubscriptionWithRetry,
   triggerRemoteCallPush,
 } from './lib/pushService';
@@ -1064,6 +1065,60 @@ export default function App() {
     return subscribeChatMessages(chatId, authUser.uid, setActiveMessages);
   }, [authUser, selectedPeer?.uid]);
 
+  // 4a. Inform server & Service Worker when the user is actively viewing a specific conversation
+  // so messages from that person never pop OS notifications while the chat is open on screen.
+  const activeOpenPeerId =
+    activeTab === 'chats' && selectedPeer?.uid ? selectedPeer.uid : null;
+  const activeOpenPeerIdRef = useRef<string | null>(null);
+  activeOpenPeerIdRef.current = activeOpenPeerId;
+
+  useEffect(() => {
+    if (!authUser) {
+      void syncActiveChatPresence(null, null, false);
+      return undefined;
+    }
+
+    const syncNow = (forceClear = false) => {
+      const visible =
+        !forceClear &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible';
+      void syncActiveChatPresence(authUser, visible ? activeOpenPeerId : null, visible);
+    };
+
+    syncNow(false);
+
+    let heartbeatId: number | null = null;
+    if (activeOpenPeerId) {
+      heartbeatId = window.setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          void syncActiveChatPresence(authUser, activeOpenPeerId, true);
+        }
+      }, 14_000);
+    }
+
+    const handleVisibilityChange = () => {
+      syncNow(false);
+    };
+    const handlePageHide = () => {
+      syncNow(true);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
+
+    return () => {
+      if (heartbeatId !== null) window.clearInterval(heartbeatId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+      if (activeOpenPeerId) {
+        void syncActiveChatPresence(authUser, null, false);
+      }
+    };
+  }, [authUser, activeOpenPeerId]);
+
   // 4b. WhatsApp-style incoming text/audio/photo message chime & floating banner across ALL chats
   useEffect(() => {
     if (!profile) {
@@ -1875,7 +1930,10 @@ export default function App() {
         return;
       }
       if (msg?.type === 'ZAPEI_INCOMING_MESSAGE_PING' && msg.payload) {
-        if (msg.payload.senderId !== profile.uid) {
+        if (
+          msg.payload.senderId !== profile.uid &&
+          msg.payload.senderId !== activeOpenPeerIdRef.current
+        ) {
           playMessageNotificationSound(
             msg.payload.messageType === 'audio' ? 'audio' : 'text'
           );

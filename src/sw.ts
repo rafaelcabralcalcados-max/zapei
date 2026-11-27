@@ -12,9 +12,23 @@ self.addEventListener('install', () => {
   void self.skipWaiting();
 });
 
+let activeChatState: { peerId: string | null; visible: boolean; updatedAt: number } = {
+  peerId: null,
+  visible: false,
+  updatedAt: 0,
+};
+
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     void self.skipWaiting();
+    return;
+  }
+  if (event.data && event.data.type === 'CHATFI_ACTIVE_CHAT') {
+    activeChatState = {
+      peerId: typeof event.data.peerId === 'string' && event.data.peerId ? event.data.peerId : null,
+      visible: Boolean(event.data.visible),
+      updatedAt: Date.now(),
+    };
   }
 });
 
@@ -295,9 +309,23 @@ self.addEventListener('push', (event: PushEvent) => {
     self.clients
       .matchAll({ type: 'window', includeUncontrolled: true })
       .then(async (windowClients) => {
-        const activeForegroundClient = windowClients.find(
-          (c) => c.visibilityState === 'visible' && 'focused' in c && (c as WindowClient).focused
+        const visibleClients = windowClients.filter((c) => c.visibilityState === 'visible');
+        const isViewingSenderChat = Boolean(
+          visibleClients.length > 0 &&
+            payload.senderId &&
+            activeChatState.visible &&
+            activeChatState.peerId === payload.senderId &&
+            Date.now() - activeChatState.updatedAt < 45_000
         );
+        if (isViewingSenderChat) {
+          // User already has this exact conversation open and visible on screen — no OS notification needed
+          return;
+        }
+
+        const activeForegroundClient =
+          windowClients.find(
+            (c) => c.visibilityState === 'visible' && 'focused' in c && (c as WindowClient).focused
+          ) || visibleClients[0];
         if (activeForegroundClient) {
           activeForegroundClient.postMessage({
             type: 'ZAPEI_INCOMING_MESSAGE_PING',

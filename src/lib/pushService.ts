@@ -387,3 +387,74 @@ export async function triggerRemoteMessagePush(
     }
   }
 }
+
+let cachedActiveChatToken: { uid: string; token: string } | null = null;
+
+/**
+ * Keeps both the Service Worker and server informed of which conversation is actively open
+ * and visible on screen, so incoming messages from that exact contact never pop OS notifications.
+ */
+export async function syncActiveChatPresence(
+  authUser: User | null,
+  peerId: string | null,
+  visible: boolean
+): Promise<void> {
+  const effectivePeerId = visible && peerId ? peerId : null;
+
+  // 1. Immediately inform Service Worker + dismiss any stale OS notifications from this peer
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      const payload = {
+        type: 'CHATFI_ACTIVE_CHAT',
+        peerId: effectivePeerId,
+        visible: Boolean(visible && effectivePeerId),
+      };
+      navigator.serviceWorker.controller?.postMessage(payload);
+      void navigator.serviceWorker.getRegistration().then((reg) => {
+        if (!reg) return;
+        reg.active?.postMessage(payload);
+        if (effectivePeerId && typeof reg.getNotifications === 'function') {
+          void reg.getNotifications().then((list) => {
+            list.forEach((n) => {
+              const d = (n.data || {}) as { senderId?: string; type?: string };
+              if (d.type === 'new_message' && d.senderId === effectivePeerId) {
+                n.close();
+              }
+            });
+          });
+        }
+      });
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  // 2. Inform server (with keepalive so backgrounding/closing flushes reliably on iOS & Android)
+  if (!authUser) return;
+
+  const postWithToken = (token: string) =>
+    fetch('/api/push/active-chat', {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ peerId: effectivePeerId }),
+    }).catch(() => {});
+
+  // When clearing presence (hiding/leaving chat), fire immediately using the cached token
+  // so iOS Safari doesn't suspend the PWA before an async getIdToken() resolves.
+  if (!effectivePeerId && cachedActiveChatToken && cachedActiveChatToken.uid === authUser.uid) {
+    void postWithToken(cachedActiveChatToken.token);
+    return;
+  }
+
+  try {
+    const token = await authUser.getIdToken();
+    cachedActiveChatToken = { uid: authUser.uid, token };
+    await postWithToken(token);
+  } catch {
+    // Non-fatal
+  }
+}
