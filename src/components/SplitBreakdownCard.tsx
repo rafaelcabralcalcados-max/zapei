@@ -29,7 +29,7 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
   title = 'Detalhamento do Split Asaas & Taxa ChatFi',
   compact = false,
   factoryLabel = 'Fabricante (produção)',
-  resellerLabel = 'Revendedor (retido / liberado)',
+  resellerLabel = 'Vendedor (retido / liberado)',
   hideResellerIfDirect = false,
   showMethodToggle = false,
   asaasChargeStatus,
@@ -174,7 +174,7 @@ export const SplitBreakdownCard: React.FC<SplitBreakdownCardProps> = ({
           <div className="flex items-center justify-between gap-2 py-2">
             <span className="text-slate-600">
               {breakdown.isDirectManufacturerSale
-                ? 'Revendedor (venda direta de fábrica)'
+                ? 'Vendedor (venda direta de fábrica)'
                 : resellerLabel}
             </span>
             <span className="font-mono font-bold text-[#0E7A34] tabular-nums">

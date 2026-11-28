@@ -244,7 +244,7 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
           {data.message && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-700">
               {data.hideSplitExtract &&
-              /split|wallet|fabricante|revendedor/i.test(data.message)
+              /split|wallet|fabricante|vendedor|revendedor/i.test(data.message)
                 ? 'Pagamento pronto. Utilize o QR Code Pix ou abra a fatura abaixo para concluir seu pedido.'
                 : data.message}
             </div>
@@ -368,7 +368,7 @@ export const AsaasChargeModal: React.FC<AsaasChargeModalProps> = ({
                 </div>
                 {!(breakdown.isDirectManufacturerSale && data.hideResellerShare) && (
                   <div className="flex items-center justify-between py-2">
-                    <span className="text-slate-600">Líquido Revendedor</span>
+                    <span className="text-slate-600">Líquido Vendedor</span>
                     <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
                       {formatBRL(breakdown.resellerNetTotal)}
                     </span>

@@ -25,7 +25,9 @@ import {
   checkCpfRegistered,
   clearPhoneRecaptcha,
   CpfAuthError,
+  fetchOwnedCpfRegistration,
   firebaseConfig,
+  formatUserFacingFirestoreError,
   registerAccountWithCpf,
   sendCpfPasswordReset,
   sendWhatsAppStyleSmsCode,
@@ -80,7 +82,13 @@ interface PhoneOnboardingModalProps {
     name: string,
     phone: string,
     statusMessage: string,
-    avatarUrl?: string
+    avatarUrl?: string,
+    meta?: {
+      virtualLine?: string;
+      authMethod?: 'phone' | 'cpf';
+      cpfHash?: string;
+      cpfVerified?: boolean;
+    }
   ) => Promise<void>;
   onClose?: () => void;
 }
@@ -432,30 +440,62 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
     }
     const rawEditPhone = editPhone || initialPhone;
     const isVirtualLineEdit = isVirtualLinePrefix(rawEditPhone);
-    const verifiedPhone =
+    let verifiedPhone =
       mode === 'edit'
         ? isVirtualLineEdit
           ? rawEditPhone.trim().toUpperCase()
           : formatPhoneDisplay(rawEditPhone)
         : authUser?.phoneNumber
           ? formatPhoneDisplay(authUser.phoneNumber)
-          : formattedFullPhone;
+          : isVirtualLineEdit
+            ? rawEditPhone.trim().toUpperCase()
+            : '';
+    let resolvedMeta:
+      | {
+          virtualLine?: string;
+          authMethod?: 'phone' | 'cpf';
+          cpfHash?: string;
+          cpfVerified?: boolean;
+        }
+      | undefined;
 
     setBusy(true);
     try {
+      if (mode === 'gate' && !authUser?.phoneNumber && !verifiedPhone && authUser) {
+        const owned = await fetchOwnedCpfRegistration(authUser.uid, cpfInput);
+        if (owned?.virtualLine) {
+          verifiedPhone = owned.virtualLine;
+          resolvedMeta = {
+            virtualLine: owned.virtualLine,
+            authMethod: 'cpf',
+            cpfHash: owned.cpfHash,
+            cpfVerified: true,
+          };
+        } else {
+          setErrorInfo({
+            message:
+              'Informe o CPF cadastrado nesta conta para localizar sua Linha Virtual ou toque em "Usar outra conta" abaixo.',
+            needsConsoleSetup: false,
+          });
+          setBusy(false);
+          return;
+        }
+      }
+
       await onSaveProfile(
         name.trim(),
         verifiedPhone,
         sanitizeStatusMessage(statusMessage) || DEFAULT_STATUS_MESSAGE,
-        avatarUrl || undefined
+        avatarUrl || undefined,
+        resolvedMeta
       );
       onClose?.();
     } catch (err) {
       setErrorInfo({
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Erro ao salvar seus dados de perfil. Tente novamente.',
+        message: formatUserFacingFirestoreError(
+          err,
+          'Erro ao salvar seus dados de perfil. Tente novamente.'
+        ),
         needsConsoleSetup: false,
       });
     } finally {
@@ -552,9 +592,12 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
         err instanceof CpfAuthError && err.code === 'auth/operation-not-allowed';
       setErrorInfo({
         message:
-          err instanceof Error
+          err instanceof CpfAuthError
             ? err.message
-            : 'Não foi possível concluir o acesso por CPF. Tente novamente.',
+            : formatUserFacingFirestoreError(
+                err,
+                'Não foi possível concluir o acesso por CPF. Tente novamente.'
+              ),
         needsConsoleSetup: needsConsole,
         code: err instanceof CpfAuthError ? err.code : undefined,
       });
@@ -1532,18 +1575,36 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                         className="h-11 w-full border-b-2 border-[#0E7A34] bg-transparent px-1 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none"
                       />
                     </div>
-                    {authUser?.phoneNumber && (
+                    {authUser?.phoneNumber ? (
                       <p className="text-center font-mono text-xs text-slate-500 tabular-nums">
                         Número verificado:{' '}
                         <strong className="text-slate-700">
                           {formatPhoneDisplay(authUser.phoneNumber)}
                         </strong>
                       </p>
-                    )}
+                    ) : !isVirtualLinePrefix(editPhone || initialPhone) ? (
+                      <div>
+                        <label
+                          htmlFor="zapei-profile-cpf-recovery"
+                          className="block text-[11px] font-bold text-slate-700"
+                        >
+                          Confirme seu CPF cadastrado para vincular sua Linha Virtual
+                        </label>
+                        <input
+                          id="zapei-profile-cpf-recovery"
+                          type="text"
+                          inputMode="numeric"
+                          value={cpfInput}
+                          onChange={(e) => setCpfInput(formatCpfMask(e.target.value))}
+                          placeholder="000.000.000-00"
+                          className="mt-1 h-11 w-full border-b-2 border-[#0E7A34] bg-transparent px-1 font-mono text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
+                        />
+                      </div>
+                    ) : null}
                   </div>
 
                   {errorInfo && (
-                    <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                    <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 break-words">
                       {errorInfo.message}
                     </div>
                   )}
@@ -1568,11 +1629,11 @@ export const PhoneOnboardingModal: React.FC<PhoneOnboardingModalProps> = ({
                     type="button"
                     onClick={async () => {
                       await signOutFirebase();
-                      setStep('phone');
+                      setStep('welcome');
                     }}
                     className="w-full py-1.5 text-center text-xs font-medium text-slate-500 hover:text-slate-800"
                   >
-                    Usar outro número de telefone
+                    Usar outra conta (telefone ou CPF)
                   </button>
                 </div>
               </form>

@@ -410,7 +410,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold text-slate-900">
-                Modos Anunciante / Fabricante e Revendedor temporariamente suspensos
+                Modos Anunciante / Fabricante e Vendedor temporariamente suspensos
               </p>
               <span className="rounded-md bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
                 Restrição comercial ativa
@@ -419,7 +419,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <p className="text-xs leading-relaxed text-slate-600">
               {profile.commercialBanReason
                 ? `Motivo registrado: ${profile.commercialBanReason}. `
-                : 'O acesso aos modos Anunciante / Fabricante e Revendedor foi suspenso após ocorrência de entrega em apuração. '}
+                : 'O acesso aos modos Anunciante / Fabricante e Vendedor foi suspenso após ocorrência de entrega em apuração. '}
               Suas conversas, chamadas de voz/vídeo, agenda e compras pessoais continuam funcionando normalmente.
             </p>
             {(onOpenCommercialAppeal || onOpenHelp) && (
@@ -520,7 +520,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 )}
               </div>
               <h3 className="mt-3 text-sm font-bold text-slate-900">
-                Sou Revendedor
+                Sou Vendedor
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-slate-600">
                 Conexão direta com fábricas, vitrine personalizada, precificação automática por margem e controle financeiro integrado.
@@ -556,7 +556,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               className="h-11 w-full rounded-xl bg-[#0E7A34] text-xs font-semibold text-white hover:bg-[#0B5D27]"
             >
               Abrir Painel{' '}
-              {profile.commercialMode === 'manufacturer' ? 'do Anunciante' : 'do Revendedor'}
+              {profile.commercialMode === 'manufacturer' ? 'do Anunciante' : 'do Vendedor'}
             </button>
           </div>
         )}
@@ -593,7 +593,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 Central de Ajuda e Suporte
               </h3>
               <p className="mt-0.5 text-xs text-slate-500">
-                Tire dúvidas por perfil (Comprador, Revendedor ou Anunciante / Fabricante), abra chamados ou fale diretamente com o Suporte Oficial ChatFi.
+                Tire dúvidas por perfil (Comprador, Vendedor ou Anunciante / Fabricante), abra chamados ou fale diretamente com o Suporte Oficial ChatFi.
                 {openTicketCount > 0 && (
                   <span className="font-semibold text-[#0E7A34]">
                     {' '}· {openTicketCount} chamado(s) em andamento

@@ -126,7 +126,7 @@ export const TermsAndPermissionsModal: React.FC<TermsAndPermissionsModalProps> =
                   3. Ferramentas Comerciais e Vitrines
                 </h3>
                 <p className="mt-1">
-                  A comunicação pessoal (mensagens e chamadas) é gratuita. Usuários que optarem por ativar vitrines comerciais de Fabricante ou Revendedor assumem total responsabilidade pelas informações de produtos, estoques, preços, prazos de entrega e acordos firmados com seus clientes.
+                  A comunicação pessoal (mensagens e chamadas) é gratuita. Usuários que optarem por ativar vitrines comerciais de Fabricante ou Vendedor assumem total responsabilidade pelas informações de produtos, estoques, preços, prazos de entrega e acordos firmados com seus clientes.
                 </p>
               </div>
 

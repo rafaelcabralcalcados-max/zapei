@@ -194,6 +194,31 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function formatUserFacingFirestoreError(err: unknown, fallback: string): string {
+  if (!err) return fallback;
+  const raw = err instanceof Error ? err.message : String(err);
+  if (raw.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<FirestoreErrorInfo>;
+      const inner = String(parsed.error || '').toLowerCase();
+      if (inner.includes('permission') || inner.includes('insufficient')) {
+        return 'Não foi possível validar as permissões deste cadastro agora. Verifique se este telefone ou CPF já pertence a outra conta ou tente novamente em instantes.';
+      }
+      if (inner.includes('offline') || inner.includes('unavailable') || inner.includes('network')) {
+        return 'Sem conexão estável com o servidor. Verifique sua internet e tente novamente.';
+      }
+      return fallback;
+    } catch {
+      // fall through
+    }
+  }
+  const lower = raw.toLowerCase();
+  if (lower.includes('permission-denied') || lower.includes('insufficient permissions')) {
+    return 'Não foi possível concluir a validação de permissões agora. Tente novamente em instantes.';
+  }
+  return raw || fallback;
+}
+
 export async function testFirestoreConnection(): Promise<'connected' | 'offline'> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     return 'offline';
@@ -374,14 +399,20 @@ export async function registerOrUpdateUserProfile(params: {
   defaultCarrierDeadlineDays?: number;
 }): Promise<{ isNewProfile: boolean }> {
   const userRef = doc(db, 'users', params.uid);
-  const existingUser = await getDoc(userRef);
+  let existingUser = await getDoc(userRef);
+  if (!existingUser.exists()) {
+    existingUser = await getDocFromServer(userRef).catch(() => existingUser);
+  }
   const isNewProfile = !existingUser.exists();
   const existingPubData = existingUser.exists()
     ? (existingUser.data() as Record<string, unknown>)
     : null;
 
   const privateRef = doc(db, 'users', params.uid, 'private', 'info');
-  const existingPrivate = await getDoc(privateRef);
+  let existingPrivate = await getDoc(privateRef);
+  if (!existingPrivate.exists()) {
+    existingPrivate = await getDocFromServer(privateRef).catch(() => existingPrivate);
+  }
   const existingPrivData = existingPrivate.exists()
     ? (existingPrivate.data() as Record<string, unknown>)
     : null;
@@ -403,15 +434,19 @@ export async function registerOrUpdateUserProfile(params: {
     Boolean(existingPubData?.cpfVerified) ||
     resolvedCpfHash.length === 64;
 
-  const rawIdentifier = params.phone.trim() || resolvedVirtualLine;
+  const rawIdentifier =
+    params.phone.trim() ||
+    (existingPrivData?.phone ? String(existingPrivData.phone).trim() : '') ||
+    resolvedVirtualLine;
   const isVirtualLineValue = isVirtualLinePrefix(rawIdentifier);
   const cleanPhone = isVirtualLineValue
     ? rawIdentifier.toUpperCase()
     : formatPhoneDisplay(rawIdentifier);
   const phoneHash = await computeContactLookupHash(cleanPhone);
 
+  const safeDisplayName = params.displayName.trim() || 'Usuário ChatFi';
   const existingBanned = Boolean(existingPubData?.commercialBanned);
-  const initials = getInitials(params.displayName);
+  const initials = getInitials(safeDisplayName);
   const requestedMode = params.commercialMode ?? 'buyer';
   const mode: CommercialMode = existingBanned
     ? 'buyer'
@@ -467,7 +502,7 @@ export async function registerOrUpdateUserProfile(params: {
 
   const publicData: Record<string, unknown> = {
     uid: params.uid,
-    displayName: params.displayName.slice(0, 80),
+    displayName: safeDisplayName.slice(0, 80),
     initials,
     statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
@@ -476,9 +511,9 @@ export async function registerOrUpdateUserProfile(params: {
     manufacturerActivated: Boolean(params.manufacturerActivated),
     resellerActivated: Boolean(params.resellerActivated),
     hasStorefront,
-    storefrontName: (params.storefrontName ?? `Vitrine ${params.displayName}`).slice(0, 80),
+    storefrontName: (params.storefrontName ?? `Vitrine ${safeDisplayName}`).slice(0, 80),
     storefrontPrivacy: params.storefrontPrivacy ?? 'open',
-    factoryName: (params.factoryName ?? params.displayName).slice(0, 80),
+    factoryName: (params.factoryName ?? safeDisplayName).slice(0, 80),
     asaasWalletId: resolvedWalletId,
     anchorDiscountPercent: resolvedAnchorDiscount,
     deliveryPolicyType: policy.type,
@@ -544,10 +579,18 @@ export async function registerOrUpdateUserProfile(params: {
     if (existingUser.exists()) {
       await updateDoc(userRef, publicData);
     } else {
-      await setDoc(userRef, {
-        ...publicData,
-        createdAt: serverTimestamp(),
-      });
+      try {
+        await setDoc(userRef, {
+          ...publicData,
+          createdAt: serverTimestamp(),
+        });
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          await updateDoc(userRef, publicData);
+        } else {
+          throw setErr;
+        }
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}`);
@@ -573,7 +616,15 @@ export async function registerOrUpdateUserProfile(params: {
     if (existingPrivate.exists()) {
       await updateDoc(privateRef, privateData);
     } else {
-      await setDoc(privateRef, { ...privateData, createdAt: serverTimestamp() });
+      try {
+        await setDoc(privateRef, { ...privateData, createdAt: serverTimestamp() });
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          await updateDoc(privateRef, privateData);
+        } else {
+          throw setErr;
+        }
+      }
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}/private/info`);
@@ -597,18 +648,19 @@ export async function registerOrUpdateUserProfile(params: {
           : 'normal';
   const resolvedStorefrontName = (
     mode === 'manufacturer'
-      ? params.factoryName ?? params.displayName
-      : params.storefrontName ?? `Vitrine ${params.displayName}`
+      ? params.factoryName ?? safeDisplayName
+      : params.storefrontName ?? `Vitrine ${safeDisplayName}`
   ).slice(0, 80);
 
   const existingRatingAvg = Number(existingPubData?.ratingAverage ?? 0) || 0;
   const existingRatingCnt = Math.max(0, Math.round(Number(existingPubData?.ratingCount ?? 0) || 0));
 
-  if (phoneHash) {
-    const indexRef = doc(db, 'phone_index', phoneHash);
+  const upsertPhoneIndexDoc = async (hashKey: string) => {
+    if (!hashKey) return;
+    const indexRef = doc(db, 'phone_index', hashKey);
     const indexPayload: Record<string, unknown> = {
       ownerId: params.uid,
-      displayName: params.displayName.slice(0, 80),
+      displayName: safeDisplayName.slice(0, 80),
       initials,
       avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
       avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
@@ -628,44 +680,53 @@ export async function registerOrUpdateUserProfile(params: {
     if (existingBanned) {
       indexPayload.commercialBanned = true;
     }
+
     try {
-      await setDoc(indexRef, indexPayload);
+      let existingIndex = await getDoc(indexRef).catch(() => null);
+      if (!existingIndex?.exists()) {
+        existingIndex = await getDocFromServer(indexRef).catch(() => existingIndex);
+      }
+
+      if (!existingIndex?.exists()) {
+        await setDoc(indexRef, indexPayload);
+        return;
+      }
+
+      const existingOwnerId = String(existingIndex.data()?.ownerId || '');
+      if (existingOwnerId && existingOwnerId !== params.uid) {
+        // Stale or conflicting phone_index owned by another UID: never block profile or commercial activation
+        console.warn(`phone_index/${hashKey} belongs to another UID (${existingOwnerId}); skipping overwrite.`);
+        return;
+      }
+
+      const updateFields: Record<string, unknown> = { ...indexPayload };
+      delete updateFields.ownerId;
+      try {
+        await updateDoc(indexRef, updateFields);
+      } catch (updateErr) {
+        if (getErrorCodeString(updateErr) === 'permission-denied') {
+          // Heal legacy phone_index docs containing deprecated fields by recreating cleanly as owner
+          await deleteDoc(indexRef).catch(() => {});
+          await setDoc(indexRef, indexPayload);
+        } else {
+          throw updateErr;
+        }
+      }
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `phone_index/${phoneHash}`);
+      // Secondary discovery index must never crash commercial activation or profile updates
+      console.warn(`Non-fatal phone_index sync warning (${hashKey}):`, error);
     }
+  };
+
+  if (phoneHash) {
+    await upsertPhoneIndexDoc(phoneHash);
   }
 
   // Also index Virtual Line hash if user has both a phone and a virtualLine
   if (resolvedVirtualLine && cleanPhone !== resolvedVirtualLine) {
     const vlineHash = await computeContactLookupHash(resolvedVirtualLine);
     if (vlineHash && vlineHash !== phoneHash) {
-      const vlinePayload: Record<string, unknown> = {
-        ownerId: params.uid,
-        displayName: params.displayName.slice(0, 80),
-        initials,
-        avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
-        avatarUrl: (params.avatarUrl ?? '').slice(0, 450000),
-        role: indexRole,
-        hasStorefront,
-        storefrontName: resolvedStorefrontName,
-        deliveryPolicyType: policy.type,
-        deliveryPolicyValue: policy.value,
-        deliveryPolicyPickup: policy.allowCounterPickup,
-        deliveryPolicyLabel: policy.label.slice(0, 160),
-        updatedAt: serverTimestamp(),
-      };
-      if (existingRatingCnt > 0 || existingRatingAvg > 0) {
-        vlinePayload.ratingAverage = existingRatingAvg;
-        vlinePayload.ratingCount = existingRatingCnt;
-      }
-      if (existingBanned) {
-        vlinePayload.commercialBanned = true;
-      }
-      try {
-        await setDoc(doc(db, 'phone_index', vlineHash), vlinePayload);
-      } catch {
-        // Secondary index best-effort
-      }
+      await upsertPhoneIndexDoc(vlineHash);
     }
   }
 
@@ -681,8 +742,8 @@ export async function registerOrUpdateUserProfile(params: {
 
   const directoryPayload: Record<string, unknown> = {
     uid: params.uid,
-    displayName: params.displayName.slice(0, 80),
-    displayNameLower: params.displayName.trim().toLowerCase().slice(0, 80),
+    displayName: safeDisplayName.slice(0, 80),
+    displayNameLower: safeDisplayName.toLowerCase().slice(0, 80),
     initials,
     statusMessage: cleanStatusMessage,
     avatarColor: (params.avatarColor ?? '#0E7A34').slice(0, 20),
@@ -2459,7 +2520,7 @@ export async function createRealFactoryConnection(params: {
 }): Promise<'created' | 'already_pending' | 'already_approved' | 're_requested'> {
   const connId = `conn_${params.resellerId}_${params.factory.uid}`.slice(0, 128);
   const connRef = doc(db, 'connections', connId);
-  const cleanResellerName = (params.resellerName.trim() || 'Revendedor ChatFi').slice(0, 80);
+  const cleanResellerName = (params.resellerName.trim() || 'Vendedor ChatFi').slice(0, 80);
   const cleanStorefrontName = (
     params.resellerStorefrontName.trim() || cleanResellerName
   ).slice(0, 80);
@@ -2771,7 +2832,7 @@ export async function createRealMixedOrder(params: {
         actorName: params.buyerName,
         eventType: 'order_created_terms',
         timestampMs: nowMs,
-        summary: `Ciência mútua registrada: Revendedor (${getResellerReleaseOptionMeta(params.resellerReleasePreference).shortLabel}) · Cliente (${getBuyerReleaseOptionMeta(params.buyerReleaseOption).shortLabel})`,
+        summary: `Ciência mútua registrada: Vendedor (${getResellerReleaseOptionMeta(params.resellerReleasePreference).shortLabel}) · Cliente (${getBuyerReleaseOptionMeta(params.buyerReleaseOption).shortLabel})`,
       }),
     ];
 
@@ -3221,8 +3282,9 @@ export async function checkCpfRegistered(
   if (!isValidCpf(cpfRaw)) return { exists: false };
   const cpfHash = await hashCpfSha256(cpfRaw);
   if (!cpfHash) return { exists: false };
+  const cpfRef = doc(db, 'cpf_registry', cpfHash);
   try {
-    const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+    const snap = await getDocFromServer(cpfRef).catch(() => getDoc(cpfRef));
     if (!snap.exists()) return { exists: false };
     return {
       exists: true,
@@ -3230,6 +3292,30 @@ export async function checkCpfRegistered(
     };
   } catch {
     return { exists: false };
+  }
+}
+
+export async function fetchOwnedCpfRegistration(
+  uid: string,
+  cpfRaw?: string
+): Promise<{ cpfHash: string; virtualLine: string; recoveryEmail: string } | null> {
+  if (!uid || !cpfRaw || !isValidCpf(cpfRaw)) return null;
+  const cpfHash = await hashCpfSha256(cpfRaw);
+  if (!cpfHash) return null;
+  try {
+    const snap = await getDocFromServer(doc(db, 'cpf_registry', cpfHash)).catch(() =>
+      getDoc(doc(db, 'cpf_registry', cpfHash))
+    );
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    if (String(data.ownerId || '') !== uid) return null;
+    return {
+      cpfHash,
+      virtualLine: String(data.virtualLine || ''),
+      recoveryEmail: String(data.recoveryEmail || ''),
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -3262,9 +3348,9 @@ export async function registerAccountWithCpf(params: {
     throw new CpfAuthError('invalid-cpf', 'Não foi possível validar o CPF informado.');
   }
 
-  // Fast pre-check before creating Auth credential
+  // Fast pre-check against server before creating Auth credential
   const cpfRef = doc(db, 'cpf_registry', cpfHash);
-  const existingSnap = await getDoc(cpfRef);
+  const existingSnap = await getDocFromServer(cpfRef).catch(() => getDoc(cpfRef));
   if (existingSnap.exists()) {
     throw new CpfAuthError(
       'cpf-already-exists',
@@ -3277,6 +3363,7 @@ export async function registerAccountWithCpf(params: {
   try {
     const credential = await createUserWithEmailAndPassword(auth, cleanEmail, params.password);
     newUser = credential.user;
+    await newUser.getIdToken(true).catch(() => {});
   } catch (err) {
     const code =
       typeof err === 'object' && err !== null && 'code' in err
@@ -3337,18 +3424,37 @@ export async function registerAccountWithCpf(params: {
 
   // Save primary device BEFORE writing users/{uid} so onSnapshot unlocks directly with zero device-check race
   const resolvedDevice = params.deviceInfo ?? getOrCreateLocalDeviceInfo();
-  await registerOrUpdateUserProfile({
+  const profilePayload = {
     uid: newUser.uid,
     email: cleanEmail,
     displayName: cleanName,
     phone: virtualLine,
     virtualLine,
-    authMethod: 'cpf',
+    authMethod: 'cpf' as const,
     cpfHash,
+    cpfVerified: true,
     statusMessage: sanitizeStatusMessage(params.statusMessage) || DEFAULT_STATUS_MESSAGE,
     avatarUrl: params.avatarUrl || '',
     primaryDevice: resolvedDevice,
-  });
+  };
+
+  try {
+    await registerOrUpdateUserProfile(profilePayload);
+  } catch {
+    // Retry once after token propagation on mobile networks
+    await newUser.getIdToken(true).catch(() => {});
+    try {
+      await registerOrUpdateUserProfile(profilePayload);
+    } catch (retryErr) {
+      throw new CpfAuthError(
+        'cpf-profile-failed',
+        formatUserFacingFirestoreError(
+          retryErr,
+          'Sua Linha Virtual foi criada, mas houve uma falha ao finalizar o perfil. Toque em Entrar com seu CPF e senha para continuar.'
+        )
+      );
+    }
+  }
 
   await checkCommercialBanStatus({
     uid: newUser.uid,
@@ -3371,7 +3477,8 @@ export async function signInWithCpfAndPassword(
   }
 
   const cpfHash = await hashCpfSha256(cpfRaw);
-  const snap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+  const cpfDocRef = doc(db, 'cpf_registry', cpfHash);
+  const snap = await getDocFromServer(cpfDocRef).catch(() => getDoc(cpfDocRef));
   if (!snap.exists()) {
     throw new CpfAuthError(
       'cpf-not-found',
@@ -3388,7 +3495,36 @@ export async function signInWithCpfAndPassword(
 
   try {
     const credential = await signInWithEmailAndPassword(auth, recoveryEmail, password);
-    return { user: credential.user, virtualLine };
+    const signedUser = credential.user;
+
+    // Self-heal profile if an earlier CPF signup was interrupted right after cpf_registry reservation
+    try {
+      const [pubSnap, privSnap] = await Promise.all([
+        getDocFromServer(doc(db, 'users', signedUser.uid)).catch(() =>
+          getDoc(doc(db, 'users', signedUser.uid))
+        ),
+        getDocFromServer(doc(db, 'users', signedUser.uid, 'private', 'info')).catch(() =>
+          getDoc(doc(db, 'users', signedUser.uid, 'private', 'info'))
+        ),
+      ]);
+      if (!pubSnap.exists() || !privSnap.exists()) {
+        await registerOrUpdateUserProfile({
+          uid: signedUser.uid,
+          email: recoveryEmail,
+          displayName: signedUser.displayName || 'Usuário ChatFi',
+          phone: virtualLine,
+          virtualLine,
+          authMethod: 'cpf',
+          cpfHash,
+          cpfVerified: true,
+          primaryDevice: getOrCreateLocalDeviceInfo(),
+        });
+      }
+    } catch {
+      // Non-fatal fallback; PhoneOnboardingModal will also handle missing profile safely
+    }
+
+    return { user: signedUser, virtualLine };
   } catch (err) {
     const code =
       typeof err === 'object' && err !== null && 'code' in err
@@ -3492,20 +3628,40 @@ export async function registerPrimaryDeviceForAccount(
   uid: string,
   deviceInfo: LocalDeviceInfo
 ): Promise<void> {
+  const deviceRef = doc(db, 'users', uid, 'devices', deviceInfo.deviceId);
+  const updateFields = {
+    deviceName: deviceInfo.deviceName.slice(0, 100),
+    platform: deviceInfo.platform.slice(0, 60),
+    primary: true,
+    lastActiveAt: serverTimestamp(),
+  };
   try {
-    await setDoc(doc(db, 'users', uid, 'devices', deviceInfo.deviceId), {
-      ownerId: uid,
-      deviceId: deviceInfo.deviceId,
-      deviceName: deviceInfo.deviceName.slice(0, 100),
-      platform: deviceInfo.platform.slice(0, 60),
-      primary: true,
-      createdAt: serverTimestamp(),
-      lastActiveAt: serverTimestamp(),
-    });
+    let existing = await getDoc(deviceRef).catch(() => null);
+    if (!existing?.exists()) {
+      existing = await getDocFromServer(deviceRef).catch(() => existing);
+    }
+    if (existing?.exists()) {
+      await updateDoc(deviceRef, updateFields);
+    } else {
+      try {
+        await setDoc(deviceRef, {
+          ownerId: uid,
+          deviceId: deviceInfo.deviceId,
+          ...updateFields,
+          createdAt: serverTimestamp(),
+        });
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          await updateDoc(deviceRef, updateFields);
+        } else {
+          throw setErr;
+        }
+      }
+    }
   } catch (error) {
     handleFirestoreError(
       error,
-      OperationType.CREATE,
+      OperationType.WRITE,
       `users/${uid}/devices/${deviceInfo.deviceId}`
     );
   }
@@ -4446,18 +4602,19 @@ export async function verifyAndBindCpfForCommercialRole(params: {
       banned: true,
       message:
         banStatus.reason ||
-        'Os modos Fabricante e Revendedor estão temporariamente suspensos para este CPF/conta. Sua conta pessoal e conversas continuam funcionando normalmente.',
+        'Os modos Fabricante e Vendedor estão temporariamente suspensos para este CPF/conta. Sua conta pessoal e conversas continuam funcionando normalmente.',
     };
   }
 
   // 2. Ensure CPF is not bound to a different UID in cpf_registry or cpf_commercial_links
   try {
-    const regSnap = await getDoc(doc(db, 'cpf_registry', cpfHash));
+    const regRef = doc(db, 'cpf_registry', cpfHash);
+    const regSnap = await getDocFromServer(regRef).catch(() => getDoc(regRef));
     if (regSnap.exists() && String(regSnap.data()?.ownerId || '') !== params.uid) {
       return {
         ok: false,
         message:
-          'Este CPF já está vinculado a outra conta no ChatFi. Para operar como Fabricante ou Revendedor, utilize a conta titular do CPF.',
+          'Este CPF já está vinculado a outra conta no ChatFi. Para operar como Anunciante/Fabricante ou Vendedor, utilize a conta titular do CPF.',
       };
     }
   } catch {
@@ -4466,8 +4623,12 @@ export async function verifyAndBindCpfForCommercialRole(params: {
 
   const linkRef = doc(db, 'cpf_commercial_links', cpfHash);
   try {
-    const linkSnap = await getDoc(linkRef);
-    if (linkSnap.exists()) {
+    let linkSnap = await getDoc(linkRef).catch(() => null);
+    if (!linkSnap?.exists()) {
+      linkSnap = await getDocFromServer(linkRef).catch(() => linkSnap);
+    }
+
+    if (linkSnap?.exists()) {
       const ownerId = String(linkSnap.data()?.ownerId || '');
       if (ownerId && ownerId !== params.uid) {
         return {
@@ -4485,7 +4646,29 @@ export async function verifyAndBindCpfForCommercialRole(params: {
       if (params.virtualLine) {
         linkPayload.virtualLine = params.virtualLine.slice(0, 24);
       }
-      await setDoc(linkRef, linkPayload);
+      try {
+        await setDoc(linkRef, linkPayload);
+      } catch (setErr) {
+        if (getErrorCodeString(setErr) === 'permission-denied') {
+          const serverSnap = await getDocFromServer(linkRef).catch(() => null);
+          if (serverSnap?.exists()) {
+            const ownerId = String(serverSnap.data()?.ownerId || '');
+            if (ownerId === params.uid) {
+              // Already bound to this same user on server (cache miss)
+            } else {
+              return {
+                ok: false,
+                message:
+                  'Este CPF já foi validado para atuação comercial em outra conta ChatFi.',
+              };
+            }
+          } else {
+            throw setErr;
+          }
+        } else {
+          throw setErr;
+        }
+      }
     }
   } catch (error) {
     const code = getErrorCodeString(error);
@@ -4505,8 +4688,8 @@ export async function verifyAndBindCpfForCommercialRole(params: {
       cpfHash,
       updatedAt: serverTimestamp(),
     });
-  } catch {
-    // private/info may already hold cpfHash or update later
+  } catch (err) {
+    console.warn('Non-fatal private/info cpfHash update warning:', err);
   }
 
   try {
@@ -4514,8 +4697,8 @@ export async function verifyAndBindCpfForCommercialRole(params: {
       cpfVerified: true,
       updatedAt: serverTimestamp(),
     });
-  } catch {
-    // handled gracefully
+  } catch (err) {
+    console.warn('Non-fatal users cpfVerified update warning:', err);
   }
 
   await syncCommercialIdentityHashes({
@@ -4584,8 +4767,8 @@ export async function markOrderCompletedByParticipant(params: {
           eventType: 'delivery_confirmed',
           timestampMs: nowMs,
           summary: alreadyReleased
-            ? 'Cliente confirmou recebimento do produto em mãos (parcela do revendedor já liberada anteriormente).'
-            : 'Cliente confirmou recebimento do produto em mãos e liberou a parcela do revendedor.',
+            ? 'Cliente confirmou recebimento do produto em mãos (parcela do vendedor já liberada anteriormente).'
+            : 'Cliente confirmou recebimento do produto em mãos e liberou a parcela do vendedor.',
         })
       );
 
@@ -4788,7 +4971,7 @@ export async function submitDeliveryBadFaithReport(params: {
     orderId: params.orderId,
     orderCode: params.orderCode,
     description: `[${reportCode}] Ocorrência contra ${
-      params.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'
+      params.reportedRole === 'manufacturer' ? 'Fabricante' : 'Vendedor'
     } (${params.reportedName}) — Motivo: ${cleanReason}. Relato: ${cleanDescription}`,
   });
 

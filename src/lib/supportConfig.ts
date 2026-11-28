@@ -56,7 +56,7 @@ export const FAQ_PROFILE_TABS: Array<{
   },
   {
     id: 'reseller',
-    label: 'Revendedores',
+    label: 'Vendedores',
     subtitle: 'Margem de lucro, preço De / Por e Split Asaas',
   },
   {
@@ -118,9 +118,9 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
       id: 'reseller-margin',
       question: 'Como configurar minha margem de lucro por categoria?',
       answer:
-        'No Painel do Revendedor, acesse suas conexões com fábricas e ajuste a margem fixa (R$) ou percentual (%) para cada categoria de produto. O preço exibido na sua vitrine já embute sua margem e taxas, sem expor o custo de fábrica ao consumidor.',
+        'No Painel do Vendedor, acesse suas conexões com fábricas e ajuste a margem fixa (R$) ou percentual (%) para cada categoria de produto. O preço exibido na sua vitrine já embute sua margem e taxas, sem expor o custo de fábrica ao consumidor.',
       steps: [
-        'Acesse Painel do Revendedor → Conexões / Fábricas.',
+        'Acesse Painel do Vendedor → Conexões / Fábricas.',
         'Escolha entre margem fixa (R$) ou percentual (%) em cada categoria.',
         'O valor final ao cliente e sua comissão líquida são atualizados automaticamente.',
       ],
@@ -129,9 +129,9 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
       id: 'reseller-anchor',
       question: "Como ativar o preço promocional ('De / Por') na vitrine?",
       answer:
-        'Nas configurações da sua vitrine dentro do Painel do Revendedor, você pode ativar o desconto visual ("De / Por"). O ChatFi calcula um preço anterior riscado proporcional tanto no valor por par/unidade quanto no valor da caixa fechada.',
+        'Nas configurações da sua vitrine dentro do Painel do Vendedor, você pode ativar o desconto visual ("De / Por"). O ChatFi calcula um preço anterior riscado proporcional tanto no valor por par/unidade quanto no valor da caixa fechada.',
       steps: [
-        'Entre no Painel do Revendedor e abra a configuração de Vitrine & Desconto Visual.',
+        'Entre no Painel do Vendedor e abra a configuração de Vitrine & Desconto Visual.',
         'Selecione o percentual de destaque (ex.: 10%, 15%, 20% OFF) ou deixe em 0% para desativar.',
         'Salve para exibir imediatamente o preço "De / Por" com selo de economia nos cards da sua loja.',
       ],
@@ -144,14 +144,14 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
       steps: [
         'Crie ou acesse sua conta gratuita no site/app asaas.com (CPF ou CNPJ).',
         'No Asaas, vá em Configurações da Conta → Integrações (ou Minha Conta → Dados da Conta).',
-        'Copie o código Wallet ID, cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Revendedor ou em Ajustes e salve.',
+        'Copie o código Wallet ID, cole no campo "Wallet ID Asaas (Recebimento Split)" no Painel do Vendedor ou em Ajustes e salve.',
       ],
     },
     {
       id: 'reseller-cpf-compliance',
-      question: 'Por que o CPF é obrigatório para revender e como funciona a análise comercial?',
+      question: 'Por que o CPF é obrigatório para vender e como funciona a análise comercial?',
       answer:
-        'Para manter a segurança das transações e a reputação das vitrines, o modo Revendedor exige validação única de CPF. Caso haja restrição comercial por ocorrência na entrega, apenas os modos comerciais ficam suspensos — suas conversas, chamadas e compras pessoais seguem funcionando normalmente, e você pode solicitar revisão pelo suporte.',
+        'Para manter a segurança das transações e a reputação das vitrines, o modo Vendedor exige validação única de CPF. Caso haja restrição comercial por ocorrência na entrega, apenas os modos comerciais ficam suspensos — suas conversas, chamadas e compras pessoais seguem funcionando normalmente, e você pode solicitar revisão pelo suporte.',
     },
   ],
   manufacturer: [
@@ -192,7 +192,7 @@ export const FAQ_BY_PROFILE: Record<FaqProfileTab, SupportFaqItem[]> = {
       id: 'mfg-cpf-compliance',
       question: 'Como funcionam o CPF obrigatório, as estrelas e a revisão comercial?',
       answer:
-        'Para atuar como Anunciante / Fabricante no ChatFi, é necessário validar seu CPF uma única vez. Compradores e revendedores avaliam sua entrega (1 a 5 estrelas), exibindo sua média no perfil. Em eventual suspensão comercial por má-fé na entrega, seu uso pessoal do mensageiro não é afetado e o suporte realiza a apuração para reativação.',
+        'Para atuar como Anunciante / Fabricante no ChatFi, é necessário validar seu CPF uma única vez. Compradores e vendedores avaliam sua entrega (1 a 5 estrelas), exibindo sua média no perfil. Em eventual suspensão comercial por má-fé na entrega, seu uso pessoal do mensageiro não é afetado e o suporte realiza a apuração para reativação.',
     },
   ],
 };

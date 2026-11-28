@@ -16,7 +16,7 @@ export const RESELLER_RELEASE_OPTIONS: Array<{
     shortLabel: 'Envia após liberação na conta',
     title: 'Envio apenas após liberação na conta',
     description:
-      'O revendedor informa que condiciona o despacho à liberação prévia da sua parcela na conta.',
+      'O vendedor informa que condiciona o despacho à liberação prévia da sua parcela na conta.',
   },
   {
     id: 'upon_carrier_receipt',
@@ -30,7 +30,7 @@ export const RESELLER_RELEASE_OPTIONS: Array<{
     shortLabel: 'Aguarda liberação após entrega',
     title: 'Aguardo liberação após confirmação de entrega',
     description:
-      'O envio segue normalmente e a parcela do revendedor é liberada após o cliente confirmar o recebimento.',
+      'O envio segue normalmente e a parcela do vendedor é liberada após o cliente confirmar o recebimento.',
   },
 ];
 
@@ -45,14 +45,14 @@ export const BUYER_RELEASE_OPTIONS: Array<{
     shortLabel: 'Liberar no comprovante da transportadora',
     title: 'Liberar ao receber o comprovante de envio/entrega na transportadora',
     description:
-      'Ao visualizar os dados, o prazo e o comprovante da transportadora anexado no pedido, você autoriza a liberação da parcela do revendedor.',
+      'Ao visualizar os dados, o prazo e o comprovante da transportadora anexado no pedido, você autoriza a liberação da parcela do vendedor.',
   },
   {
     id: 'upon_product_in_hand',
     shortLabel: 'Só libero com o produto em mãos',
     title: 'Só libero com o produto em mãos',
     description:
-      'A liberação da parcela do revendedor fica condicionada à sua confirmação de recebimento físico da mercadoria.',
+      'A liberação da parcela do vendedor fica condicionada à sua confirmação de recebimento físico da mercadoria.',
   },
 ];
 
@@ -61,9 +61,9 @@ export function getResellerReleaseOptionMeta(pref?: ResellerReleasePreference) {
     return {
       id: 'upon_carrier_receipt' as ResellerReleasePreference,
       shortLabel: 'Condição flexível (a combinar)',
-      title: 'Preferência não especificada pelo revendedor',
+      title: 'Preferência não especificada pelo vendedor',
       description:
-        'O revendedor não fixou exigência prévia no perfil e pode informar ou ajustar a preferência no pedido.',
+        'O vendedor não fixou exigência prévia no perfil e pode informar ou ajustar a preferência no pedido.',
     };
   }
   return (

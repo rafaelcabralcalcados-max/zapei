@@ -104,7 +104,7 @@ service cloud.firestore {
         && (!('showLastSeen' in data) || data.showLastSeen is bool)
         && (!('resellerReleasePreference' in data) || data.resellerReleasePreference in ['after_account_release', 'upon_carrier_receipt', 'after_delivery_confirmation'])
         && (!('resellerReleaseNote' in data) || (data.resellerReleaseNote is string && data.resellerReleaseNote.size() <= 240))
-        && (!('defaultCarrierDeadlineDays' in data) || (data.defaultCarrierDeadlineDays is number && data.defaultCarrierDeadlineDays >= 1 && data.defaultCarrierDeadlineDays <= 90))
+        && (!('defaultCarrierDeadlineDays' in data) || (data.defaultCarrierDeadlineDays is number && data.defaultCarrierDeadlineDays >= 1 && data.defaultCarrierDeadlineDays <= 180))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }

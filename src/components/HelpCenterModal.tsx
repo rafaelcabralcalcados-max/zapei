@@ -456,7 +456,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                   Modos comerciais suspensos para análise de entrega
                 </p>
                 <p className="text-[11px] leading-relaxed text-slate-600">
-                  O acesso aos painéis de Fabricante e Revendedor está temporariamente restrito
+                  O acesso aos painéis de Fabricante e Vendedor está temporariamente restrito
                   {profile.commercialBanReason ? ` (${profile.commercialBanReason})` : ''}. Sua conta pessoal, conversas e ligações seguem funcionando normalmente.
                 </p>
               </div>
@@ -466,7 +466,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                   setReason('Recurso / Liberação Comercial');
                   if (!description.trim()) {
                     setDescription(
-                      'Solicito revisão da suspensão dos modos Fabricante/Revendedor. Comprovantes e justificativa: '
+                      'Solicito revisão da suspensão dos modos Fabricante/Vendedor. Comprovantes e justificativa: '
                     );
                   }
                   setActiveTab('ticket');
@@ -863,7 +863,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                         <p className="text-xs font-bold text-slate-900">
                           <span className="font-mono text-[#0D2B3E]">{rep.reportCode}</span>
                           {' · '}
-                          {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'}:{' '}
+                          {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Vendedor'}:{' '}
                           {rep.reportedName}
                         </p>
                         <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
@@ -895,7 +895,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                   Moderação Comercial e Ocorrências de Entrega
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Apuração de ocorrências por má-fé na entrega, suspensão exclusiva de Fabricante/Revendedor e reativação após análise.
+                  Apuração de ocorrências por má-fé na entrega, suspensão exclusiva de Fabricante/Vendedor e reativação após análise.
                 </p>
               </div>
 
@@ -1016,7 +1016,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                             <p className="text-xs font-bold text-slate-900">
                               <span className="font-mono text-[#0D2B3E]">{rep.reportCode}</span>
                               {' · '}
-                              {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor'}:{' '}
+                              {rep.reportedRole === 'manufacturer' ? 'Fabricante' : 'Vendedor'}:{' '}
                               {rep.reportedName}
                             </p>
                             <p className="text-[11px] text-slate-500">
@@ -1071,7 +1071,7 @@ export const HelpCenterModal: React.FC<HelpCenterModalProps> = ({
                                   }}
                                   className="inline-flex min-h-[34px] items-center gap-1.5 rounded-xl bg-[#0D2B3E] px-3 text-[11px] font-semibold text-white hover:bg-[#163D56] disabled:opacity-60"
                                 >
-                                  Suspender Fabricante/Revendedor
+                                  Suspender Fabricante/Vendedor
                                 </button>
                               )}
                               {onAdminUpdateReportStatus && rep.status === 'Aberto' && (

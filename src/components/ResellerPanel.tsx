@@ -592,7 +592,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
               Solicitar Parceria com Anunciante / Fabricante
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Digite o telefone ou Linha Virtual (ex: CFI-1234-5678) de um fabricante no ChatFi. O pedido de parceria será enviado ao fabricante e os produtos aparecerão na sua vitrine assim que ele aceitar você como revendedor.
+              Digite o telefone ou Linha Virtual (ex: CFI-1234-5678) de um fabricante no ChatFi. O pedido de parceria será enviado ao fabricante e os produtos aparecerão na sua vitrine assim que ele aceitar você como vendedor.
             </p>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row">
               <input
@@ -743,7 +743,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                         {isApproved && !conn.paused && (
                           <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-[#0E7A34]">
                             <CheckCircle2 className="h-3 w-3" />
-                            Revendedor Aprovado
+                            Vendedor Aprovado
                           </span>
                         )}
                         {isApproved && conn.paused && (
@@ -825,13 +825,13 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
 
                   {isPendingApproval && (
                     <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
-                      Sua solicitação foi enviada para <strong>{conn.factoryName}</strong>. Nenhum produto desta fábrica será exibido na sua vitrine até o fabricante aceitar você como revendedor.
+                      Sua solicitação foi enviada para <strong>{conn.factoryName}</strong>. Nenhum produto desta fábrica será exibido na sua vitrine até o fabricante aceitar você como vendedor.
                     </div>
                   )}
 
                   {isRejected && (
                     <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800">
-                      O fabricante <strong>{conn.factoryName}</strong> recusou ou revogou sua autorização de revenda. Os produtos desta fábrica não aparecem na sua vitrine.
+                      O fabricante <strong>{conn.factoryName}</strong> recusou ou revogou sua autorização de venda. Os produtos desta fábrica não aparecem na sua vitrine.
                     </div>
                   )}
 
@@ -1440,7 +1440,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           breakdown={liveBreakdown}
                           title={`Extrato do Split & Taxas — Pedido ${order.orderCode}`}
                           factoryLabel="Líquido Fabricante"
-                          resellerLabel="Líquido Revendedor (Você)"
+                          resellerLabel="Líquido Vendedor (Você)"
                           asaasChargeStatus={resolvedStatus}
                           asaasChargeId={resolvedChargeId}
                           showMethodToggle
@@ -2304,7 +2304,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                             Líquido Fabricante: <strong>{formatBRL(factoryNet)}</strong>
                           </span>
                           <span className="text-[#0E7A34]">
-                            Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                            Líquido Vendedor: <strong>{formatBRL(resellerNet)}</strong>
                           </span>
                           {typeof platformFee === 'number' && (
                             <span className="text-slate-600">
@@ -2477,7 +2477,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
                           </span>
                           {typeof resellerNet === 'number' && (
                             <span className="text-[#0E7A34]">
-                              Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                              Líquido Vendedor: <strong>{formatBRL(resellerNet)}</strong>
                             </span>
                           )}
                         </div>
@@ -2513,7 +2513,7 @@ export const ResellerPanel: React.FC<ResellerPanelProps> = ({
           <div className="flex items-start gap-2 rounded-xl bg-emerald-50 p-3 text-xs text-[#0E7A34]">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>
-              Na sua vitrine pública, o comprador final vê apenas o nome da sua loja e lotes anônimos (Lote A, Lote B). Nunca exibimos o rótulo &ldquo;revendedor&rdquo; nem os nomes/telefones das fábricas parceiras.
+              Na sua vitrine pública, o comprador final vê apenas o nome da sua loja como vendedor e lotes anônimos (Lote A, Lote B), sem expor os nomes ou telefones das fábricas parceiras.
             </span>
           </div>
 

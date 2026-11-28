@@ -245,10 +245,10 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
     setFeedback('');
     try {
       await onRespondResellerRequest(conn, decision);
-      const label = conn.resellerStorefrontName || conn.resellerName || 'Revendedor';
+      const label = conn.resellerStorefrontName || conn.resellerName || 'Vendedor';
       setFeedback(
         decision === 'approved'
-          ? `Revendedor "${label}" aprovado! Os produtos da sua fábrica já estão liberados para a vitrine dele.`
+          ? `Vendedor "${label}" aprovado! Os produtos da sua fábrica já estão liberados para a vitrine dele.`
           : `Autorização de "${label}" recusada/revogada. Os produtos foram removidos da vitrine dele.`
       );
     } finally {
@@ -1042,8 +1042,8 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 <strong>
                   {pendingResellers.length}{' '}
                   {pendingResellers.length === 1
-                    ? 'revendedor aguarda sua aprovação'
-                    : 'revendedores aguardam sua aprovação'}
+                    ? 'vendedor aguarda sua aprovação'
+                    : 'vendedores aguardam sua aprovação'}
                 </strong>{' '}
                 para vender os produtos da sua fábrica.
               </span>
@@ -1064,7 +1064,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
             { id: 'catalog', label: `Meus Anúncios (${myProducts.length})`, icon: Package },
             {
               id: 'resellers',
-              label: `Revendedores (${approvedResellers.length})`,
+              label: `Vendedores (${approvedResellers.length})`,
               icon: Users,
               badge: pendingResellers.length,
             },
@@ -1887,7 +1887,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         {!isSingleAsset && (
                           <div className="flex items-center justify-between border-t border-emerald-200/70 pt-1.5 text-xs">
                             <span className="font-semibold text-[#0E7A34]">
-                              Referência com margem de revenda:
+                              Referência com margem do vendedor:
                             </span>
                             <span className="font-mono font-bold text-[#0E7A34] tabular-nums">
                               {formatBRL(estimatedPublicUnitPrice)}
@@ -2218,7 +2218,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                 Nenhum pedido aguardando conferência de estoque
               </p>
               <p className="mt-1 text-xs text-slate-500">
-                Quando um comprador ou revendedor enviar um pedido dos seus produtos, ele aparecerá aqui para confirmação ou corte parcial.
+                Quando um comprador ou vendedor enviar um pedido dos seus produtos, ele aparecerá aqui para confirmação ou corte parcial.
               </p>
             </div>
           ) : (
@@ -2502,7 +2502,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         ? 'Despachado com comprovante'
                         : sub.status === 'logistics_sent'
                           ? `Logística recebida: ${sub.logisticsType.toUpperCase()} — ${sub.logisticsCompany}`
-                          : 'Aguardando revendedor informar transportadora/distribuidora'}
+                          : 'Aguardando vendedor informar transportadora/distribuidora'}
                     </p>
                   </div>
                   <span className="font-mono text-sm font-bold text-[#0E7A34] tabular-nums">
@@ -2885,7 +2885,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         </span>
                         {typeof resellerNet === 'number' && resellerNet > 0 && (
                           <span className="text-[#0E7A34]">
-                            Líquido Revendedor: <strong>{formatBRL(resellerNet)}</strong>
+                            Líquido Vendedor: <strong>{formatBRL(resellerNet)}</strong>
                           </span>
                         )}
                         {typeof (pay.platformFeeGross ?? splitPreview?.platformGrossFee) ===
@@ -3111,7 +3111,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                   Solicitações Pendentes ({pendingResellers.length})
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Revendedores só conseguem exibir os produtos da sua fábrica na vitrine depois que você clicar em &ldquo;Aceitar Revendedor&rdquo;.
+                  Vendedores só conseguem exibir os produtos da sua fábrica na vitrine depois que você clicar em &ldquo;Aceitar Vendedor&rdquo;.
                 </p>
               </div>
             </div>
@@ -3132,7 +3132,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="text-sm font-bold text-slate-900">
-                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                            {conn.resellerStorefrontName || conn.resellerName || 'Vendedor ChatFi'}
                           </h3>
                           <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
                             Pendente
@@ -3146,7 +3146,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                             </p>
                           )}
                         <p className="mt-0.5 text-[11px] text-slate-500">
-                          Solicitou autorização para revender o catálogo da sua fábrica acima do seu preço de fábrica.
+                          Solicitou autorização para vender o catálogo da sua fábrica acima do seu preço de fábrica.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -3157,7 +3157,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                           className="inline-flex min-h-[38px] items-center gap-1.5 rounded-xl bg-[#0E7A34] px-3.5 text-xs font-semibold text-white hover:bg-[#0B5D27] disabled:opacity-50"
                         >
                           <CheckCircle2 className="h-4 w-4" />
-                          {busy ? 'Salvando...' : 'Aceitar Revendedor'}
+                          {busy ? 'Salvando...' : 'Aceitar Vendedor'}
                         </button>
                         <button
                           type="button"
@@ -3179,15 +3179,15 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
           {/* Approved Resellers */}
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-sm font-bold text-slate-900">
-              Revendedores Aprovados ({approvedResellers.length})
+              Vendedores Aprovados ({approvedResellers.length})
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Estes revendedores têm permissão ativa para publicar os seus produtos. Você pode revogar o acesso quando desejar.
+              Estes vendedores têm permissão ativa para publicar os seus produtos. Você pode revogar o acesso quando desejar.
             </p>
 
             {approvedResellers.length === 0 ? (
               <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
-                Nenhum revendedor aprovado ainda.
+                Nenhum vendedor aprovado ainda.
               </div>
             ) : (
               <div className="mt-4 space-y-2.5">
@@ -3201,14 +3201,14 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-sm font-bold text-slate-900">
-                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                            {conn.resellerStorefrontName || conn.resellerName || 'Vendedor ChatFi'}
                           </h3>
                           <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-[#0E7A34]">
                             Aprovado
                           </span>
                           {conn.paused && (
                             <span className="rounded-md bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-800">
-                              Pausado pelo revendedor
+                              Pausado pelo vendedor
                             </span>
                           )}
                         </div>
@@ -3227,7 +3227,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                         className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
                       >
                         <XCircle className="h-3.5 w-3.5" />
-                        {busy ? 'Revogando...' : 'Revogar Revendedor'}
+                        {busy ? 'Revogando...' : 'Revogar Vendedor'}
                       </button>
                     </div>
                   );
@@ -3253,7 +3253,7 @@ export const ManufacturerPanel: React.FC<ManufacturerPanelProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="text-sm font-semibold text-slate-800">
-                            {conn.resellerStorefrontName || conn.resellerName || 'Revendedor ChatFi'}
+                            {conn.resellerStorefrontName || conn.resellerName || 'Vendedor ChatFi'}
                           </h3>
                           <span className="rounded-md bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">
                             Recusado

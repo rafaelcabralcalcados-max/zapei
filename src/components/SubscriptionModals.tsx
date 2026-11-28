@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { CommercialMode, UserProfile } from '../types/zapei';
 import { formatCpfMask, isValidCpf } from '../lib/cpfAndDeviceUtils';
+import { formatUserFacingFirestoreError } from '../lib/firebase';
 
 interface CommercialTrialModalProps {
   targetRole: Extract<CommercialMode, 'manufacturer' | 'reseller'>;
@@ -50,7 +51,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
       return;
     }
     if (!cpfAlreadyVerified && !isValidCpf(cpfInput)) {
-      setErrorMsg('Informe um CPF válido (11 dígitos) para liberar a atuação como Anunciante ou Revendedor.');
+      setErrorMsg('Informe um CPF válido (11 dígitos) para liberar a atuação como Anunciante ou Vendedor.');
       return;
     }
 
@@ -58,10 +59,10 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
     try {
       await onConfirm(cleaned, cpfAlreadyVerified ? undefined : cpfInput);
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Não foi possível ativar este modo comercial agora.';
+      const msg = formatUserFacingFirestoreError(
+        err,
+        'Não foi possível ativar este modo comercial agora.'
+      );
       setErrorMsg(msg);
       if (/suspens|bloquead|restri/i.test(msg)) {
         setIsRestrictedError(true);
@@ -92,7 +93,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
         </div>
 
         <h2 className="mt-4 text-lg font-bold text-slate-900">
-          {isFactory ? 'Ativar Sou Anunciante / Fabricante' : 'Ativar Sou Revendedor'}
+          {isFactory ? 'Ativar Sou Anunciante / Fabricante' : 'Ativar Sou Vendedor'}
         </h2>
         <p className="mt-1 text-sm text-slate-600">
           {alreadyOnPlan ? (
@@ -149,7 +150,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
                 className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 bg-white px-3.5 font-mono text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:border-[#0E7A34] focus:outline-none focus:ring-2 focus:ring-[#0E7A34]/15"
               />
               <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                Obrigatório para Anunciantes e Revendedores. Validado de forma criptografada (SHA-256)
+                Obrigatório para Anunciantes e Vendedores. Validado de forma criptografada (SHA-256)
                 e nunca exibido publicamente na sua vitrine.
               </p>
             </div>
@@ -163,7 +164,7 @@ export const CommercialTrialModal: React.FC<CommercialTrialModalProps> = ({
 
         {errorMsg && (
           <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-xs text-red-700">
-            <p className="font-medium leading-relaxed">{errorMsg}</p>
+            <p className="font-medium leading-relaxed break-words">{errorMsg}</p>
             {isRestrictedError && onOpenHelp && (
               <button
                 type="button"
@@ -269,7 +270,7 @@ export const BillingManageModal: React.FC<BillingManageModalProps> = ({
             </span>
           </div>
           <div className="mt-2 flex items-baseline justify-between">
-            <span className="text-xs text-slate-500">Plano Mensal (Anunciante / Revendedor)</span>
+            <span className="text-xs text-slate-500">Plano Mensal (Anunciante / Vendedor)</span>
             <span className="font-mono text-base font-bold text-slate-900 tabular-nums">
               R$ 59,90/mês
             </span>

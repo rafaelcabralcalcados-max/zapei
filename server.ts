@@ -2397,7 +2397,7 @@ async function startServer(): Promise<void> {
         ? String(resellerDoc.asaasWalletId).trim()
         : undefined;
       const resellerName = String(
-        orderData.storefrontName || resellerDoc?.storefrontName || resellerDoc?.displayName || 'Revendedor'
+        orderData.storefrontName || resellerDoc?.storefrontName || resellerDoc?.displayName || 'Vendedor'
       );
 
       const { asaasApiSplits, detailedSplits, missingWallets } = buildAsaasSplitEntries({
@@ -2474,7 +2474,7 @@ async function startServer(): Promise<void> {
       if (missingWallets.length > 0) {
         res.status(422).json({
           error: `Wallet ID Asaas não configurado para: ${missingWallets
-            .map((w) => `${w.label} (${w.role === 'manufacturer' ? 'Fabricante' : 'Revendedor'})`)
+            .map((w) => `${w.label} (${w.role === 'manufacturer' ? 'Fabricante' : 'Vendedor'})`)
             .join(', ')}. Peça para configurarem no painel comercial.`,
           missingWallets,
         });

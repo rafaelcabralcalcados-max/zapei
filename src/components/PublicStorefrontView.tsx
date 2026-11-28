@@ -1604,7 +1604,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
 
                   {lastChargeResult.message && (
                     <p className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-700">
-                      {/split|wallet|fabricante|revendedor/i.test(lastChargeResult.message)
+                      {/split|wallet|fabricante|vendedor|revendedor/i.test(lastChargeResult.message)
                         ? 'Utilize o QR Code Pix ou abra a fatura abaixo para concluir o pagamento do seu pedido.'
                         : lastChargeResult.message}
                     </p>
@@ -2229,7 +2229,7 @@ export const PublicStorefrontView: React.FC<PublicStorefrontViewProps> = ({
                                 <FileCheck2 className="h-4 w-4" />
                                 {releasingShareOrderId === order.id
                                   ? 'Registrando liberação...'
-                                  : 'Liberar Parcela do Revendedor (Comprovante Conferido)'}
+                                  : 'Liberar Parcela do Vendedor (Comprovante Conferido)'}
                               </button>
                             )}
 

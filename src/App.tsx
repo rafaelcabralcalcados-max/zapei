@@ -60,6 +60,7 @@ import {
   fetchDeletedMessagesState,
   fetchPublicUserStorefront,
   fetchUserProfileOnce,
+  formatUserFacingFirestoreError,
   getDeterministicChatId,
   getDismissedCallIds,
   liftCommercialBan,
@@ -1688,7 +1689,14 @@ export default function App() {
 
   // Helper: persist full profile updates cleanly
   const persistProfileUpdate = useCallback(
-    async (overrides: Partial<UserProfile>) => {
+    async (
+      overrides: Partial<UserProfile> & {
+        cpfHash?: string;
+        cpfVerified?: boolean;
+        virtualLine?: string;
+        authMethod?: 'phone' | 'cpf';
+      }
+    ) => {
       if (!authUser) return;
       const base = profile;
       await registerOrUpdateUserProfile({
@@ -1696,6 +1704,10 @@ export default function App() {
         email: authUser.email || base?.email || '',
         displayName: overrides.name ?? base?.name ?? authUser.displayName ?? 'Usuário ChatFi',
         phone: overrides.phone ?? base?.phone ?? '',
+        virtualLine: overrides.virtualLine ?? base?.virtualLine,
+        authMethod: overrides.authMethod ?? base?.authMethod,
+        cpfHash: overrides.cpfHash,
+        cpfVerified: overrides.cpfVerified ?? base?.cpfVerified,
         statusMessage: sanitizeStatusMessage(
           overrides.statusMessage ?? base?.statusMessage ?? DEFAULT_STATUS_MESSAGE
         ),
@@ -3057,7 +3069,7 @@ export default function App() {
 
       if (profile.commercialBanned) {
         showToast(
-          'Os modos Fabricante e Revendedor estão temporariamente suspensos para análise. Contate o suporte para revisão.'
+          'Os modos Fabricante e Vendedor estão temporariamente suspensos para análise. Contate o suporte para revisão.'
         );
         return;
       }
@@ -3071,7 +3083,7 @@ export default function App() {
       if (banCheck.banned) {
         showToast(
           banCheck.reason ||
-            'Os modos Fabricante e Revendedor estão temporariamente suspensos para esta conta.'
+            'Os modos Fabricante e Vendedor estão temporariamente suspensos para esta conta.'
         );
         return;
       }
@@ -3100,10 +3112,11 @@ export default function App() {
 
       if (profile.commercialBanned) {
         throw new Error(
-          'Os modos Fabricante e Revendedor estão suspensos para esta conta. Solicite revisão pela Central de Ajuda.'
+          'Os modos Fabricante e Vendedor estão suspensos para esta conta. Solicite revisão pela Central de Ajuda.'
         );
       }
 
+      let verifiedCpfHash: string | undefined;
       if (!profile.cpfVerified) {
         const res = await verifyAndBindCpfForCommercialRole({
           uid: profile.uid,
@@ -3119,6 +3132,7 @@ export default function App() {
               'Não foi possível validar o CPF para liberar o modo comercial.'
           );
         }
+        verifiedCpfHash = res.cpfHash;
       } else {
         const banCheck = await checkCommercialBanStatus({
           uid: profile.uid,
@@ -3129,7 +3143,7 @@ export default function App() {
         if (banCheck.banned) {
           throw new Error(
             banCheck.reason ||
-              'Os modos Fabricante e Revendedor estão temporariamente suspensos para este CPF/conta.'
+              'Os modos Fabricante e Vendedor estão temporariamente suspensos para este CPF/conta.'
           );
         }
       }
@@ -3140,24 +3154,36 @@ export default function App() {
           ? profile.trialEndsAt
           : Date.now() + 30 * 24 * 60 * 60 * 1000;
 
-      await persistProfileUpdate({
-        commercialMode: trialPromptRole,
-        manufacturerActivated:
-          trialPromptRole === 'manufacturer' ? true : profile.manufacturerActivated,
-        resellerActivated:
-          trialPromptRole === 'reseller' ? true : profile.resellerActivated,
-        factoryName:
-          trialPromptRole === 'manufacturer' ? cleanedName : profile.factoryName,
-        storefrontName:
-          trialPromptRole === 'reseller'
-            ? cleanedName
-            : profile.resellerActivated
-              ? profile.storefrontName
-              : cleanedName,
-        subscriptionStatus:
-          profile.subscriptionStatus === 'active' ? 'active' : 'trial',
-        trialEndsAt,
-      });
+      try {
+        await persistProfileUpdate({
+          commercialMode: trialPromptRole,
+          cpfVerified: true,
+          ...(verifiedCpfHash ? { cpfHash: verifiedCpfHash } : {}),
+          manufacturerActivated:
+            trialPromptRole === 'manufacturer' ? true : profile.manufacturerActivated,
+          resellerActivated:
+            trialPromptRole === 'reseller' ? true : profile.resellerActivated,
+          factoryName:
+            trialPromptRole === 'manufacturer' ? cleanedName : profile.factoryName,
+          storefrontName:
+            trialPromptRole === 'reseller'
+              ? cleanedName
+              : profile.resellerActivated
+                ? profile.storefrontName
+                : cleanedName,
+          subscriptionStatus:
+            profile.subscriptionStatus === 'active' ? 'active' : 'trial',
+          trialEndsAt,
+        });
+      } catch (err) {
+        throw new Error(
+          formatUserFacingFirestoreError(
+            err,
+            'Não foi possível ativar este modo comercial agora. Tente novamente.'
+          )
+        );
+      }
+
       setTrialPromptRole(null);
       setActiveTab('commercial');
       showToast(
@@ -3576,7 +3602,7 @@ export default function App() {
           actorRole: 'reseller',
           actorName: profile.storefrontName || profile.name,
           eventType: 'reseller_preference_updated',
-          summary: `Revendedor definiu condição: ${prefMeta.shortLabel}${note ? ` (${note})` : ''}`,
+          summary: `Vendedor definiu condição: ${prefMeta.shortLabel}${note ? ` (${note})` : ''}`,
         })
       );
       await updateRealOrder(order.id, {
@@ -3624,7 +3650,7 @@ export default function App() {
           eventType: 'reseller_share_released',
           timestampMs: nowMs,
           summary:
-            'Cliente conferiu o comprovante da transportadora e autorizou a liberação da parcela do revendedor.',
+            'Cliente conferiu o comprovante da transportadora e autorizou a liberação da parcela do vendedor.',
         })
       );
       await updateRealOrder(order.id, {
@@ -3813,7 +3839,7 @@ export default function App() {
       if (result === 'already_approved') {
         return {
           ok: true,
-          message: `Você já é um revendedor aprovado da fábrica "${match.displayName}".`,
+          message: `Você já é um vendedor aprovado da fábrica "${match.displayName}".`,
         };
       }
 
@@ -3833,7 +3859,7 @@ export default function App() {
           otherUid: match.uid,
           otherName: match.displayName,
           type: 'text',
-          text: `Olá ${match.displayName}! Solicitei autorização para atuar como seu revendedor no ChatFi (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para aceitar ou recusar minha solicitação.`,
+          text: `Olá ${match.displayName}! Solicitei autorização para atuar como seu vendedor no ChatFi (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Vendedores" para aceitar ou recusar minha solicitação.`,
         }).catch(() => {});
       });
 
@@ -3841,8 +3867,8 @@ export default function App() {
         ok: true,
         message:
           result === 're_requested'
-            ? `Nova solicitação enviada para "${match.displayName}"! Aguarde o fabricante aceitar você como revendedor.`
-            : `Solicitação enviada para "${match.displayName}"! Os produtos só serão liberados na sua vitrine após o fabricante aceitar você como revendedor.`,
+            ? `Nova solicitação enviada para "${match.displayName}"! Aguarde o fabricante aceitar você como vendedor.`
+            : `Solicitação enviada para "${match.displayName}"! Os produtos só serão liberados na sua vitrine após o fabricante aceitar você como vendedor.`,
       };
     },
     [profile]
@@ -3855,7 +3881,7 @@ export default function App() {
 
       const factoryLabel = profile.factoryName || profile.name;
       const resellerLabel =
-        connection.resellerStorefrontName || connection.resellerName || 'Revendedor';
+        connection.resellerStorefrontName || connection.resellerName || 'Vendedor';
 
       void checkPeerReachability(connection.resellerId, authUserRef.current, true).then((reach) => {
         if (!reach.reachable) return;
@@ -3867,14 +3893,14 @@ export default function App() {
           type: 'text',
           text:
             decision === 'approved'
-              ? `Parabéns! A fábrica "${factoryLabel}" aceitou sua solicitação de revendedor. Nossos produtos já estão liberados no seu Painel de Revendedor para você configurar suas margens e divulgar na sua vitrine.`
-              : `A fábrica "${factoryLabel}" não aprovou (ou revogou) sua autorização como revendedor no momento. Os produtos desta fábrica foram removidos da sua vitrine.`,
+              ? `Parabéns! A fábrica "${factoryLabel}" aceitou sua solicitação de vendedor. Nossos produtos já estão liberados no seu Painel do Vendedor para você configurar suas margens e divulgar na sua vitrine.`
+              : `A fábrica "${factoryLabel}" não aprovou (ou revogou) sua autorização como vendedor no momento. Os produtos desta fábrica foram removidos da sua vitrine.`,
         }).catch(() => {});
       });
 
       showToast(
         decision === 'approved'
-          ? `Revendedor "${resellerLabel}" aceito com sucesso!`
+          ? `Vendedor "${resellerLabel}" aceito com sucesso!`
           : `Autorização de "${resellerLabel}" recusada/revogada.`
       );
     },
@@ -4434,13 +4460,18 @@ export default function App() {
       <PhoneOnboardingModal
         mode="gate"
         authUser={authUser}
-        onSaveProfile={async (name, phone, statusMessage, avatarUrl) => {
+        onSaveProfile={async (name, phone, statusMessage, avatarUrl, meta) => {
           if (!authUser) return;
+          const isVline = isVirtualLineFormat(phone);
           const { isNewProfile } = await registerOrUpdateUserProfile({
             uid: authUser.uid,
             email: authUser.email || '',
             displayName: name,
             phone,
+            virtualLine: meta?.virtualLine || (isVline ? phone.trim().toUpperCase() : undefined),
+            authMethod: meta?.authMethod || (isVline || !authUser.phoneNumber ? 'cpf' : 'phone'),
+            cpfHash: meta?.cpfHash,
+            cpfVerified: meta?.cpfVerified ?? (isVline ? true : undefined),
             statusMessage,
             avatarUrl,
             primaryDevice: localDeviceInfo,
@@ -4658,7 +4689,7 @@ export default function App() {
                 {profile.commercialMode === 'manufacturer'
                   ? 'Anunciante / Fabricante'
                   : profile.commercialMode === 'reseller'
-                    ? 'Revendedor'
+                    ? 'Vendedor'
                     : 'Conectando pessoas!'}
               </span>
             </div>
@@ -6515,7 +6546,7 @@ export default function App() {
                         otherUid: targetConn.factoryId,
                         otherName: targetConn.factoryName,
                         type: 'text',
-                        text: `Olá ${targetConn.factoryName}! Enviei novamente uma solicitação para atuar como seu revendedor (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Revendedores" para analisar.`,
+                        text: `Olá ${targetConn.factoryName}! Enviei novamente uma solicitação para atuar como seu vendedor (${resellerLabel}). Acesse seu Painel do Fabricante > aba "Vendedores" para analisar.`,
                       }).catch(() => {});
                     });
                   }
@@ -7359,7 +7390,7 @@ export default function App() {
                   reportId,
                   ticketId,
                 });
-                showToast('Modos Fabricante e Revendedor liberados e reativados.');
+                showToast('Modos Fabricante e Vendedor liberados e reativados.');
               }
             : undefined
         }

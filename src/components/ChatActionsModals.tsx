@@ -118,7 +118,7 @@ export const ContactInfoModal: React.FC<ContactInfoModalProps> = ({
     target.role === 'manufacturer'
       ? 'Fabricante'
       : target.role === 'reseller'
-        ? 'Revendedor'
+        ? 'Vendedor'
         : 'Conta pessoal';
 
   return (

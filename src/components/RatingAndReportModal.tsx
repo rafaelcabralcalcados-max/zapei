@@ -66,7 +66,7 @@ export const StarReviewModal: React.FC<StarReviewModalProps> = ({
   if (!target) return null;
 
   const roleLabel =
-    target.targetRole === 'manufacturer' ? 'Fabricante' : 'Revendedor';
+    target.targetRole === 'manufacturer' ? 'Fabricante' : 'Vendedor';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -237,7 +237,7 @@ export const DeliveryReportModal: React.FC<DeliveryReportModalProps> = ({
   if (!target) return null;
 
   const roleLabel =
-    target.reportedRole === 'manufacturer' ? 'Fabricante' : 'Revendedor';
+    target.reportedRole === 'manufacturer' ? 'Fabricante' : 'Vendedor';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

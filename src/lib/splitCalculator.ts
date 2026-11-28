@@ -252,7 +252,7 @@ export function buildAsaasSplitEntries(params: {
       missingWallets.push({
         role: 'reseller',
         uid: resellerId,
-        label: resellerName || 'Revendedor',
+        label: resellerName || 'Vendedor',
       });
     }
     const resolvedWallet = walletId || `PENDING_RESELLER_WALLET_${resellerId.slice(0, 8)}`;
